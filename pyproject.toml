@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "job-matching-agent"
+version = "0.1.0"
+description = "Autonomous job-matching agent: scrape, score, enrich matches, dump JSON"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2.0",
+    "langchain-openai>=0.2.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "google-api-python-client>=2.0.0",
+    "google-auth>=2.0.0",
+    "pypdf>=5.0.0",
+    "python-docx>=1.1.0",
+    "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0",
+    "apify-client>=1.8.0",
+]
+
+[project.scripts]
+job-agent = "src.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]

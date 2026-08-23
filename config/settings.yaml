@@ -1,0 +1,57 @@
+# Enrich (resume edits + interview prep) runs only when score > min_score.
+min_score: 7
+
+# If true, Indeed or LinkedIn scrape errors fail the whole scrape step.
+strict_sources: false
+
+openai:
+  # gpt-5.6-luna (cheaper) | gpt-5.6-sol (stronger) | gpt-5.6-terra
+  score_model: gpt-5.6-luna
+  enrich_model: gpt-5.6-luna
+
+resume:
+  # local | google_drive
+  primary: local
+  use_google_drive: false
+  drive_file_id: ""
+  # Relative to the project root. Empty string disables local.
+  local_path: "localData/RishabResume.pdf"
+
+scrape:
+  # Indeed `keyword` only. LinkedIn keywords are under apify.linkedin_input.
+  keywords: "title:(\"Software Engineer\" or \"Software Developer\" or \"Senior Software Engineer\" or \"Senior Software Developer\" or \"NodeJS\")"
+  # Indeed `country` (India → IN). LinkedIn location is under apify.linkedin_input.
+  location: "India"
+  # Indeed lookback only. LinkedIn is 24h via datePosted below.
+  # 24h | 3d | 7d
+  posted_within: "3d"
+  max_detail_jobs: 100
+  exclude_keywords: []
+  sources:
+    - indeed
+    - linkedin
+  apify:
+    # https://console.apify.com/actors/BIeK7ZcYUrdxDgOEQ
+    indeed_actor: "BIeK7ZcYUrdxDgOEQ"
+    # https://console.apify.com/actors/d1gs0RHIwEnsan7XX
+    linkedin_actor: "d1gs0RHIwEnsan7XX"
+    indeed_input: {}
+    linkedin_input:
+      datePosted: past24Hours
+      experienceLevels:
+        - associate
+        - midSenior
+        - entryLevel
+      jobTypes:
+        - fullTime
+        - partTime
+      keywords: "software engineer, nodejs, software developer, senior software engineer, senior software developer, lead engineer"
+      location: India
+      onlyNewJobs: false
+      onlyWithSalary: false
+      scrapeCompany: false
+      scrapeDetails: true
+      searchUrls:
+        - "https://www.linkedin.com/jobs/search/?currentJobId=4457879095&distance=25.0&f_TPR=r86400&geoId=102713980&keywords=software%20engineer%2C%20nodejs&origin=JOBS_HOME_KEYWORD_HISTORY"
+      sortBy: recent
+      splitByCountry: India
