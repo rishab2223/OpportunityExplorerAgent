@@ -1,13 +1,30 @@
 # Job matching agent
 
-Pipeline: **resume → scrape Indeed/LinkedIn → score 1–10 → enrich only if score > 7 → JSON files under `outputs/`**.
+Scrapes Indeed and LinkedIn through Apify, scores each job against your resume (1–10), enriches only the jobs that score **above** `min_score`, and writes JSON under `outputs/`.
 
-Fail-fast: if a step errors (after its configured fallbacks), later steps do not run. The run still writes a JSON summary to `outputs/`.
+There is no email and no Google Sheet. Google Drive is optional and only used if you load the resume from Drive.
+
+## Pipeline
+
+1. **Load resume** — local file, or Google Drive if enabled
+2. **Scrape** — Indeed and/or LinkedIn via Apify
+3. **Score** — one cheap LLM call per scraped job
+4. **Filter** — keep jobs with `relevance > min_score` (default 7, so 8–10)
+5. **Enrich** — resume edit suggestions + interview prep, only for those matches
+6. **Dump** — write JSON under `outputs/` (also runs after a failure)
+
+If a step fails, later steps do not run. A run summary is still written so you can see which step failed.
+
+## Requirements
+
+- Python 3.11+
+- [OpenAI API key](https://platform.openai.com/api-keys)
+- [Apify token](https://console.apify.com/settings/integrations)
+- A resume as PDF, DOCX, MD, or TXT
 
 ## Setup
 
 ```powershell
-cd c:\Users\risha\work\jobMatchingAgent
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
@@ -16,51 +33,59 @@ copy .env.example .env
 
 Fill `.env`:
 
-- `OPENAI_API_KEY`
-- `APIFY_TOKEN` — required ([Apify integrations](https://console.apify.com/settings/integrations))
-- `GOOGLE_APPLICATION_CREDENTIALS` — service account JSON (only if you load the resume from Drive)
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | yes | Scoring and enrichment |
+| `APIFY_TOKEN` | yes | Indeed and LinkedIn scrapes |
+| `GOOGLE_APPLICATION_CREDENTIALS` | only for Drive resume | Path to a service-account JSON |
 
-Edit [`config/settings.yaml`](config/settings.yaml).
+Edit [`config/settings.yaml`](config/settings.yaml) for search terms, lookback, models, and how many jobs to fetch.
+
+## Config
 
 ### Resume
 
 ```yaml
 resume:
-  primary: local          # or google_drive
+  primary: local            # local | google_drive
   use_google_drive: false
-  drive_file_id: ""       # file id or share URL
+  drive_file_id: ""         # file id or share URL; ignored unless Drive is on
   local_path: "localData/RishabResume.pdf"
 ```
 
-- If Drive is enabled and fails, local is tried **only when `local_path` is set**.
-- Share the Drive file with the service account email.
-
-Supported files: PDF, DOCX, MD, TXT.
-
-### Output
-
-Every run writes JSON under `outputs/`:
-
-- `{timestamp}_run.json` — status, counts, errors (also copied to `run.json`)
-- `{timestamp}_shortlisted.json` — enriched matches after a successful run (also copied to `shortlisted.json`)
+- `primary` is tried first.
+- Fallback to the other source only if that source is actually configured (`use_google_drive` + `drive_file_id`, or a non-empty `local_path`).
+- Relative `local_path` values are resolved from the project root.
 
 ### Scrape
 
-Jobs are fetched through **Apify** (no local browser):
+Jobs come from Apify (no local browser):
 
 - Indeed: [kaix/indeed-scraper](https://console.apify.com/actors/BIeK7ZcYUrdxDgOEQ)
 - LinkedIn: [dataji/apify-linkdin-jobs](https://console.apify.com/actors/d1gs0RHIwEnsan7XX)
 
-Indeed uses `keywords`, `location`, `posted_within`, and `max_detail_jobs`. LinkedIn uses `scrape.apify.linkedin_input` plus `max_detail_jobs` as `maxResults`.
+| Setting | Indeed | LinkedIn |
+| --- | --- | --- |
+| Search text | `scrape.keywords` → actor `keyword` (Indeed operators like `title:(...)` are allowed) | `scrape.apify.linkedin_input.keywords` (plain keywords, not the Indeed `title:(...)` string) |
+| Location | `scrape.location` → actor `country` (`India` → `IN`) | `scrape.apify.linkedin_input.location` |
+| Recency | `scrape.posted_within`: `24h` / `3d` / `7d` → `fromDays` | `scrape.apify.linkedin_input.datePosted` (currently `past24Hours`) |
+| Cap per source | `scrape.max_detail_jobs` → `maxItems` | `scrape.max_detail_jobs` → `maxResults` |
 
-- Indeed lookback: `posted_within` `24h` | `3d` | `7d`
-- LinkedIn lookback: `apify.linkedin_input.datePosted` (`past24Hours`)
-- If LinkedIn fails but Indeed returns jobs, the run continues unless `strict_sources: true`.
+Current defaults in `settings.yaml`: Indeed last **3 days**, LinkedIn last **24 hours**, **100** jobs per source.
+
+`scrape.sources` can be `indeed`, `linkedin`, or both.
+
+If LinkedIn fails but Indeed returned jobs, the run continues unless `strict_sources: true`.
 
 ### Models
 
-- `openai.score_model` — scoring for every scraped job (`gpt-5.6-luna` or `gpt-5.6-sol`)
-- `openai.enrich_model` — resume edits + interview prep only for relevance **> min_score** (default 7)
+```yaml
+openai:
+  score_model: gpt-5.6-luna    # every scraped job
+  enrich_model: gpt-5.6-luna   # shortlisted jobs only
+```
+
+Use `gpt-5.6-luna` for lower cost, or `gpt-5.6-sol` for a stronger model.
 
 ## Run
 
@@ -69,22 +94,48 @@ python -m src.cli run
 python -m src.cli run --config config\settings.yaml
 ```
 
-Exit code `1` if a pipeline step failed.
+Exit code `0` on success, `1` if a pipeline step failed.
+
+### Standalone scraper tests
+
+These hit Apify only (no scoring). From the project root:
+
+```powershell
+python test/test_indeed_apify.py
+python test/test_linkedin_apify.py
+```
+
+They write JSON under `test/output/`.
+
+## Outputs
+
+Every run writes files under `outputs/`:
+
+| File | When | Contents |
+| --- | --- | --- |
+| `{timestamp}_run.json` and `run.json` | always | Status, counts, error if any |
+| `{timestamp}_shortlisted.json` and `shortlisted.json` | success only | Enriched matches |
+
+`run.json` / `shortlisted.json` are copies of the latest run.
+
+Each shortlisted row includes title, company, location, apply/listing URLs, score, why it matched, recruiter fields when the actor provided them (never invented), salary when present, resume-edit suggestions, and interview prep.
+
+## Optional: resume from Google Drive
+
+1. Create a Google Cloud service account and download its JSON.
+2. Enable the **Google Drive API**.
+3. Share the resume file with the service account email.
+4. Set `GOOGLE_APPLICATION_CREDENTIALS` in `.env`.
+5. In `settings.yaml`: `primary: google_drive`, `use_google_drive: true`, and `drive_file_id`.
 
 ## Daily schedule (Windows)
 
-Task Scheduler → Create Task → trigger Daily → action:
+Task Scheduler → Create Task → Daily trigger → Start in the project folder → action:
 
-`c:\Users\risha\work\jobMatchingAgent\.venv\Scripts\python.exe -m src.cli run`
-
-Start in: `c:\Users\risha\work\jobMatchingAgent`
-
-## Google Cloud (Drive resume only)
-
-1. Create a service account, download JSON.
-2. Enable **Google Drive API**.
-3. Share the resume file with the SA client email.
+```text
+<project>\.venv\Scripts\python.exe -m src.cli run
+```
 
 ## Out of scope
 
-Auto-apply, LinkedIn login, PDF resume export, Notion.
+Auto-apply, LinkedIn login, email, Google Sheets, PDF resume export, Notion.
