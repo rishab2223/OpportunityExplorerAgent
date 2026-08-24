@@ -9,6 +9,8 @@ build/
 .credentials/
 *.json
 !package.json
+!examples/
+!examples/sample_shortlisted.json
 data/
 localData/
 outputs/

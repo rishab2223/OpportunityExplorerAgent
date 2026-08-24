@@ -126,6 +126,8 @@ Every run writes files under `outputs/`:
 
 Each shortlisted row includes title, company, location, apply/listing URLs, score, why it matched, recruiter fields when the actor provided them (never invented), salary when present, resume-edit suggestions, and interview prep.
 
+A sample from a real run is in [`examples/sample_shortlisted.json`](examples/sample_shortlisted.json). Live dumps stay local under `outputs/` and are gitignored.
+
 ## Optional: resume from Google Drive
 
 1. Create a Google Cloud service account and download its JSON.
