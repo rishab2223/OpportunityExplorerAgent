@@ -1,4 +1,4 @@
-# Job matching agent
+# Opportunity Explorer Agent
 
 Scrapes Indeed and LinkedIn through Apify, scores each job against your resume (1–10), enriches only the jobs that score **above** `min_score`, and writes JSON under `outputs/`.
 
@@ -92,6 +92,12 @@ Use `gpt-5.6-luna` for lower cost, or `gpt-5.6-sol` for a stronger model.
 ```powershell
 python -m src.cli run
 python -m src.cli run --config config\settings.yaml
+```
+
+After `pip install -e .` you can also run:
+
+```powershell
+opportunity-explorer run
 ```
 
 Exit code `0` on success, `1` if a pipeline step failed.

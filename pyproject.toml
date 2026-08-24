@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "job-matching-agent"
+name = "opportunity-explorer-agent"
 version = "0.1.0"
-description = "Autonomous job-matching agent: scrape, score, enrich matches, dump JSON"
+description = "Opportunity Explorer Agent: scrape, score, enrich matches, dump JSON"
 requires-python = ">=3.11"
 dependencies = [
     "langgraph>=0.2.0",
@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
-job-agent = "src.cli:main"
+opportunity-explorer = "src.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["src*"]

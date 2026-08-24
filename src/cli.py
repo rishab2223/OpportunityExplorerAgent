@@ -12,7 +12,7 @@ from src.config import load_env, load_yaml_config
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
-    parser = argparse.ArgumentParser(description="Autonomous job-matching agent")
+    parser = argparse.ArgumentParser(description="Opportunity Explorer Agent")
     sub = parser.add_subparsers(dest="cmd", required=True)
     run_p = sub.add_parser("run", help="Run scrape → score → enrich matches → JSON dump")
     run_p.add_argument(

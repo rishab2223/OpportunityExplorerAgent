@@ -1,1 +1,1 @@
-"""Job matching agent package."""
+"""Opportunity Explorer Agent package."""
