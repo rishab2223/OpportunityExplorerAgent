@@ -38,9 +38,15 @@ class ScoredJob(JobPosting, JobScore):
 class MatchEnrichment(BaseModel):
     resume_edit_suggestions: str = ""
     interview_prep: str = ""
+    resume_latex: str = ""
 
 
 class MatchRecord(ScoredJob, MatchEnrichment):
     resume_source: str = ""
     resume_source_detail: str = ""
+    resume_tex_file: str = ""
+    resume_pdf_file: str = ""
+    resume_pdf_path: str = ""
+    resume_pdf_error: str = ""
+    latex_skip_reason: str = ""
     written_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

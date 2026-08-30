@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import traceback
 
+from src import progress
 from src.agent.nodes.resume import _fail
 from src.agent.state import AgentState
 from src.config import AppConfig, EnvSettings
@@ -13,6 +14,7 @@ def node_scrape(state: AgentState, cfg: AppConfig, env: EnvSettings) -> AgentSta
     try:
         jobs = scrape_jobs(cfg, env)
         state["raw_jobs"] = [j.model_dump() for j in jobs]
+        progress.log(f"[scrape] Collected {len(jobs)} job(s)")
     except StepError as exc:
         return _fail(state, exc)
     except Exception as exc:

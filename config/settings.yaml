@@ -4,18 +4,19 @@ min_score: 7
 # If true, Indeed or LinkedIn scrape errors fail the whole scrape step.
 strict_sources: false
 
+# Compile each tailored .tex to a .pdf during the run. Needs latexmk or pdflatex
+# on PATH; when it fails the run still succeeds and records resume_pdf_error.
+compile_pdf: true
+
 openai:
-  # gpt-5.6-luna (cheaper) | gpt-5.6-sol (stronger) | gpt-5.6-terra
+  # gpt-5.6-luna (cheaper) | gpt-5.6-sol (stronger, better structured LaTeX) | gpt-5.6-terra
   score_model: gpt-5.6-luna
   enrich_model: gpt-5.6-luna
 
 resume:
-  # local | google_drive
-  primary: local
-  use_google_drive: false
-  drive_file_id: ""
-  # Relative to the project root. Empty string disables local.
-  local_path: "localData/RishabResume.pdf"
+  # Local file only. .tex writes tailored resumes; .pdf writes JSON only.
+  # Relative to the project root. Empty string fails load.
+  local_path: "localData/RishabResume.tex"
 
 scrape:
   # Indeed `keyword` only. LinkedIn keywords are under apify.linkedin_input.
@@ -25,7 +26,7 @@ scrape:
   # Indeed lookback only. LinkedIn is 24h via datePosted below.
   # 24h | 3d | 7d
   posted_within: "3d"
-  max_detail_jobs: 100
+  max_detail_jobs: 10
   exclude_keywords: []
   sources:
     - indeed

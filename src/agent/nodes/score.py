@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import time
 import traceback
 
 from langchain_openai import ChatOpenAI
 
+from src import progress
 from src.agent.nodes.resume import _fail
 from src.agent.state import AgentState
 from src.config import AppConfig, EnvSettings
@@ -39,7 +41,12 @@ def node_score(state: AgentState, cfg: AppConfig, env: EnvSettings) -> AgentStat
             api_key=env.openai_api_key or None,
             temperature=0,
         ).with_structured_output(JobScore)
-        for job in jobs:
+        total = len(jobs)
+        started = time.monotonic()
+        progress.log(f"[score] Scoring {total} job(s)…")
+        for i, job in enumerate(jobs, start=1):
+            label = f"{job.company}  {job.title}".strip() or job.job_id
+            progress.log(f"[score] {i}/{total}  {label}")
             jd = (job.description or "")[:6000]
             prompt = (
                 f"{SCORE_SYSTEM}\n\nRESUME:\n{resume[:8000]}\n\n"
@@ -50,6 +57,9 @@ def node_score(state: AgentState, cfg: AppConfig, env: EnvSettings) -> AgentStat
             if not isinstance(result, JobScore):
                 result = JobScore.model_validate(result)
             scored.append(ScoredJob(**job.model_dump(), **result.model_dump()))
+            progress.log(f"[score] {i}/{total}  relevance={result.relevance}")
+        elapsed = time.monotonic() - started
+        progress.log(f"[score] Done {total} job(s) in {elapsed:.0f}s")
         state["scored"] = [s.model_dump() for s in scored]
     except Exception as exc:
         return _fail(
@@ -69,4 +79,5 @@ def node_filter(state: AgentState, cfg: AppConfig, _env: EnvSettings) -> AgentSt
     scored = state.get("scored") or []
     matches = [j for j in scored if int(j.get("relevance") or 0) > min_score]
     state["matches"] = matches
+    progress.log(f"[filter] {len(matches)} of {len(scored)} above min_score={min_score}")
     return state

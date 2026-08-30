@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import traceback
 
+from src.agent.state import AgentState
 from src.config import AppConfig, EnvSettings
 from src.errors import StepError
 from src.resume.loader import load_resume
-from src.agent.state import AgentState
 
 
-def node_load_resume(state: AgentState, cfg: AppConfig, env: EnvSettings) -> AgentState:
+def node_load_resume(state: AgentState, cfg: AppConfig, _env: EnvSettings) -> AgentState:
     try:
-        text, source, detail = load_resume(cfg, env)
+        text, source, detail, latex = load_resume(cfg)
     except StepError as exc:
         return _fail(state, exc)
     except Exception as exc:
@@ -24,6 +24,7 @@ def node_load_resume(state: AgentState, cfg: AppConfig, env: EnvSettings) -> Age
             ),
         )
     state["resume_text"] = text
+    state["resume_latex"] = latex
     state["resume_source"] = source
     state["resume_source_detail"] = detail
     return state

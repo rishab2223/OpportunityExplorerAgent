@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Opportunity Explorer</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<main>
+  <h1>Opportunity Explorer</h1>
+
+  <h2>Run</h2>
+  <div class="row">
+    <label for="resume">Resume path</label>
+    <input id="resume" type="text" placeholder="localData/RishabResume.tex" size="40">
+    <label for="maxjobs">Max jobs</label>
+    <input id="maxjobs" type="number" min="1" max="500" placeholder="10">
+    <button id="start">Start run</button>
+    <span id="status" class="muted">idle</span>
+  </div>
+  <pre id="log" class="logbox">No run started. Logs from a live run appear here.</pre>
+
+  <h2>Shortlist</h2>
+  <div class="row">
+    <label for="stamp">Run</label>
+    <select id="stamp"></select>
+    <button id="refresh">Refresh</button>
+    <span id="runinfo" class="muted"></span>
+  </div>
+  <table id="jobs">
+    <thead>
+      <tr>
+        <th>Company</th>
+        <th>Title</th>
+        <th>Score</th>
+        <th>Location</th>
+        <th>Links</th>
+        <th>Resume PDF path</th>
+        <th>Status</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Selected job</h2>
+  <div id="detail" class="muted">Click a row to see details and the tailored resume.</div>
+  <div id="pdfnote" class="muted"></div>
+  <iframe id="pdf" title="Tailored resume preview"></iframe>
+
+  <h2>Apply</h2>
+  <pre id="applylog" class="logbox">No apply session. Use Start apply on a row.</pre>
+  <div class="row">
+    <input id="chat" type="text" size="60" placeholder="Answer the agent's question, then press Send" disabled>
+    <button id="send" disabled>Send</button>
+    <button id="abort" disabled>Abort</button>
+  </div>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

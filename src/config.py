@@ -17,9 +17,6 @@ class OpenAIConfig(BaseModel):
 
 
 class ResumeConfig(BaseModel):
-    primary: Literal["google_drive", "local"] = "local"
-    use_google_drive: bool = False
-    drive_file_id: str = ""
     local_path: str = ""
 
 
@@ -45,6 +42,7 @@ class ScrapeConfig(BaseModel):
 class AppConfig(BaseModel):
     min_score: int = 7
     strict_sources: bool = False
+    compile_pdf: bool = True
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     resume: ResumeConfig = Field(default_factory=ResumeConfig)
     scrape: ScrapeConfig = Field(default_factory=ScrapeConfig)
@@ -54,7 +52,6 @@ class EnvSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     openai_api_key: str = ""
-    google_application_credentials: str = ""
     apify_token: str = ""
 
 

@@ -1,0 +1,163 @@
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  line-height: 1.5;
+  margin: 0;
+  color: #1b1b1b;
+  background: #fff;
+}
+
+main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px 24px 64px;
+}
+
+h1 {
+  font-size: 20px;
+}
+
+h2 {
+  font-size: 16px;
+  margin-top: 32px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #d9d9d9;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+label {
+  font-size: 13px;
+  color: #555;
+}
+
+input,
+select,
+button {
+  padding: 5px 8px;
+  font-size: 13px;
+  border: 1px solid #bbb;
+  border-radius: 3px;
+  background: #fff;
+}
+
+button {
+  cursor: pointer;
+  background: #f2f2f2;
+}
+
+button:hover:enabled {
+  background: #e6e6e6;
+}
+
+button:disabled,
+input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.muted {
+  color: #666;
+  font-size: 13px;
+}
+
+.logbox {
+  height: 220px;
+  overflow: auto;
+  margin: 8px 0;
+  padding: 8px;
+  background: #f7f7f7;
+  border: 1px solid #ddd;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th,
+td {
+  border: 1px solid #ddd;
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+thead th {
+  position: sticky;
+  top: 0;
+  background: #eee;
+}
+
+tbody tr {
+  cursor: pointer;
+}
+
+tbody tr:nth-child(even) {
+  background: #fafafa;
+}
+
+tbody tr:hover {
+  background: #f0f6ff;
+}
+
+tbody tr.selected {
+  background: #dceaff;
+}
+
+.score-high {
+  background: #d9f0d9;
+  font-weight: 600;
+  text-align: center;
+}
+
+.score-mid {
+  background: #fdf3d0;
+  text-align: center;
+}
+
+.path {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.status-applied {
+  color: #1a7f37;
+  font-weight: 600;
+}
+
+.status-failed {
+  color: #b42318;
+  font-weight: 600;
+}
+
+.status-skipped {
+  color: #888;
+}
+
+.status-running {
+  color: #9a6700;
+  font-weight: 600;
+}
+
+#detail {
+  white-space: pre-wrap;
+  font-size: 13px;
+}
+
+#pdf {
+  width: 100%;
+  height: 780px;
+  margin-top: 12px;
+  border: 1px solid #ccc;
+}

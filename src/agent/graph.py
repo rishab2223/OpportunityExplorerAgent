@@ -36,7 +36,7 @@ def build_graph(cfg: AppConfig, env: EnvSettings):
         return node_enrich(state, cfg, env)
 
     def dump(state: AgentState) -> AgentState:
-        return node_dump(state)
+        return node_dump(state, cfg)
 
     graph.add_node("load_resume", load_resume)
     graph.add_node("scrape", scrape)
