@@ -14,6 +14,35 @@ ROOT = Path(__file__).resolve().parent.parent
 class OpenAIConfig(BaseModel):
     score_model: str = "gpt-5.6-luna"
     enrich_model: str = "gpt-5.6-luna"
+    apply_model: str = "gpt-5.6-luna"
+    # Parallel LLM calls per step. Scoring is short and cheap; enrichment is
+    # long and bursts more tokens, so keep it lower to stay under rate limits.
+    score_concurrency: int = Field(default=8, ge=1, le=32)
+    enrich_concurrency: int = Field(default=4, ge=1, le=16)
+
+
+class ClaudeConfig(BaseModel):
+    # agent-sdk: bundled Claude Code binary, authenticated by your Claude login
+    #            (Max/Pro) or CLAUDE_CODE_OAUTH_TOKEN. No API key.
+    # api:       Anthropic Messages API with ANTHROPIC_API_KEY (pay-as-you-go).
+    backend: Literal["agent-sdk", "api"] = "agent-sdk"
+    enrich_model: str = "claude-opus-5"
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    # Assisted apply: one structured decision per form step, so latency matters.
+    apply_model: str = "claude-opus-5"
+    apply_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+
+
+class HistoryConfig(BaseModel):
+    # Cross-run job history (localData/job_history.db): jobs marked applied are
+    # dropped right after scrape on later runs, before they cost anything.
+    skip_applied: bool = True
+    skip_skipped: bool = False
+    # Jobs in either referral state (pending or sent) stay out of later runs
+    # until the referral is cleared as failed.
+    skip_referral: bool = True
+    # Also match by normalized company+title when the site reissued its job id.
+    match_similar: bool = True
 
 
 class ResumeConfig(BaseModel):
@@ -43,7 +72,13 @@ class AppConfig(BaseModel):
     min_score: int = 7
     strict_sources: bool = False
     compile_pdf: bool = True
+    # Which LLM writes the tailored resume + interview prep. Scoring is always OpenAI.
+    enrich_provider: Literal["openai", "claude"] = "openai"
+    # Which LLM drives the assisted-apply form filling.
+    apply_provider: Literal["openai", "claude"] = "openai"
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
+    claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
+    history: HistoryConfig = Field(default_factory=HistoryConfig)
     resume: ResumeConfig = Field(default_factory=ResumeConfig)
     scrape: ScrapeConfig = Field(default_factory=ScrapeConfig)
 
@@ -52,6 +87,7 @@ class EnvSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     openai_api_key: str = ""
+    anthropic_api_key: str = ""
     apify_token: str = ""
 
 

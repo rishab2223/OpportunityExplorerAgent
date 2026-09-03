@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src import history
 from src.config import ROOT
 
 OUTPUT_DIR = ROOT / "outputs"
@@ -67,11 +68,24 @@ def load_jobs(stamp: str) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         return []
     decisions = load_decisions(stamp)
+    history_by_id, history_by_fp = history.snapshot()
     for row in rows:
         entry = decisions.get(row.get("job_id") or "", {})
         row["decision"] = entry.get("decision", "")
         row["status"] = entry.get("status", "pending")
         row["decided_at"] = entry.get("decided_at", "")
+        # Cross-run history: what you have since applied to, skipped, or are
+        # chasing a referral for, from any run.
+        entry = history_by_id.get(row.get("job_id") or "")
+        h_how = "id" if entry else ""
+        if not entry:
+            fp = history.fingerprint(row.get("company") or "", row.get("title") or "")
+            entry = history_by_fp.get(fp)
+            h_how = "similar" if entry else ""
+        row["history_status"] = entry["status"] if entry else ""
+        row["history_how"] = h_how
+        row["history_contact"] = entry["contact"] if entry else ""
+        row["history_marked_at"] = entry["marked_at"] if entry else ""
         row["tex_path"] = _sibling(directory, row.get("resume_tex_file"))
         # Older runs predate resume_pdf_path; fall back to the file on disk.
         if not row.get("resume_pdf_path"):

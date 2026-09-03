@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -21,7 +22,6 @@ WORKING_INDEED_INPUT: dict[str, Any] = {
 }
 
 WORKING_LINKEDIN_INPUT: dict[str, Any] = {
-    "datePosted": "past24Hours",
     "experienceLevels": ["associate", "midSenior", "entryLevel"],
     "jobTypes": ["fullTime", "partTime"],
     "keywords": (
@@ -33,14 +33,23 @@ WORKING_LINKEDIN_INPUT: dict[str, Any] = {
     "onlyWithSalary": False,
     "scrapeCompany": False,
     "scrapeDetails": True,
+    # Overrides the actor's keyword/filter fields; f_TPR is injected at run time
+    # from scrape.posted_within. geoId=102713980 is India; sortBy=DD is newest first.
     "searchUrls": [
-        "https://www.linkedin.com/jobs/search/?currentJobId=4457879095&distance=25.0&f_TPR=r86400&geoId=102713980&keywords=software%20engineer%2C%20nodejs&origin=JOBS_HOME_KEYWORD_HISTORY",
+        "https://www.linkedin.com/jobs/search/?keywords=software%20engineer%20OR%20software%20developer%20OR%20nodejs%20OR%20backend%20engineer&geoId=102713980&sortBy=DD",
     ],
     "sortBy": "recent",
     "splitByCountry": "India",
 }
 
 INDEED_FROM_DAYS = {"24h": "1", "3d": "3", "7d": "7"}
+
+LINKEDIN_LOOKBACK_SECONDS = {"24h": 86400, "3d": 259200, "7d": 604800}
+# Closest preset covering the window, for a run without searchUrls; the local
+# posted_at filter in src/scrape/__init__.py trims any overshoot to the exact window.
+LINKEDIN_DATE_POSTED = {"24h": "past24Hours", "3d": "pastWeek", "7d": "pastWeek"}
+
+_F_TPR = re.compile(r"([?&])f_TPR=[^&]*")
 
 COUNTRY_CODES = {
     "india": "IN",
@@ -204,10 +213,26 @@ def scrape_linkedin_apify(
 ) -> list[JobPosting]:
     run_input: dict[str, Any] = dict(WORKING_LINKEDIN_INPUT)
     run_input.update(apify.linkedin_input)
-    run_input["datePosted"] = apify.linkedin_input.get("datePosted") or "past24Hours"
+    # One recency knob for every source: scrape.posted_within. LinkedIn has no
+    # 3-day preset, so the exact window goes into each searchUrls entry as
+    # f_TPR seconds; datePosted only matters when searchUrls is empty.
+    run_input["searchUrls"] = [
+        _with_lookback(url, scrape.posted_within)
+        for url in run_input.get("searchUrls") or []
+    ]
+    run_input["datePosted"] = LINKEDIN_DATE_POSTED.get(scrape.posted_within, "pastWeek")
     run_input["maxResults"] = scrape.max_detail_jobs
     items = _run_actor(env.apify_token, apify.linkedin_actor, run_input)
     return _collect(items, _map_linkedin, scrape)
+
+
+def _with_lookback(url: str, posted_within: str) -> str:
+    """Set the LinkedIn URL's recency window (f_TPR, in seconds) from posted_within."""
+    seconds = LINKEDIN_LOOKBACK_SECONDS.get(posted_within, 259200)
+    value = f"f_TPR=r{seconds}"
+    if _F_TPR.search(url):
+        return _F_TPR.sub(rf"\g<1>{value}", url)
+    return f"{url}{'&' if '?' in url else '?'}{value}"
 
 
 def _map_indeed(item: dict[str, Any]) -> JobPosting:

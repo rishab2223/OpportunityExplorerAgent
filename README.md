@@ -2,7 +2,7 @@
 
 Two separate features that share nothing but the files on disk:
 
-1. **Discover** — scrapes Indeed and LinkedIn through Apify, scores each job against your resume (1–10), enriches only the jobs that score **above** `min_score`, and writes a self-sufficient run folder under `outputs/`: the shortlist, a tailored `.tex` per job, and a compiled `.pdf` per job. Runs headless from the CLI; nothing else is required to use the results.
+1. **Discover** — scrapes Indeed and LinkedIn through Apify, scores each job against your resume (1–10), enriches only the jobs that score **at or above** `min_score`, and writes a self-sufficient run folder under `outputs/`: the shortlist, a tailored `.tex` per job, and a compiled `.pdf` per job. Runs headless from the CLI; nothing else is required to use the results.
 2. **Assisted apply** — optional, one job at a time, started by hand from the web UI. Opens a visible Chrome, fills what it can, and stops to ask you whenever it is unsure.
 
 Applying yourself is a first-class path: the table gives you the apply URL and the local path of the tailored PDF, so you never have to use the apply feature at all.
@@ -14,8 +14,8 @@ There is no email, Google Sheet, or Google Drive. The resume is always a local f
 1. **Load resume** — local `.tex` (preferred) or PDF/DOCX/MD/TXT
 2. **Scrape** — Indeed and/or LinkedIn via Apify
 3. **Score** — one cheap LLM call per scraped job (plain text from the resume)
-4. **Filter** — keep jobs with `relevance > min_score` (default 7, so 8–10)
-5. **Enrich** — for `.tex` input, a tailored one-page LaTeX resume plus interview prep; for PDF, markdown suggestions plus interview prep
+4. **Filter** — keep jobs with `relevance >= min_score` (default 7, so 7–10)
+5. **Enrich** — for `.tex` input, per-section tailored edits (summary, skills, bullet rewording) spliced into your original LaTeX source, plus interview prep; for PDF, markdown suggestions plus interview prep. The model never rewrites the whole document: the preamble, section headings, and layout come through byte-identical, sections cannot be dropped, and edits that fail validation (unbalanced braces/environments, forbidden commands, big length changes) are rejected and retried once with the reasons named — a rejected section keeps its original text
 6. **Dump** — `outputs/{timestamp}/`, compiling each tailored `.tex` to a `.pdf` (also writes a run summary after a failure)
 
 If a step fails, later steps do not run. A run summary is still written so you can see which step failed.
@@ -23,7 +23,8 @@ If a step fails, later steps do not run. A run summary is still written so you c
 ## Requirements
 
 - Python 3.11+
-- [OpenAI API key](https://platform.openai.com/api-keys)
+- [OpenAI API key](https://platform.openai.com/api-keys) for scoring
+- For Claude enrichment: a Claude login (Pro/Max) for the `agent-sdk` backend, or an [Anthropic API key](https://platform.claude.com/) for the `api` backend
 - [Apify token](https://console.apify.com/settings/integrations)
 - A resume as `.tex` (for tailored LaTeX dumps) or PDF, DOCX, MD, or TXT
 - A LaTeX toolchain (MiKTeX or TeX Live) if you want PDFs. Without `latexmk`/`pdflatex` on `PATH` the run still succeeds and writes `.tex` only, recording the reason in `resume_pdf_error`.
@@ -42,7 +43,8 @@ Fill `.env`:
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | yes | Scoring and enrichment |
+| `OPENAI_API_KEY` | yes | Scoring (and enrichment when `enrich_provider: openai`) |
+| `ANTHROPIC_API_KEY` | only for `claude.backend: api` | Enrichment via the Anthropic API; the `agent-sdk` backend uses your Claude login instead |
 | `APIFY_TOKEN` | yes | Indeed and LinkedIn scrapes |
 
 Edit [`config/settings.yaml`](config/settings.yaml) for search terms, lookback, models, and how many jobs to fetch.
@@ -58,9 +60,10 @@ resume:
 
 - Local disk only. Relative paths are resolved from the project root.
 - `localData/` is gitignored. Copy your Overleaf source to e.g. `localData/RishabResume.tex`.
-- **`.tex`:** scoring uses stripped text; enrich returns a full one-page `.tex` per shortlisted job. `shortlisted.json` still includes `resume_edit_suggestions` as a changelog of those edits.
+- **`.tex`:** scoring uses stripped text; enrich returns per-section replacement bodies that are validated and spliced into your original source, producing a `.tex` per shortlisted job whose untouched parts are byte-identical to yours. `shortlisted.json` still includes `resume_edit_suggestions` as a changelog of those edits (including a note when an edit was rejected).
 - **`.pdf` (and other non-tex):** scoring and markdown resume suggestions; dump is JSON only (no `.tex` files).
 - V1 is a single main `.tex` file (no `\input` graph).
+- Tailoring keys off `\section{...}` / `\section*{...}` headings; a `.tex` without any falls back to text suggestions.
 
 ### Scrape
 
@@ -71,12 +74,12 @@ Jobs come from Apify (no local browser):
 
 | Setting | Indeed | LinkedIn |
 | --- | --- | --- |
-| Search text | `scrape.keywords` → actor `keyword` (Indeed operators like `title:(...)` are allowed) | `scrape.apify.linkedin_input.keywords` (plain keywords, not the Indeed `title:(...)` string) |
-| Location | `scrape.location` → actor `country` (`India` → `IN`) | `scrape.apify.linkedin_input.location` |
-| Recency | `scrape.posted_within`: `24h` / `3d` / `7d` → `fromDays` | `scrape.apify.linkedin_input.datePosted` (currently `past24Hours`) |
+| Search text | `scrape.keywords` → actor `keyword` (Indeed operators like `title:(...)` are allowed) | the URL-encoded `keywords=` query in `scrape.apify.linkedin_input.searchUrls` |
+| Location | `scrape.location` → actor `country` (`India` → `IN`) | the `geoId` in `searchUrls` (`102713980` = India) |
+| Recency | `scrape.posted_within`: `24h` / `3d` / `7d` → `fromDays` | derived from `scrape.posted_within`: `f_TPR` (`24h`→`r86400`, `3d`→`r259200`, `7d`→`r604800`) is injected into every `searchUrls` entry at run time |
 | Cap per source | `scrape.max_detail_jobs` → `maxItems` | `scrape.max_detail_jobs` → `maxResults` |
 
-Current defaults in `settings.yaml`: Indeed last **3 days**, LinkedIn last **24 hours**, **100** jobs per source.
+Current defaults in `settings.yaml`: last **3 days** on both sources, **150** jobs per source. A local `posted_at` filter also drops anything older than `posted_within` regardless of source. Both actors run concurrently.
 
 `scrape.sources` can be `indeed`, `linkedin`, or both.
 
@@ -84,13 +87,28 @@ If LinkedIn fails but Indeed returned jobs, the run continues unless `strict_sou
 
 ### Models
 
+Scoring always runs on OpenAI (one short call per scraped job). Enrichment — the tailored resume and interview prep — can run on OpenAI or Claude:
+
 ```yaml
+enrich_provider: claude          # openai | claude
+
+claude:
+  backend: agent-sdk             # agent-sdk | api
+  enrich_model: claude-opus-5    # claude-opus-5 | claude-fable-5 | claude-sonnet-5
+  effort: medium                 # low | medium | high | xhigh | max
+
 openai:
-  score_model: gpt-5.6-luna    # every scraped job
-  enrich_model: gpt-5.6-luna   # shortlisted jobs only
+  score_model: gpt-5.6-luna      # every scraped job
+  enrich_model: gpt-5.6-sol      # only when enrich_provider is openai
 ```
 
-Use `gpt-5.6-luna` for lower cost, or `gpt-5.6-sol` for stronger structured LaTeX.
+- **`claude` / `agent-sdk`** runs each enrichment as a one-turn, tool-less query through the Claude Code binary bundled with `claude-agent-sdk`, authenticated the way Claude Code is (your Claude login, or `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` for headless runs). No API key. Usage counts against your Claude plan's limits, and each call carries the Claude Code harness prompt (~20K tokens, cached after the first call), so it is slower per job (~45–90 s on Opus 5 at `medium`) than a bare API call. Note Anthropic's docs direct Agent SDK apps to API-key auth and do not permit offering claude.ai login to third parties; this is a personal tool, but read that note before relying on it.
+- **`claude` / `api`** uses the Anthropic Messages API with `ANTHROPIC_API_KEY` in `.env` (pay-as-you-go, Opus 5 at $5/$25 per 1M tokens).
+- **`openai`** uses `openai.enrich_model`: `gpt-5.6-luna` for lowest cost, `gpt-5.6-sol` for the best OpenAI LaTeX edits.
+
+`min_score`, not the model, is the main cost lever: every shortlisted job gets one enrichment call.
+
+`openai.score_concurrency` (default 8) and `openai.enrich_concurrency` (default 4) set how many LLM calls run in parallel per step; lower them if you hit rate limits.
 
 ## Run
 
@@ -139,6 +157,23 @@ Each run uses a timestamp folder, e.g. `outputs/20260823T140406/`:
 
 `outputs/run.json` / `outputs/shortlisted.json` are copies of the latest run.
 
+### Job history
+
+Apify returns many of the same postings run after run. A small SQLite database at `localData/job_history.db` (created automatically, gitignored, nothing to install — SQLite ships inside Python) remembers every job you applied to — via **Mark applied** on a row, or automatically when an assisted-apply session finishes — and drops those jobs **right after scrape** on later runs, before they cost a scoring or enrichment call. **Skip** is recorded too but does not block by default (`history.skip_skipped`).
+
+Matching is by job id first, then by normalized company+title (`history.match_similar`) for the ~5% of postings whose id changes between scrapes; every company+title match is named in the run log, since it could hide a genuinely new opening with the same title. **Unmark** on a row reverses a mistake; deleting `localData/job_history.db` resets everything. Inspect it any time with `python -m sqlite3 localData/job_history.db "SELECT company, title, status, contact, marked_at FROM job_history"`.
+
+To test or experiment without touching your real history, set `JOB_HISTORY_DB` to another path before starting the server or a script — every read and write goes to that file instead: `$env:JOB_HISTORY_DB='localData/scratch_history.db'; python -m src.web`.
+
+#### Referrals
+
+Some jobs are better chased through a referral than a cold application. **Referral** on a shortlist row asks who you are approaching, records the job as `referral_pending`, and moves it to the **Referrals** tab (top of the page, with a live count) showing contact, asked-date and state. From there:
+
+- **Referral sent** — your application went in via the referral (`referral_sent`, shown blue).
+- **Referral failed** / **Clear** — deletes the history row: the job hops back into the shortlist immediately and becomes eligible for future scrapes again.
+
+Both referral states keep the job out of later runs (`history.skip_referral`), exactly like applied jobs — no wasted scoring or enrichment calls while you wait on a contact. The Referrals table shows the run you're viewing; a referral marked in an older run lives in that run (pick it in the Run dropdown to update it).
+
 PDF runs stop at JSON in that folder. TeX runs add a `.tex` (and, with LaTeX installed, a `.pdf`) per shortlisted job. Live dumps stay under `outputs/` and are gitignored.
 
 A sample from an older JSON run is in [`examples/sample_shortlisted.json`](examples/sample_shortlisted.json).
@@ -165,6 +200,8 @@ Click **Start apply** on a row. This is deliberately supervised, one job at a ti
 
 Before the first run, fill in [`localData/apply_profile.json`](localData/) (created automatically, gitignored) with your name, email, phone, notice period, CTC expectations, and work authorization. Answers you give in chat can be added to its `learned` map and reused next time.
 
+The form-filling model is `apply_provider` in `settings.yaml` (`claude` → `claude.apply_model`, default `claude-opus-5` at `apply_effort: low`; `openai` → `openai.apply_model`). Each step is one structured decision, so a low effort setting keeps the chat responsive.
+
 What happens:
 
 1. A visible Chrome opens on the apply URL, using the persistent profile at `localData/chrome-profile`. Log into the job site once yourself; the session is remembered.
@@ -172,7 +209,7 @@ What happens:
 3. It stops and asks in the chat pane for anything else: unknown questions, OTPs, captchas, consent and legal checkboxes. Answer, or handle it in the browser yourself and type `done`. Type `skip` to leave a field alone, `abort` to stop.
 4. It never submits on its own. When the form is ready it asks, and only clicks Submit after you reply `apply`.
 
-OTPs and other secrets are held in memory for the session and never written to disk. The agent will not invent visa status, salary, or legal answers. There is no captcha solving and no unattended mass-apply.
+OTPs and other secrets are held in memory for the session and never written to disk. The agent will not invent visa status, salary, or legal answers: anything that reads like a legal or eligibility declaration (consent, terms, work authorisation, citizenship, background checks, demographics) is always asked, and a yes/no you type is parsed on whole words with negatives winning — "I don't agree" leaves the box unticked. Low-confidence button clicks are asked as a yes/no and only clicked when you approve. There is no captcha solving and no unattended mass-apply.
 
 ## Daily schedule
 

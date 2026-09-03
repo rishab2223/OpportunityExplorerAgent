@@ -19,11 +19,6 @@ _active_stamp: str = ""
 _last: dict[str, Any] = {}
 
 
-def active_stamp() -> str:
-    with _LOCK:
-        return _active_stamp
-
-
 def status() -> dict[str, Any]:
     with _LOCK:
         return {"active": bool(_active_stamp), "stamp": _active_stamp, "last": dict(_last)}

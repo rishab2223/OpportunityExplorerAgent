@@ -82,82 +82,203 @@ function pathCell(job) {
   return cell;
 }
 
+function cellButton(cell, label, title, onClick) {
+  const btn = document.createElement("button");
+  btn.textContent = label;
+  if (title) btn.title = title;
+  btn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    onClick();
+  });
+  cell.appendChild(btn);
+  return btn;
+}
+
 function actionsCell(job) {
   const cell = document.createElement("td");
-  const apply = document.createElement("button");
-  apply.textContent = "Start apply";
-  apply.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    startApply(job.job_id);
-  });
-  const skip = document.createElement("button");
-  skip.textContent = "Skip";
-  skip.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    decide(job.job_id, "no");
-  });
-  cell.appendChild(apply);
-  cell.appendChild(skip);
+  const alreadyApplied = job.history_status === "applied";
+  const apply = cellButton(cell, "Start apply", "", () => startApply(job.job_id));
+  apply.disabled = alreadyApplied;
+  if (alreadyApplied) apply.title = "Already applied (see history); Unmark to re-enable";
+  cellButton(cell, "Skip", "", () => decide(job.job_id, "no"));
+  cellButton(
+    cell,
+    alreadyApplied ? "Unmark" : "Mark applied",
+    alreadyApplied
+      ? "Remove from the applied history so future runs process this job again"
+      : "Record as applied across runs; future scrapes will drop this job",
+    () => setHistory(job.job_id, alreadyApplied ? "" : "applied")
+  );
+  if (!alreadyApplied) {
+    cellButton(
+      cell,
+      "Referral",
+      "Chase a referral instead of applying; moves this job to the Referrals table",
+      () => {
+        const who = window.prompt(`Who are you asking for a referral at ${job.company}?`, "");
+        if (who === null) return; // cancelled - record nothing
+        setHistory(job.job_id, "referral_pending", who.trim());
+      }
+    );
+  }
   return cell;
 }
 
+function referralActionsCell(job) {
+  const cell = document.createElement("td");
+  if (job.history_status === "referral_pending") {
+    cellButton(cell, "Referral sent", "Your application went in via this referral", () =>
+      setHistory(job.job_id, "referral_sent", job.history_contact || "")
+    );
+    cellButton(
+      cell,
+      "Referral failed",
+      "Clear the referral; the job returns to the shortlist and to future runs",
+      () => setHistory(job.job_id, "")
+    );
+  } else {
+    cellButton(
+      cell,
+      "Clear",
+      "Forget this referral; the job returns to the shortlist and to future runs",
+      () => setHistory(job.job_id, "")
+    );
+  }
+  return cell;
+}
+
+async function setHistory(jobId, status, contact) {
+  try {
+    await postJSON(`/api/runs/${currentStamp}/jobs/${encodeURIComponent(jobId)}/history`, {
+      status,
+      contact: contact || "",
+    });
+    await loadJobs(currentStamp);
+  } catch (err) {
+    alert(`Could not update history: ${err.message}`);
+  }
+}
+
+const REFERRAL_STATES = ["referral_pending", "referral_sent"];
+
+function emptyRow(body, colSpan, text) {
+  const row = document.createElement("tr");
+  const cell = document.createElement("td");
+  cell.colSpan = colSpan;
+  cell.className = "muted";
+  cell.textContent = text;
+  row.appendChild(cell);
+  body.appendChild(row);
+}
+
+function rowCellAdder(row) {
+  return (content, className) => {
+    const cell = document.createElement("td");
+    if (className) cell.className = className;
+    if (content instanceof Node) cell.appendChild(content);
+    else cell.textContent = content == null ? "" : String(content);
+    row.appendChild(cell);
+    return cell;
+  };
+}
+
+function linksCell(job) {
+  const links = document.createElement("td");
+  const applyLink = link(job.apply_url, "apply");
+  const listingLink = link(job.listing_url, "listing");
+  if (applyLink) links.appendChild(applyLink);
+  if (applyLink && listingLink) links.appendChild(document.createTextNode(" / "));
+  if (listingLink) links.appendChild(listingLink);
+  links.addEventListener("click", (ev) => ev.stopPropagation());
+  return links;
+}
+
 function renderJobs(jobs) {
+  jobsById = {};
+  jobs.forEach((job) => (jobsById[job.job_id] = job));
+  renderShortlist(jobs.filter((j) => !REFERRAL_STATES.includes(j.history_status)));
+  renderReferrals(jobs.filter((j) => REFERRAL_STATES.includes(j.history_status)));
+  if (currentJobId && jobsById[currentJobId]) selectJob(currentJobId);
+}
+
+function renderShortlist(jobs) {
   const body = document.querySelector("#jobs tbody");
   body.replaceChildren();
-  jobsById = {};
   if (!jobs.length) {
-    const row = document.createElement("tr");
-    const cell = document.createElement("td");
-    cell.colSpan = 8;
-    cell.className = "muted";
-    cell.textContent = "No shortlisted jobs in this run.";
-    row.appendChild(cell);
-    body.appendChild(row);
+    emptyRow(body, 8, "No shortlisted jobs left in this run.");
     return;
   }
   jobs.forEach((job) => {
-    jobsById[job.job_id] = job;
     const row = document.createElement("tr");
     row.dataset.jobId = job.job_id;
-
-    const add = (content, className) => {
-      const cell = document.createElement("td");
-      if (className) cell.className = className;
-      if (content instanceof Node) cell.appendChild(content);
-      else cell.textContent = content == null ? "" : String(content);
-      row.appendChild(cell);
-      return cell;
-    };
+    const add = rowCellAdder(row);
 
     add(job.company);
     add(job.title);
     add(job.relevance, scoreClass(job.relevance));
     add(job.location);
-
-    const links = document.createElement("td");
-    const applyLink = link(job.apply_url, "apply");
-    const listingLink = link(job.listing_url, "listing");
-    if (applyLink) links.appendChild(applyLink);
-    if (applyLink && listingLink) links.appendChild(document.createTextNode(" / "));
-    if (listingLink) links.appendChild(listingLink);
-    links.addEventListener("click", (ev) => ev.stopPropagation());
-    row.appendChild(links);
-
+    row.appendChild(linksCell(job));
     row.appendChild(pathCell(job));
-    add(job.status || "pending", "status-" + (job.status || "pending"));
+    const shownStatus =
+      job.history_status === "applied" ? "applied ✓" : job.status || "pending";
+    const statusCell = add(
+      shownStatus,
+      "status-" + (job.history_status === "applied" ? "applied" : job.status || "pending")
+    );
+    if (job.history_how === "similar") {
+      statusCell.title = "Matched by company+title from your applied history";
+    }
     row.appendChild(actionsCell(job));
 
     row.addEventListener("click", () => selectJob(job.job_id));
     body.appendChild(row);
   });
-  if (currentJobId && jobsById[currentJobId]) selectJob(currentJobId);
+}
+
+function renderReferrals(jobs) {
+  const body = document.querySelector("#referrals tbody");
+  body.replaceChildren();
+  const pending = jobs.filter((j) => j.history_status === "referral_pending").length;
+  $("referralinfo").textContent = jobs.length
+    ? `Run ${currentStamp}: ${pending} pending, ${jobs.length - pending} sent`
+    : "";
+  $("nav-referrals").textContent = jobs.length ? `Referrals (${jobs.length})` : "Referrals";
+  if (!jobs.length) {
+    emptyRow(body, 7, "No referrals yet - use Referral on a shortlist row.");
+    return;
+  }
+  jobs.forEach((job) => {
+    const row = document.createElement("tr");
+    row.dataset.jobId = job.job_id;
+    const add = rowCellAdder(row);
+
+    add(job.company);
+    add(job.title);
+    add(job.history_contact || "-");
+    const asked = add(
+      job.history_marked_at ? new Date(job.history_marked_at).toLocaleDateString() : "-"
+    );
+    if (job.history_marked_at) asked.title = job.history_marked_at;
+    const state = add(
+      job.history_status === "referral_sent" ? "sent ✓" : "pending",
+      "status-" + job.history_status
+    );
+    if (job.history_how === "similar") {
+      state.title = "Matched by company+title from your history";
+    }
+    row.appendChild(linksCell(job));
+    row.appendChild(referralActionsCell(job));
+
+    row.addEventListener("click", () => selectJob(job.job_id));
+    body.appendChild(row);
+  });
 }
 
 function selectJob(jobId) {
   const job = jobsById[jobId];
   if (!job) return;
   currentJobId = jobId;
-  document.querySelectorAll("#jobs tbody tr").forEach((row) => {
+  document.querySelectorAll("#jobs tbody tr, #referrals tbody tr").forEach((row) => {
     row.classList.toggle("selected", row.dataset.jobId === jobId);
   });
 
@@ -397,6 +518,18 @@ async function resumeActiveApply() {
     streamApply(state.session_id);
   }
 }
+
+function showView(name) {
+  $("view-jobs").hidden = name !== "jobs";
+  $("view-referrals").hidden = name !== "referrals";
+  document.querySelectorAll("#nav button").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.view === name);
+  });
+}
+
+document.querySelectorAll("#nav button").forEach((btn) => {
+  btn.addEventListener("click", () => showView(btn.dataset.view));
+});
 
 $("start").addEventListener("click", startRun);
 $("stamp").addEventListener("change", (ev) => loadJobs(ev.target.value));

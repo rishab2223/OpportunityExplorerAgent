@@ -36,10 +36,38 @@ SNAPSHOT_JS = """
     if (!label) {
       label = el.getAttribute('placeholder') || el.getAttribute('name') || el.innerText || '';
     }
+    // Stable identity across snapshots: ids are renumbered as the DOM changes,
+    // so key unlabelled controls on a short ancestor path instead.
+    let path = '';
+    let node = el;
+    for (let depth = 0; node && node.nodeType === 1 && depth < 6; depth++) {
+      const tag = node.tagName.toLowerCase();
+      let idx = 1;
+      let sib = node;
+      while ((sib = sib.previousElementSibling)) { if (sib.tagName === node.tagName) idx++; }
+      path = tag + (node.id ? '#' + node.id : ':' + idx) + (path ? '>' + path : '');
+      if (node.id) break;
+      node = node.parentElement;
+    }
+    // Radios and checkboxes are often labelled just "Yes"/"No"; the question
+    // lives in a legend or the surrounding block, so carry that along.
+    let group = '';
+    if (type === 'radio' || type === 'checkbox') {
+      const fs = el.closest('fieldset');
+      const legend = fs ? fs.querySelector('legend') : null;
+      if (legend) group = legend.innerText;
+      if (!group) {
+        const block = el.closest('fieldset, div, li, p, tr, section');
+        if (block) group = (block.innerText || '').split(String.fromCharCode(10))[0];
+      }
+    }
     const item = {
       id: i,
       tag: el.tagName.toLowerCase(),
       type: type,
+      role: el.getAttribute('role') || '',
+      path: path,
+      group: (group || '').trim().slice(0, 160),
       label: (label || '').trim().slice(0, 200),
       name: el.getAttribute('name') || '',
       required: el.required === true || el.getAttribute('aria-required') === 'true',
@@ -61,7 +89,7 @@ class BrowserUnavailable(Exception):
     pass
 
 
-def launch(url: str):
+def launch(url: str, headless: bool = False):
     """Open a visible Chrome on `url` using a persistent profile the user owns."""
     try:
         from playwright.sync_api import sync_playwright
@@ -78,7 +106,7 @@ def launch(url: str):
         try:
             context = pw.chromium.launch_persistent_context(
                 user_data_dir=str(CHROME_PROFILE_DIR),
-                headless=False,
+                headless=headless,
                 channel=channel,
                 accept_downloads=True,
                 args=["--start-maximized"],
@@ -119,12 +147,22 @@ def close(pw, context) -> None:
         pass
 
 
+_last_snapshot_error = ""
+
+
 def snapshot(page) -> list[dict[str, Any]]:
+    global _last_snapshot_error
     try:
         fields = page.evaluate(SNAPSHOT_JS)
-    except Exception:
+        _last_snapshot_error = ""
+    except Exception as exc:
+        _last_snapshot_error = str(exc).splitlines()[0][:300]
         return []
     return fields[:MAX_FIELDS]
+
+
+def last_snapshot_error() -> str:
+    return _last_snapshot_error
 
 
 def page_text(page, limit: int = 2500) -> str:

@@ -9,7 +9,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from src import progress
+from src import history, progress
 from src.config import load_env, load_yaml_config
 from src.errors import StepError
 from src.pdf_compile import ensure_pdf
@@ -104,13 +104,40 @@ def api_decision(stamp: str, job_id: str, payload: dict = Body(...)) -> dict:
     decision = str(payload.get("decision") or "").lower()
     if decision not in runs.VALID_DECISIONS:
         raise HTTPException(status_code=400, detail="decision must be 'yes' or 'no'")
-    _job_or_404(stamp, job_id)
+    job = _job_or_404(stamp, job_id)
     status = "skipped" if decision == "no" else "pending"
+    if decision == "no":
+        # Recorded for reference; skipped jobs still return next run unless
+        # history.skip_skipped is turned on.
+        history.record(job, "skipped", stamp=stamp)
     return runs.save_decision(stamp, job_id, decision=decision, status=status)
+
+
+@app.post("/api/runs/{stamp}/jobs/{job_id}/history")
+def api_history(stamp: str, job_id: str, payload: dict = Body(...)) -> dict:
+    """Mark a job applied/skipped/referral across runs, or clear it with an empty status."""
+    status = str(payload.get("status") or "")
+    contact = str(payload.get("contact") or "").strip()
+    job = _job_or_404(stamp, job_id)
+    if not status:
+        removed = history.forget(job_id)
+        return {"job_id": job_id, "history_status": "", "removed": removed}
+    if status not in history.VALID_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"status must be one of {history.VALID_STATUSES} or empty to clear",
+        )
+    entry = history.record(job, status, stamp=stamp, note="manual", contact=contact)
+    return {
+        "job_id": job_id,
+        "history_status": entry["status"],
+        "history_contact": entry["contact"],
+    }
 
 
 @app.post("/api/apply/start")
 def api_apply_start(payload: dict = Body(...)) -> dict:
+    from src.apply import profile as apply_profile
     from src.apply import session as apply_session
     from src.apply import worker as apply_worker
 
@@ -122,6 +149,8 @@ def api_apply_start(payload: dict = Body(...)) -> dict:
 
     cfg = load_yaml_config()
     env = load_env()
+    # First apply ever: create the profile template so the user has a file to fill.
+    apply_profile.ensure_profile_file()
     pdf_path = _tailored_pdf(stamp, job)
     try:
         resume_text, _, _, _ = load_resume(cfg)
@@ -130,15 +159,19 @@ def api_apply_start(payload: dict = Body(...)) -> dict:
 
     def on_finish(status: str) -> None:
         runs.save_decision(stamp, job_id, status=status)
+        if status == "applied":
+            history.record(job, "applied", stamp=stamp, note="assisted")
 
+    # Mark running before the worker starts: a session that fails within
+    # milliseconds would otherwise have its final status overwritten here.
+    runs.save_decision(stamp, job_id, decision="yes", status="running")
     try:
         sess = apply_worker.start_apply(
             stamp, job, resume_text, pdf_path, cfg, env, on_finish=on_finish
         )
     except apply_session.SessionBusy as exc:
+        runs.save_decision(stamp, job_id, status="pending")
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    runs.save_decision(stamp, job_id, decision="yes", status="running")
     return sess.snapshot()
 
 

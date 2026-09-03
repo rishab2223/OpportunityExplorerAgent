@@ -38,10 +38,35 @@ class ScoredJob(JobPosting, JobScore):
 class MatchEnrichment(BaseModel):
     resume_edit_suggestions: str = ""
     interview_prep: str = ""
-    resume_latex: str = ""
+
+
+class SectionEdit(BaseModel):
+    heading: str = Field(
+        "",
+        description="Section heading, copied exactly from the SECTIONS list",
+    )
+    latex_body: str = Field(
+        "",
+        description=(
+            "Raw LaTeX replacing everything between this \\section line and the "
+            "next one. No markdown fences; no \\section, \\documentclass, or "
+            "\\usepackage commands."
+        ),
+    )
+
+
+class TexEnrichment(MatchEnrichment):
+    section_edits: list[SectionEdit] = Field(
+        default_factory=list,
+        description=(
+            "Replacement bodies for only the sections being tailored; a section "
+            "not listed here stays unchanged"
+        ),
+    )
 
 
 class MatchRecord(ScoredJob, MatchEnrichment):
+    resume_latex: str = ""
     resume_source: str = ""
     resume_source_detail: str = ""
     resume_tex_file: str = ""
