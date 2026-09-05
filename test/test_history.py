@@ -200,6 +200,25 @@ class DropSeenTests(HistoryTestCase):
             [j.job_id for j in kept], ["indeed:new999", "indeed:skip1", "indeed:fresh"]
         )
 
+    def test_drop_seen_blocks_closed(self) -> None:
+        from src.agent.nodes.scrape import _drop_seen
+        from src.config import AppConfig
+        from src.models import JobPosting
+
+        cfg = AppConfig()
+        closed = JobPosting(source="linkedin", job_id="linkedin:dead1",
+                            company="Servify", title="Software Engineer")
+        fresh = JobPosting(source="linkedin", job_id="linkedin:fresh",
+                           company="Gamma", title="Platform Engineer")
+        history.record(closed.model_dump(), "closed", note="detected")
+
+        kept = _drop_seen([closed, fresh], cfg)
+        self.assertEqual([j.job_id for j in kept], ["linkedin:fresh"])
+
+        cfg.history.skip_closed = False
+        kept = _drop_seen([closed, fresh], cfg)
+        self.assertEqual([j.job_id for j in kept], ["linkedin:dead1", "linkedin:fresh"])
+
     def test_drop_seen_blocks_referrals(self) -> None:
         from src.agent.nodes.scrape import _drop_seen
         from src.config import AppConfig

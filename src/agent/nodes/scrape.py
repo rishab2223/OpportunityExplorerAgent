@@ -24,6 +24,8 @@ def _drop_seen(jobs: list[JobPosting], cfg: AppConfig) -> list[JobPosting]:
         skip_statuses.add("skipped")
     if cfg.history.skip_referral:
         skip_statuses.update(history.REFERRAL_STATUSES)
+    if cfg.history.skip_closed:
+        skip_statuses.add("closed")
     if not skip_statuses:
         return jobs
     by_id, by_fingerprint = history.snapshot(skip_statuses)

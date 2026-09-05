@@ -18,46 +18,25 @@ the module is safe from any thread. Inspect it any time with
 
 from __future__ import annotations
 
-import os
 import re
-import sqlite3
-import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from src.config import ROOT
+from src import db
 
-# JOB_HISTORY_DB redirects the whole module to another file. Set it when
-# testing against a live server so record/forget can never touch your real
-# applied/referral history:  JOB_HISTORY_DB=localData/scratch_history.db
-_ENV_DB = os.environ.get("JOB_HISTORY_DB", "").strip()
-DB_PATH = Path(_ENV_DB) if _ENV_DB else ROOT / "localData" / "job_history.db"
+# The actual connection, schema and JOB_HISTORY_DB override live in src/db.py
+# (shared with the answer bank). db.connect() reads this attribute, so tests
+# can keep retargeting history.DB_PATH at a temp file.
+DB_PATH = db.DB_PATH
 # referral_pending: asking someone for a referral; referral_sent: application
 # went in through that referral. A failed referral is deleted (forget), which
 # is what puts the job back into the shortlist and future scrapes.
 REFERRAL_STATUSES = ("referral_pending", "referral_sent")
-VALID_STATUSES = ("applied", "skipped") + REFERRAL_STATUSES
+# closed: the posting stopped accepting applications - detected during an
+# apply session or marked by hand; dropped from future scrapes like applied.
+VALID_STATUSES = ("applied", "skipped", "closed") + REFERRAL_STATUSES
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS job_history (
-  job_id      TEXT PRIMARY KEY,
-  status      TEXT NOT NULL,
-  company     TEXT,
-  title       TEXT,
-  location    TEXT,
-  source      TEXT,
-  apply_url   TEXT,
-  fingerprint TEXT,
-  stamp       TEXT,
-  note        TEXT,
-  contact     TEXT,
-  marked_at   TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_history_fingerprint ON job_history(fingerprint);
-"""
 
 
 def fingerprint(company: str, title: str) -> str:
@@ -94,7 +73,7 @@ def record(
         "contact": contact,
         "marked_at": datetime.now(timezone.utc).isoformat(),
     }
-    conn = _connect()
+    conn = db.connect()
     try:
         with conn:
             conn.execute(
@@ -112,7 +91,7 @@ def record(
 
 def forget(job_id: str) -> bool:
     """Drop one job from the history (Unmark). Returns True if it was there."""
-    conn = _connect()
+    conn = db.connect()
     try:
         with conn:
             cursor = conn.execute("DELETE FROM job_history WHERE job_id = ?", (job_id,))
@@ -138,7 +117,7 @@ def snapshot(
             return {}, {}
         sql += " WHERE status IN (%s)" % ",".join("?" for _ in statuses)
         params = tuple(sorted(statuses))
-    conn = _connect()
+    conn = db.connect()
     try:
         rows = conn.execute(sql, params).fetchall()
     finally:
@@ -158,32 +137,3 @@ def snapshot(
     by_id = {job_id: entry for job_id, _, entry in entries}
     by_fingerprint = {fp: entry for _, fp, entry in entries if fp}
     return by_id, by_fingerprint
-
-
-_INIT_LOCK = threading.Lock()
-_initialized: set[str] = set()
-
-
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    try:
-        conn.row_factory = sqlite3.Row
-        key = str(DB_PATH)
-        if key not in _initialized:
-            # Serialize first-time setup: two threads racing to create the
-            # schema on a fresh file would collide on the schema transaction.
-            with _INIT_LOCK:
-                if key not in _initialized:
-                    conn.execute("PRAGMA journal_mode=WAL")
-                    conn.executescript(_SCHEMA)
-                    # Databases created before the referral feature lack the
-                    # contact column; upgrade them in place.
-                    cols = {row[1] for row in conn.execute("PRAGMA table_info(job_history)")}
-                    if "contact" not in cols:
-                        conn.execute("ALTER TABLE job_history ADD COLUMN contact TEXT")
-                    _initialized.add(key)
-        return conn
-    except BaseException:
-        conn.close()
-        raise
