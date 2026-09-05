@@ -73,5 +73,6 @@ class MatchRecord(ScoredJob, MatchEnrichment):
     resume_pdf_file: str = ""
     resume_pdf_path: str = ""
     resume_pdf_error: str = ""
+    resume_pages: int = 0
     latex_skip_reason: str = ""
     written_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

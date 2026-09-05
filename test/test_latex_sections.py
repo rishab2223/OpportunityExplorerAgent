@@ -68,7 +68,8 @@ class TailorLatexTests(unittest.TestCase):
         self.assertEqual(result.latex, "")
 
     def test_replaces_only_named_section(self) -> None:
-        body = r"\noindent Tailored summary text for this job posting role."
+        # Same length as the original body: tailoring rephrases, it never grows.
+        body = r"\noindent Tailored summary text."
         result = tailor_latex(SOURCE, [("Professional Summary", body)])
         self.assertEqual(result.applied, 1)
         self.assertEqual(result.problems, [])
@@ -90,7 +91,7 @@ class TailorLatexTests(unittest.TestCase):
         self.assertIn("unknown section heading: 'Certifications'", result.problems[0])
 
     def test_bad_edit_keeps_that_section_original(self) -> None:
-        good = r"\noindent A rewritten summary of comparable length to before."
+        good = r"\noindent Rewritten summary text."
         bad = r"\begin{itemize} \item unclosed"
         result = tailor_latex(
             SOURCE, [("Professional Summary", good), ("Skills", bad)]
@@ -98,6 +99,23 @@ class TailorLatexTests(unittest.TestCase):
         self.assertEqual(result.applied, 1)
         self.assertEqual(len(result.problems), 1)
         self.assertIn(r"\textbf{Languages:} Python", result.latex)
+
+    def test_useful_growth_is_accepted(self) -> None:
+        """Additions are allowed (the one-page trim reclaims the space); only
+        runaway growth past the cap is rejected."""
+        body = r"\noindent Original summary text plus one genuinely useful phrase."
+        result = tailor_latex(SOURCE, [("Professional Summary", body)])
+        self.assertEqual(result.applied, 1)
+
+    def test_growth_beyond_cap_is_rejected(self) -> None:
+        body = (
+            r"\noindent Original summary text plus far too much additional prose "
+            "that keeps going and going, well past what dropping the certifications "
+            "could ever reclaim on the rendered page."
+        )
+        result = tailor_latex(SOURCE, [("Professional Summary", body)])
+        self.assertEqual(result.applied, 0)
+        self.assertIn("length became", result.problems[-1])
 
     def test_length_blowup_is_rejected(self) -> None:
         result = tailor_latex(

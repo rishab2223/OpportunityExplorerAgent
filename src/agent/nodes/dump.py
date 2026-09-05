@@ -11,7 +11,7 @@ from src.agent.state import AgentState
 from src.config import ROOT, AppConfig
 from src.errors import STEP_LABELS
 from src.models import MatchRecord
-from src.pdf_compile import compile_tex
+from src.resume.one_page import fit_to_one_page
 
 OUTPUT_DIR = ROOT / "outputs"
 
@@ -33,19 +33,31 @@ def _compile_pdfs(tex_jobs: list[tuple[MatchRecord, Path]]) -> int:
     """Best effort: a PDF failure is recorded on the record and never fails the run."""
     total = len(tex_jobs)
     compiled = 0
+    trimmed = 0
     progress.log(f"[pdf] Compiling {total} resume(s)…")
     for i, (rec, tex_path) in enumerate(tex_jobs, start=1):
         label = f"{rec.company}  {rec.title}".strip() or rec.job_id
         progress.log(f"[pdf] {i}/{total}  {label}")
-        pdf_path, error = compile_tex(tex_path)
-        if pdf_path is not None:
+        # Compiles, measures, and trims the least valuable content only if the
+        # PDF runs past one page.
+        result = fit_to_one_page(tex_path)
+        if result.cuts:
+            trimmed += 1
+            progress.log(f"[pdf] {i}/{total}  dropped {', '.join(result.cuts)} to fit one page")
+        if result.note:
+            progress.log(f"[pdf] {i}/{total}  {result.note}")
+        pdf_path = tex_path.with_suffix(".pdf")
+        if pdf_path.exists():
             rec.resume_pdf_file = pdf_path.name
             rec.resume_pdf_path = str(pdf_path)
+            rec.resume_pages = result.pages
             compiled += 1
+            if result.pages > 1:
+                rec.resume_pdf_error = result.note or f"{result.pages} pages"
         else:
-            rec.resume_pdf_error = error
-            progress.log(f"[pdf] {i}/{total}  failed: {error}")
-    progress.log(f"[pdf] Compiled {compiled} of {total}")
+            rec.resume_pdf_error = result.note or "compile produced no PDF"
+            progress.log(f"[pdf] {i}/{total}  failed: {rec.resume_pdf_error}")
+    progress.log(f"[pdf] Compiled {compiled} of {total}" + (f", trimmed {trimmed}" if trimmed else ""))
     return compiled
 
 

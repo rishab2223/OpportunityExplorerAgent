@@ -33,8 +33,12 @@ FORBIDDEN_COMMANDS = (
 
 # A tailored document should stay close to the original's length: sections are
 # preserved by construction, so a large delta means bloated or gutted bodies.
+# The upper bound allows genuinely useful additions (~15%, roughly what
+# dropping the certifications reclaims - the one_page trim order); runaway
+# rewrites beyond that would stay two pages even after trimming (measured:
+# 102 of 150 tailored resumes overflowed at the old 1.30 cap).
 MIN_LENGTH_RATIO = 0.85
-MAX_LENGTH_RATIO = 1.30
+MAX_LENGTH_RATIO = 1.15
 
 
 @dataclass
@@ -166,6 +170,28 @@ def tailor_latex(
         )
         return EditResult(problems=problems)
     return EditResult(latex=latex, applied=len(accepted), problems=problems)
+
+
+def validate_document(source: str) -> list[str]:
+    """Structural checks on a WHOLE hand-edited document (the apply modal's
+    edit-source path), before it is compiled: complete skeleton, balanced
+    braces and environments. Returns the problems, empty when sound."""
+    text = (source or "").strip()
+    if not text:
+        return ["the document is empty"]
+    problems: list[str] = []
+    for required in (r"\documentclass", r"\begin{document}", r"\end{document}"):
+        if required not in text:
+            problems.append(f"missing {required}")
+    code = _COMMENT.sub("", text)
+    if _brace_delta(code) != 0:
+        problems.append("unbalanced braces")
+    begins = Counter(m.group(2) for m in _ENV.finditer(code) if m.group(1) == "begin")
+    ends = Counter(m.group(2) for m in _ENV.finditer(code) if m.group(1) == "end")
+    mismatched = sorted(name for name in set(begins) | set(ends) if begins[name] != ends[name])
+    if mismatched:
+        problems.append("unbalanced \\begin/\\end for: " + ", ".join(mismatched))
+    return problems
 
 
 def _brace_delta(text: str) -> int:

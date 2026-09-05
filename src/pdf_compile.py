@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,10 +22,51 @@ MISSING_TOOLCHAIN = (
 )
 
 
+_toolchain_cache: str | None = None
+
+
+def _candidates(name: str) -> list[str]:
+    """The tool on PATH, then the standard install locations PATH often misses
+    (a server started from a pre-install terminal never sees MiKTeX's PATH
+    entry - this made every compile fail with 'no LaTeX toolchain found')."""
+    found = [path for path in (shutil.which(name),) if path]
+    local = os.environ.get("LOCALAPPDATA", "")
+    roots = [
+        Path(local) / "Programs" / "MiKTeX" / "miktex" / "bin" / "x64",
+        Path(r"C:\Program Files\MiKTeX\miktex\bin\x64"),
+    ]
+    texlive = Path(r"C:\texlive")
+    if texlive.is_dir():
+        roots += sorted(texlive.glob("2*/bin/win*"), reverse=True)
+    for root in roots:
+        exe = root / f"{name}.exe"
+        if exe.is_file():
+            found.append(str(exe))
+    return found
+
+
 def toolchain() -> str:
+    """The first LaTeX tool that is present AND actually runs (full path when
+    it is not on PATH).
+
+    MiKTeX installs a latexmk stub that dies without Perl, so being on PATH is
+    not enough - probe once per process and fall back to pdflatex.
+    """
+    global _toolchain_cache
+    if _toolchain_cache is not None:
+        return _toolchain_cache
     for name in ("latexmk", "pdflatex"):
-        if shutil.which(name):
-            return name
+        for candidate in _candidates(name):
+            try:
+                proc = subprocess.run(
+                    [candidate, "-version"], capture_output=True, text=True, timeout=30
+                )
+            except Exception:
+                continue
+            if proc.returncode == 0:
+                _toolchain_cache = candidate
+                return candidate
+    _toolchain_cache = ""
     return ""
 
 
@@ -39,7 +81,9 @@ def is_stale(tex_path: Path, pdf_path: Path) -> bool:
 
 def compile_tex(tex_path: Path, timeout: int = TIMEOUT_SECONDS) -> tuple[Path | None, str]:
     """Compile a .tex to a sibling .pdf. Returns (pdf_path, error_message)."""
-    tex_path = Path(tex_path)
+    # Absolute, or -output-directory resolves against the compile cwd and the
+    # PDF lands in <dir>/<dir>/ (or nowhere) for relative inputs.
+    tex_path = Path(tex_path).resolve()
     if not tex_path.exists():
         return None, f"missing .tex file: {tex_path}"
     tool = toolchain()
@@ -47,10 +91,10 @@ def compile_tex(tex_path: Path, timeout: int = TIMEOUT_SECONDS) -> tuple[Path | 
         return None, MISSING_TOOLCHAIN
 
     out_dir = tex_path.parent
-    if tool == "latexmk":
+    if Path(tool).stem.lower() == "latexmk":
         commands = [
             [
-                "latexmk",
+                tool,
                 "-pdf",
                 "-interaction=nonstopmode",
                 "-halt-on-error",
@@ -62,7 +106,7 @@ def compile_tex(tex_path: Path, timeout: int = TIMEOUT_SECONDS) -> tuple[Path | 
         # pdflatex needs two passes for references to settle.
         commands = [
             [
-                "pdflatex",
+                tool,
                 "-interaction=nonstopmode",
                 "-halt-on-error",
                 f"-output-directory={out_dir}",
