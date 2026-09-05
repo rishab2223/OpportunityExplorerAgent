@@ -5,7 +5,7 @@ import uuid
 from queue import Empty, Queue
 from typing import Any
 
-TERMINAL_STATUSES = ("applied", "failed", "aborted")
+TERMINAL_STATUSES = ("applied", "failed", "aborted", "closed")
 
 
 class SessionBusy(Exception):
@@ -31,9 +31,15 @@ class ApplySession:
         self._answers: Queue = Queue()
         self._lock = threading.Lock()
         self._abort = threading.Event()
+        # Runs with the final status BEFORE the done event is emitted, so the
+        # UI's reload on "done" already sees the recorded outcome (history row,
+        # per-run status). Consumed once.
+        self.on_outcome = None
 
-    def emit(self, kind: str, text: str) -> None:
-        event = {"type": kind, "text": text, "status": self.status}
+    def emit(self, event_type: str, text: str, **extra: Any) -> None:
+        # extra may itself carry a "kind" key (choice events), so the event
+        # type parameter must not share that name.
+        event = {"type": event_type, "text": text, "status": self.status, **extra}
         with self._lock:
             self._events.append(event)
             targets = list(self._subscribers)
@@ -43,13 +49,24 @@ class ApplySession:
     def log(self, text: str) -> None:
         self.emit("step", text)
 
-    def ask(self, question: str) -> str:
-        """Pause the worker until the user answers in the chat pane."""
+    def ask(self, question: str, suggestion: str = "") -> str:
+        """Pause the worker until the user answers in the chat pane. A
+        suggestion is pre-filled into the chat input for editing."""
+        extra = {"suggestion": suggestion} if suggestion else {}
+        return self._wait(question, "question", extra)
+
+    def ask_choice(self, kind: str, text: str, meta: dict[str, Any] | None = None) -> str:
+        """Like ask(), but the UI renders a modal (resume picker, cover-letter
+        editor) instead of a chat line. The reply comes back through the same
+        chat endpoint, using the __use__ / __revise__ sentinels."""
+        return self._wait(text, "choice", {"kind": kind, "meta": meta or {}})
+
+    def _wait(self, question: str, event_type: str, extra: dict[str, Any]) -> str:
         if self._abort.is_set():
             raise Aborted("session aborted")
         self.status = "waiting_for_user"
         self.pending_question = question
-        self.emit("question", question)
+        self.emit(event_type, question, **extra)
         while True:
             try:
                 answer = self._answers.get(timeout=1)
@@ -64,7 +81,8 @@ class ApplySession:
         if text.lower() in ("abort", "stop", "cancel"):
             self._abort.set()
             raise Aborted("user aborted")
-        self.emit("answer", text)
+        # Long payloads (an edited resume source) would swamp the transcript.
+        self.emit("answer", text if len(text) <= 400 else f"{text[:400]}... [{len(text)} chars]")
         return text
 
     def answer(self, text: str) -> None:
@@ -79,6 +97,12 @@ class ApplySession:
 
     def finish(self, status: str, text: str = "") -> None:
         self.status = status
+        callback, self.on_outcome = self.on_outcome, None
+        if callback is not None:
+            try:
+                callback(status)
+            except Exception:
+                pass
         self.emit("done", text or status)
 
     def subscribe(self) -> tuple[Queue, list[dict[str, Any]]]:

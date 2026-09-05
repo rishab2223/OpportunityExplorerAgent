@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +9,7 @@ from src.config import ROOT
 
 PROFILE_PATH = ROOT / "localData" / "apply_profile.json"
 
-# Anything matching these never gets written to disk, however the LLM labels it.
+# Anything matching these never gets stored anywhere, however the LLM labels it.
 SECRET_HINTS = (
     "otp",
     "one time",
@@ -24,6 +23,8 @@ SECRET_HINTS = (
     "security code",
 )
 
+# Answered questions live in the answer bank (src/answers.py, SQLite), not
+# here; this file is the curated, hand-edited part of the candidate's data.
 TEMPLATE: dict[str, Any] = {
     "full_name": "",
     "email": "",
@@ -41,10 +42,8 @@ TEMPLATE: dict[str, Any] = {
     "work_authorization": "",
     "willing_to_relocate": "",
     "preferred_location": "",
-    "learned": {},
 }
 
-_LOCK = threading.Lock()
 _NON_ALNUM = re.compile(r"[^a-z0-9 ]+")
 _SPACES = re.compile(r"\s+")
 
@@ -58,14 +57,13 @@ def load_profile() -> dict[str, Any]:
         return dict(TEMPLATE)
     if not isinstance(data, dict):
         return dict(TEMPLATE)
-    data.setdefault("learned", {})
     return data
 
 
 def ensure_profile_file() -> Path:
     if not PROFILE_PATH.exists():
         PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _write(dict(TEMPLATE))
+        PROFILE_PATH.write_text(json.dumps(TEMPLATE, indent=2), encoding="utf-8")
     return PROFILE_PATH
 
 
@@ -79,23 +77,6 @@ def is_secret(label: str) -> bool:
     return any(hint in text for hint in SECRET_HINTS)
 
 
-def remember(label: str, answer: str) -> bool:
-    """Persist a reusable question/answer. Returns False for secrets or blanks."""
-    key = fingerprint(label)
-    if not key or not answer.strip() or is_secret(label) or is_secret(answer):
-        return False
-    with _LOCK:
-        data = load_profile()
-        learned = data.setdefault("learned", {})
-        learned[key] = answer.strip()
-        _write(data)
-    return True
-
-
-def recall(label: str) -> str:
-    return str(load_profile().get("learned", {}).get(fingerprint(label), ""))
-
-
 def as_prompt_text(profile: dict[str, Any] | None = None) -> str:
     data = profile if profile is not None else load_profile()
     lines = []
@@ -103,14 +84,4 @@ def as_prompt_text(profile: dict[str, Any] | None = None) -> str:
         if key == "learned" or not value:
             continue
         lines.append(f"{key}: {value}")
-    learned = data.get("learned") or {}
-    if learned:
-        lines.append("previously answered questions:")
-        for question, answer in learned.items():
-            lines.append(f"  - {question}: {answer}")
     return "\n".join(lines) or "(profile is empty)"
-
-
-def _write(data: dict[str, Any]) -> None:
-    PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PROFILE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")

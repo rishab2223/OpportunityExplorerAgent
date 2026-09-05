@@ -11,15 +11,45 @@ MAX_FIELDS = 60
 SNAPSHOT_JS = """
 () => {
   const out = [];
-  const selector = 'input, textarea, select, button, [role=button], [role=checkbox]';
+  // Clear ids from earlier snapshots first: a hidden wizard step keeps its old
+  // attributes, and a stale [data-oea-id] match would act on the wrong element.
+  for (const el of document.querySelectorAll('[data-oea-id]')) {
+    el.removeAttribute('data-oea-id');
+  }
+  const selector = 'input, textarea, select, button, [role=button], [role=checkbox], a[href]';
+  const actionable = /apply|easy apply|continue|next|start|submit|review|sign in|log in|upload|attach|resume|\bcv\b|cover letter/i;
+  // An open modal (LinkedIn Easy Apply, ATS popups) owns the page: scope the
+  // scan to it. Without this the background page's dozens of buttons filled
+  // the MAX_FIELDS budget and the dialog's own fields - appended at the END
+  // of the DOM - were truncated away, so the form looked invisible.
+  let root = document;
+  for (const d of document.querySelectorAll(
+      '[role=dialog], [role=alertdialog], dialog[open], [aria-modal="true"]')) {
+    const ds = window.getComputedStyle(d);
+    const dr = d.getBoundingClientRect();
+    if (ds.display === 'none' || ds.visibility === 'hidden') continue;
+    if (dr.width < 260 || dr.height < 120) continue;
+    // Cookie-consent wrappers are role=dialog shells whose real content sits
+    // in an iframe: scoping to one hid a whole SuccessFactors form. Only a
+    // dialog that itself holds interactive elements may own the scan.
+    if (!d.querySelector(selector)) continue;
+    root = d;  // dialogs stack in DOM order; the last visible one is on top
+  }
   let i = 0;
-  for (const el of document.querySelectorAll(selector)) {
+  for (const el of root.querySelectorAll(selector)) {
     const style = window.getComputedStyle(el);
     const rect = el.getBoundingClientRect();
     if (style.visibility === 'hidden' || style.display === 'none') continue;
     if (rect.width === 0 || rect.height === 0) continue;
     const type = (el.getAttribute('type') || '').toLowerCase();
     if (type === 'hidden') continue;
+    if (el.tagName === 'A') {
+      // Pages carry hundreds of links; only apply/continue-style ones matter,
+      // and MAX_FIELDS would drown in the rest.
+      const looksButton = el.getAttribute('role') === 'button' ||
+        /\\bbtn|button\\b/i.test(el.className || '');
+      if (!looksButton && !actionable.test(el.innerText || '')) continue;
+    }
     i += 1;
     el.setAttribute('data-oea-id', String(i));
     let label = '';
@@ -66,6 +96,8 @@ SNAPSHOT_JS = """
       tag: el.tagName.toLowerCase(),
       type: type,
       role: el.getAttribute('role') || '',
+      haspopup: el.getAttribute('aria-haspopup') || '',
+      autocomplete: el.getAttribute('autocomplete') || '',
       path: path,
       group: (group || '').trim().slice(0, 160),
       label: (label || '').trim().slice(0, 200),
@@ -109,8 +141,22 @@ def launch(url: str, headless: bool = False):
                 headless=headless,
                 channel=channel,
                 accept_downloads=True,
-                args=["--start-maximized"],
+                # Form-filling needs no GPU. Career pages shipping WebGL/three.js
+                # scenes (autter.dev) plus a wake-from-sleep triggered an NVIDIA
+                # TDR reset on a 4GB card; software rendering makes this window
+                # contribute zero GPU load. Autoplay off skips video decode too.
+                args=[
+                    "--start-maximized",
+                    "--disable-gpu",
+                    "--autoplay-policy=user-gesture-required",
+                ],
                 no_viewport=True,
+                # Ctrl+C in the server console belongs to the server. With the
+                # defaults, Playwright's driver grabs it too: the browser dies
+                # mid-application and the interrupt often never stops uvicorn.
+                handle_sigint=False,
+                handle_sigterm=False,
+                handle_sighup=False,
             )
             break
         except Exception as exc:
@@ -132,6 +178,27 @@ def launch(url: str, headless: bool = False):
     page = context.pages[0] if context.pages else context.new_page()
     page.goto(url, wait_until="domcontentloaded", timeout=60000)
     return pw, context, page
+
+
+def current_page(context, previous):
+    """The tab the agent should be reading: prefer the visible one, else the
+    newest open tab, else the previous page if it still exists.
+
+    Apply links routinely open the real form in a new tab; a fixed page handle
+    would keep the agent staring at the job description forever.
+    """
+    pages = [p for p in getattr(context, "pages", []) if not p.is_closed()]
+    if not pages:
+        return previous
+    for page in reversed(pages):
+        try:
+            if page.evaluate("document.visibilityState") == "visible":
+                return page
+        except Exception:
+            continue
+    if previous is not None and not previous.is_closed():
+        return previous
+    return pages[-1]
 
 
 def close(pw, context) -> None:
