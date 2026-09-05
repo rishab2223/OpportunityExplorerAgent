@@ -135,6 +135,46 @@ def api_history(stamp: str, job_id: str, payload: dict = Body(...)) -> dict:
     }
 
 
+def default_resume_pdf(cfg) -> tuple[Path | None, str, str]:
+    """The untailored resume as a PDF. Returns (path, error, warning).
+
+    Compiled from the source .tex, or served directly when the configured
+    resume is already a PDF. When compiling is impossible (no LaTeX toolchain)
+    or fails, an already-compiled PDF next to the .tex is used rather than
+    leaving the user with no resume at all - with a warning, since it may
+    predate recent edits to the source.
+    """
+    source = (cfg.resume.local_path or "").strip()
+    if not source:
+        return None, "resume.local_path is not set in settings.yaml", ""
+    path = Path(source)
+    if not path.is_absolute():
+        from src.config import ROOT
+
+        path = ROOT / path
+    if not path.exists():
+        return None, f"resume file not found: {path}", ""
+    if path.suffix.lower() == ".pdf":
+        return path, "", ""
+    pdf_path, error = ensure_pdf(path)
+    if pdf_path is not None:
+        return pdf_path, "", ""
+    fallback = path.with_suffix(".pdf")
+    if fallback.exists():
+        return fallback, "", f"using the previously compiled {fallback.name}: {error}"
+    return None, error, ""
+
+
+@app.get("/api/resume/default.pdf")
+def api_default_resume() -> FileResponse:
+    cfg = load_yaml_config()
+    pdf_path, error, warning = default_resume_pdf(cfg)
+    if pdf_path is None:
+        raise HTTPException(status_code=422, detail=error)
+    headers = {"X-Resume-Warning": warning} if warning else None
+    return FileResponse(pdf_path, media_type="application/pdf", headers=headers)
+
+
 @app.post("/api/apply/start")
 def api_apply_start(payload: dict = Body(...)) -> dict:
     from src.apply import profile as apply_profile
@@ -151,7 +191,31 @@ def api_apply_start(payload: dict = Body(...)) -> dict:
     env = load_env()
     # First apply ever: create the profile template so the user has a file to fill.
     apply_profile.ensure_profile_file()
-    pdf_path = _tailored_pdf(stamp, job)
+
+    def resume_options() -> dict:
+        """Built on first use, when the form actually asks for a resume."""
+        tex_file = job.get("resume_tex_file") or ""
+        tailored: dict = {"path": "", "error": "this run has no tailored .tex", "changelog": "",
+                          "source": "", "pages": job.get("resume_pages") or 0}
+        if tex_file:
+            tex_path = Path(runs.run_dir(stamp)) / tex_file
+            pdf_path, error = ensure_pdf(tex_path)
+            tailored = {
+                "path": str(pdf_path) if pdf_path else "",
+                "error": error,
+                "changelog": job.get("resume_edit_suggestions") or "",
+                "source": tex_path.read_text(encoding="utf-8") if tex_path.exists() else "",
+                "pages": job.get("resume_pages") or 0,
+            }
+        default_path, default_error, warning = default_resume_pdf(cfg)
+        return {
+            "tailored": tailored,
+            "default": {
+                "path": str(default_path) if default_path else "",
+                "error": default_error or warning,
+            },
+        }
+
     try:
         resume_text, _, _, _ = load_resume(cfg)
     except StepError as exc:
@@ -161,13 +225,20 @@ def api_apply_start(payload: dict = Body(...)) -> dict:
         runs.save_decision(stamp, job_id, status=status)
         if status == "applied":
             history.record(job, "applied", stamp=stamp, note="assisted")
+        elif status == "closed":
+            # The posting stopped accepting applications; keep it out of
+            # future scrapes without pretending anything was submitted.
+            history.record(job, "closed", stamp=stamp, note="detected")
 
     # Mark running before the worker starts: a session that fails within
     # milliseconds would otherwise have its final status overwritten here.
     runs.save_decision(stamp, job_id, decision="yes", status="running")
     try:
         sess = apply_worker.start_apply(
-            stamp, job, resume_text, pdf_path, cfg, env, on_finish=on_finish
+            stamp, job, resume_text, cfg, env,
+            on_finish=on_finish,
+            resume_options=resume_options,
+            out_dir=Path(runs.run_dir(stamp)),
         )
     except apply_session.SessionBusy as exc:
         runs.save_decision(stamp, job_id, status="pending")
@@ -242,15 +313,6 @@ def _apply_stream(session_id: str) -> Iterator[str]:
                 return
     finally:
         sess.unsubscribe(queue)
-
-
-def _tailored_pdf(stamp: str, job: dict) -> str:
-    """Best effort: apply can still run without a PDF, uploads just need the user."""
-    tex_file = job.get("resume_tex_file") or ""
-    if not tex_file:
-        return ""
-    pdf_path, _ = ensure_pdf(Path(runs.run_dir(stamp)) / tex_file)
-    return str(pdf_path) if pdf_path else ""
 
 
 def _sse(event: dict) -> str:

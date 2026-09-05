@@ -66,6 +66,51 @@ input:disabled {
   font-size: 13px;
 }
 
+/* Collapsible Selected-job panel: the 780px PDF preview otherwise pushes the
+   Apply chat far below the table. */
+#jobdetail summary {
+  cursor: pointer;
+  user-select: none;
+  list-style-position: outside;
+}
+#jobdetail summary h2 {
+  display: inline;
+}
+#jobdetail summary:hover h2 {
+  color: #333;
+}
+#jobdetailname {
+  font-weight: normal;
+}
+
+/* Collapsible command reference under the apply chat. */
+#chathelp {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: #555;
+}
+#chathelp summary {
+  cursor: pointer;
+  color: #666;
+  user-select: none;
+}
+#chathelp .cmds {
+  margin: 6px 0 2px;
+  border-collapse: collapse;
+}
+#chathelp .cmds td {
+  padding: 2px 10px 2px 0;
+  vertical-align: top;
+}
+#chathelp .cmds td:first-child {
+  white-space: nowrap;
+}
+#chathelp code {
+  background: #f0f0f0;
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
 .logbox {
   height: 220px;
   overflow: auto;
@@ -125,6 +170,12 @@ tbody tr.selected {
   text-align: center;
 }
 
+.source {
+  color: #555;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
 .path {
   font-family: Consolas, "Courier New", monospace;
   font-size: 11px;
@@ -171,6 +222,65 @@ tbody tr.selected {
   background: #fff;
   border-bottom: 1px solid #fff;
   font-weight: 600;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+/* display:flex would beat the hidden attribute's UA rule and leave an
+   invisible overlay swallowing every click on the page. */
+.modal-backdrop[hidden] {
+  display: none;
+}
+
+.modal {
+  background: #fff;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  padding: 16px 20px;
+  width: min(560px, 90vw);
+  max-height: 80vh;
+  overflow: auto;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+}
+
+.modal h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.modal-text {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 8px 0;
+}
+
+.modal-changes {
+  white-space: pre-wrap;
+  font-size: 12px;
+  background: #f7f7f7;
+  border: 1px solid #e2e2e2;
+  border-radius: 4px;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  margin-bottom: 8px;
+}
+
+.status-closed {
+  color: #888;
+  font-weight: 600;
+  text-decoration: line-through;
 }
 
 .status-referral_pending {

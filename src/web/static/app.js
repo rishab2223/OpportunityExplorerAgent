@@ -1,6 +1,9 @@
 let currentStamp = "";
 let currentJobId = "";
 let jobsById = {};
+let lastJobs = [];
+let shortlistPage = 0;
+const PAGE_SIZE = 15;
 
 const $ = (id) => document.getElementById(id);
 
@@ -96,31 +99,44 @@ function cellButton(cell, label, title, onClick) {
 
 function actionsCell(job) {
   const cell = document.createElement("td");
-  const alreadyApplied = job.history_status === "applied";
+  const hist = job.history_status || "";
+  const blocked = hist === "applied" || hist === "closed";
   const apply = cellButton(cell, "Start apply", "", () => startApply(job.job_id));
-  apply.disabled = alreadyApplied;
-  if (alreadyApplied) apply.title = "Already applied (see history); Unmark to re-enable";
+  apply.disabled = blocked;
+  if (hist === "applied") apply.title = "Already applied (see history); Unmark to re-enable";
+  if (hist === "closed") apply.title = "This job stopped accepting applications; Unmark to re-enable";
+  if (blocked) {
+    cellButton(
+      cell,
+      "Unmark",
+      "Remove from history so future runs process this job again",
+      () => setHistory(job.job_id, "")
+    );
+    return cell;
+  }
   cellButton(cell, "Skip", "", () => decide(job.job_id, "no"));
   cellButton(
     cell,
-    alreadyApplied ? "Unmark" : "Mark applied",
-    alreadyApplied
-      ? "Remove from the applied history so future runs process this job again"
-      : "Record as applied across runs; future scrapes will drop this job",
-    () => setHistory(job.job_id, alreadyApplied ? "" : "applied")
+    "Mark applied",
+    "Record as applied across runs; future scrapes will drop this job",
+    () => setHistory(job.job_id, "applied")
   );
-  if (!alreadyApplied) {
-    cellButton(
-      cell,
-      "Referral",
-      "Chase a referral instead of applying; moves this job to the Referrals table",
-      () => {
-        const who = window.prompt(`Who are you asking for a referral at ${job.company}?`, "");
-        if (who === null) return; // cancelled - record nothing
-        setHistory(job.job_id, "referral_pending", who.trim());
-      }
-    );
-  }
+  cellButton(
+    cell,
+    "Referral",
+    "Chase a referral instead of applying; moves this job to the Referrals table",
+    () => {
+      const who = window.prompt(`Who are you asking for a referral at ${job.company}?`, "");
+      if (who === null) return; // cancelled - record nothing
+      setHistory(job.job_id, "referral_pending", who.trim());
+    }
+  );
+  cellButton(
+    cell,
+    "Closed",
+    "This posting no longer accepts applications; future scrapes will drop it",
+    () => setHistory(job.job_id, "closed")
+  );
   return cell;
 }
 
@@ -194,6 +210,7 @@ function linksCell(job) {
 }
 
 function renderJobs(jobs) {
+  lastJobs = jobs;
   jobsById = {};
   jobs.forEach((job) => (jobsById[job.job_id] = job));
   renderShortlist(jobs.filter((j) => !REFERRAL_STATES.includes(j.history_status)));
@@ -204,11 +221,20 @@ function renderJobs(jobs) {
 function renderShortlist(jobs) {
   const body = document.querySelector("#jobs tbody");
   body.replaceChildren();
+  const pages = Math.max(1, Math.ceil(jobs.length / PAGE_SIZE));
+  shortlistPage = Math.min(Math.max(shortlistPage, 0), pages - 1);
+  $("jobspager").hidden = jobs.length <= PAGE_SIZE;
+  $("pageinfo").textContent = jobs.length
+    ? `Page ${shortlistPage + 1} of ${pages} - ${jobs.length} job(s)`
+    : "";
+  $("prevpage").disabled = shortlistPage === 0;
+  $("nextpage").disabled = shortlistPage >= pages - 1;
   if (!jobs.length) {
-    emptyRow(body, 8, "No shortlisted jobs left in this run.");
+    emptyRow(body, 9, "No shortlisted jobs left in this run.");
     return;
   }
-  jobs.forEach((job) => {
+  const start = shortlistPage * PAGE_SIZE;
+  jobs.slice(start, start + PAGE_SIZE).forEach((job) => {
     const row = document.createElement("tr");
     row.dataset.jobId = job.job_id;
     const add = rowCellAdder(row);
@@ -217,20 +243,27 @@ function renderShortlist(jobs) {
     add(job.title);
     add(job.relevance, scoreClass(job.relevance));
     add(job.location);
+    add(job.source || "-", "source");
     row.appendChild(linksCell(job));
     row.appendChild(pathCell(job));
+    const hist = job.history_status || "";
     const shownStatus =
-      job.history_status === "applied" ? "applied ✓" : job.status || "pending";
+      hist === "applied" ? "applied ✓" : hist === "closed" ? "closed ✗" : job.status || "pending";
     const statusCell = add(
       shownStatus,
-      "status-" + (job.history_status === "applied" ? "applied" : job.status || "pending")
+      "status-" + (hist === "applied" || hist === "closed" ? hist : job.status || "pending")
     );
     if (job.history_how === "similar") {
-      statusCell.title = "Matched by company+title from your applied history";
+      statusCell.title = "Matched by company+title from your history";
     }
     row.appendChild(actionsCell(job));
 
-    row.addEventListener("click", () => selectJob(job.job_id));
+    row.addEventListener("click", (event) => {
+      selectJob(job.job_id);
+      // A plain row click means "show me this job"; clicks on the row's
+      // buttons/links (Start apply, Skip...) must not pop the panel open.
+      if (!event.target.closest("button, a")) $("jobdetail").open = true;
+    });
     body.appendChild(row);
   });
 }
@@ -269,7 +302,10 @@ function renderReferrals(jobs) {
     row.appendChild(linksCell(job));
     row.appendChild(referralActionsCell(job));
 
-    row.addEventListener("click", () => selectJob(job.job_id));
+    row.addEventListener("click", (event) => {
+      selectJob(job.job_id);
+      if (!event.target.closest("button, a")) $("jobdetail").open = true;
+    });
     body.appendChild(row);
   });
 }
@@ -278,6 +314,9 @@ function selectJob(jobId) {
   const job = jobsById[jobId];
   if (!job) return;
   currentJobId = jobId;
+  // Name the collapsed panel; open/closed state is the user's, changed only
+  // by a direct row click (see the row listeners).
+  $("jobdetailname").textContent = ` — ${job.company} · ${job.title}`;
   document.querySelectorAll("#jobs tbody tr, #referrals tbody tr").forEach((row) => {
     row.classList.toggle("selected", row.dataset.jobId === jobId);
   });
@@ -339,6 +378,7 @@ async function decide(jobId, decision) {
 
 async function loadJobs(stamp) {
   if (!stamp) return;
+  if (stamp !== currentStamp) shortlistPage = 0;
   currentStamp = stamp;
   try {
     const [run, data] = await Promise.all([
@@ -438,13 +478,56 @@ async function resumeActiveRun() {
 }
 
 let applySessionId = "";
+// The job the LIVE SESSION is applying to - not necessarily the row the user
+// last clicked (currentJobId), which can change mid-session.
+let applyJobId = "";
 let applySource = null;
 
 function setChatEnabled(enabled) {
   $("chat").disabled = !enabled;
   $("send").disabled = !enabled;
   $("abort").disabled = !enabled;
+  $("attachresume").disabled = !enabled;
+  $("attachletter").disabled = !enabled;
 }
+
+// While applying, the user is usually in the OTHER window (the Playwright
+// Chrome), so a question in the chat pane goes unseen. Surface every prompt
+// through an OS notification, a short beep, and a tab-title flag, whenever
+// this tab does not have focus.
+const baseTitle = document.title;
+
+function alertUser(text) {
+  if (document.hasFocus()) return;
+  document.title = "(!) waiting for you - " + baseTitle;
+  try {
+    if ("Notification" in window && Notification.permission === "granted") {
+      const n = new Notification("Apply agent needs you", {
+        body: (text || "").slice(0, 140),
+      });
+      n.onclick = () => {
+        window.focus();
+        n.close();
+      };
+    }
+  } catch {}
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 880;
+    gain.gain.value = 0.08;
+    osc.start();
+    osc.stop(ctx.currentTime + 0.2);
+    osc.onended = () => ctx.close();
+  } catch {}
+}
+
+window.addEventListener("focus", () => {
+  document.title = baseTitle;
+});
 
 function streamApply(sessionId) {
   if (applySource) applySource.close();
@@ -452,16 +535,37 @@ function streamApply(sessionId) {
   applySource = new EventSource(`/api/apply/${sessionId}/events`);
   applySource.onmessage = (ev) => {
     const event = JSON.parse(ev.data);
-    const prefix = { question: "AGENT ASKS: ", answer: "YOU: ", error: "ERROR: ", done: "SESSION " }[
-      event.type
-    ] || "";
+    const prefix = {
+      question: "AGENT ASKS: ",
+      choice: "AGENT ASKS: ",
+      answer: "YOU: ",
+      error: "ERROR: ",
+      done: "SESSION ",
+    }[event.type] || "";
     appendLog($("applylog"), prefix + event.text);
-    if (event.type === "question") $("chat").focus();
+    if (event.type === "question" || event.type === "choice") alertUser(event.text);
+    if (event.type === "question") {
+      // A model-drafted answer arrives pre-filled for editing; never clobber
+      // something the user already started typing.
+      if (event.suggestion && !$("chat").value.trim()) {
+        $("chat").value = event.suggestion;
+        appendLog($("applylog"), "(a suggested answer is pre-filled below - edit it or just press Send)");
+      }
+      $("chat").focus();
+    }
+    if (event.type === "choice") openAttachModal(event);
     if (event.type === "done") {
       applySource.close();
       applySource = null;
       applySessionId = "";
+      applyJobId = "";
+      closeAttachModal();
       setChatEnabled(false);
+      appendLog(
+        $("applylog"),
+        "--- session ended; the chat is closed. If you finished the application " +
+          "yourself, use Mark applied on the row. Start apply begins a new session. ---"
+      );
       loadJobs(currentStamp);
     }
   };
@@ -473,15 +577,91 @@ function streamApply(sessionId) {
   };
 }
 
+// The worker opens this modal mid-session (a "choice" event) when the form
+// asks for a resume or a cover letter. Replies go back through the normal
+// chat endpoint using the __use__ / __revise__ sentinels.
+let choiceKind = "";
+
+function openAttachModal(event) {
+  choiceKind = event.kind || "";
+  const meta = event.meta || {};
+  const isResume = choiceKind === "resume";
+  $("rmtitle").textContent = isResume ? "Which resume should I attach?" : "Review the cover letter";
+
+  const changelog = meta.changelog || "";
+  $("rmchanges").hidden = !isResume || !changelog;
+  $("rmchanges").textContent = changelog;
+
+  $("rmlinks").hidden = !isResume;
+  const tailored = $("rmviewtailored");
+  if (isResume && meta.tailored_path) {
+    tailored.href = `/api/runs/${currentStamp}/jobs/${encodeURIComponent(applyJobId)}/resume.pdf`;
+    tailored.hidden = false;
+  } else {
+    tailored.hidden = true;
+  }
+
+  const text = isResume ? meta.tailored_source || "" : meta.text || "";
+  $("rmtext").value = text;
+  // The letter is meant to be edited; the resume source hides behind a toggle.
+  $("rmtext").hidden = isResume;
+  $("rmedittoggle").hidden = !isResume || !text;
+  $("rmtoggleedit").textContent = "Edit source";
+  $("rmreviserow").hidden = isResume ? true : false;
+  $("rminstruction").value = "";
+
+  $("rmusetailored").hidden = !isResume;
+  $("rmusedefault").hidden = !isResume;
+  $("rmuseedited").hidden = !isResume;
+  $("rmuse").hidden = isResume;
+  $("rmusetailored").disabled = isResume && !meta.tailored_path;
+  $("rmusedefault").disabled = isResume && !meta.default_path;
+
+  const warn = isResume
+    ? meta.tailored_error
+      ? `Tailored resume: ${meta.tailored_error}`
+      : meta.pages > 1
+        ? `Warning: the tailored resume is ${meta.pages} pages.`
+        : ""
+    : meta.error || "";
+  $("rmwarn").textContent = warn;
+  $("modalback").hidden = false;
+}
+
+function closeAttachModal() {
+  $("modalback").hidden = true;
+  choiceKind = "";
+}
+
+async function sendChoice(text) {
+  closeAttachModal();
+  try {
+    await postJSON(`/api/apply/${applySessionId}/chat`, { text });
+  } catch (err) {
+    appendLog($("applylog"), `Could not send: ${err.message}`);
+  }
+}
+
 async function startApply(jobId) {
   if (applySessionId) {
     alert("An apply session is already running. Finish or abort it first.");
     return;
   }
+  // Ask once, on a user gesture, so prompts can reach the user while they
+  // are over in the apply browser window.
+  if ("Notification" in window && Notification.permission === "default") {
+    try {
+      Notification.requestPermission();
+    } catch {}
+  }
   selectJob(jobId);
   setLog($("applylog"), "Starting apply session...");
   try {
-    const sess = await postJSON("/api/apply/start", { stamp: currentStamp, job_id: jobId });
+    const sess = await postJSON("/api/apply/start", {
+      stamp: currentStamp,
+      job_id: jobId,
+    });
+    applyJobId = jobId;
     setChatEnabled(true);
     streamApply(sess.session_id);
     await loadJobs(currentStamp);
@@ -513,6 +693,7 @@ async function abortApply() {
 async function resumeActiveApply() {
   const state = await getJSON("/api/apply/status");
   if (state.session_id && state.status !== "idle") {
+    applyJobId = state.job_id || "";
     setLog($("applylog"), "");
     setChatEnabled(true);
     streamApply(state.session_id);
@@ -529,6 +710,42 @@ function showView(name) {
 
 document.querySelectorAll("#nav button").forEach((btn) => {
   btn.addEventListener("click", () => showView(btn.dataset.view));
+});
+
+$("rmusetailored").addEventListener("click", () => sendChoice("tailored"));
+$("rmusedefault").addEventListener("click", () => sendChoice("default"));
+$("rmuseedited").addEventListener("click", () => sendChoice("__use__\n" + $("rmtext").value));
+$("rmuse").addEventListener("click", () => sendChoice("__use__\n" + $("rmtext").value));
+$("rmskip").addEventListener("click", () => sendChoice("skip"));
+$("rmrevise").addEventListener("click", () => {
+  const instruction = $("rminstruction").value.trim();
+  if (!instruction) return;
+  sendChoice("__revise__ " + instruction);
+});
+$("rmtoggleedit").addEventListener("click", () => {
+  const box = $("rmtext");
+  box.hidden = !box.hidden;
+  $("rmtoggleedit").textContent = box.hidden ? "Edit source" : "Hide source";
+});
+// A modal answer is required: closing it without choosing would leave the
+// worker blocked, so Esc and backdrop clicks skip the attachment instead.
+$("modalback").addEventListener("click", (ev) => {
+  if (ev.target === $("modalback")) sendChoice("skip");
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !$("modalback").hidden) sendChoice("skip");
+});
+
+$("attachresume").addEventListener("click", () => sendChoice("attach resume"));
+$("attachletter").addEventListener("click", () => sendChoice("cover letter"));
+
+$("prevpage").addEventListener("click", () => {
+  shortlistPage -= 1;
+  renderJobs(lastJobs);
+});
+$("nextpage").addEventListener("click", () => {
+  shortlistPage += 1;
+  renderJobs(lastJobs);
 });
 
 $("start").addEventListener("click", startRun);

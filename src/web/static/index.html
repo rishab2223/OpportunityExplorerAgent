@@ -40,6 +40,7 @@
           <th>Title</th>
           <th>Score</th>
           <th>Location</th>
+          <th>Source</th>
           <th>Links</th>
           <th>Resume PDF path</th>
           <th>Status</th>
@@ -48,19 +49,53 @@
       </thead>
       <tbody></tbody>
     </table>
+    <div class="row" id="jobspager" hidden>
+      <button id="prevpage">Prev</button>
+      <span id="pageinfo" class="muted"></span>
+      <button id="nextpage">Next</button>
+    </div>
 
-    <h2>Selected job</h2>
-    <div id="detail" class="muted">Click a row to see details and the tailored resume.</div>
-    <div id="pdfnote" class="muted"></div>
-    <iframe id="pdf" title="Tailored resume preview"></iframe>
+    <details id="jobdetail">
+      <summary><h2>Selected job<span id="jobdetailname" class="muted"></span></h2></summary>
+      <div id="detail" class="muted">Click a row to see details and the tailored resume.</div>
+      <div id="pdfnote" class="muted"></div>
+      <iframe id="pdf" title="Tailored resume preview"></iframe>
+    </details>
 
     <h2>Apply</h2>
     <pre id="applylog" class="logbox">No apply session. Use Start apply on a row.</pre>
     <div class="row">
       <input id="chat" type="text" size="60" placeholder="Answer the agent's question, then press Send" disabled>
       <button id="send" disabled>Send</button>
+      <button id="attachresume" disabled title="Prepare and attach a resume now, if the form's upload field was not detected">Attach resume</button>
+      <button id="attachletter" disabled title="Write a cover letter now, if the form's cover-letter field was not detected">Cover letter</button>
       <button id="abort" disabled>Abort</button>
     </div>
+    <details id="chathelp">
+      <summary>Chat commands</summary>
+      <table class="cmds">
+        <tr><td><code>llm: &lt;instruction&gt;</code></td>
+            <td>ask the model to draft or redo the answer to the current question
+                (one model call; bare <code>llm:</code> = fresh draft; plain text without
+                the prefix is typed into the form as-is)</td></tr>
+        <tr><td><code>done</code></td>
+            <td>the page is ready / you submitted the application yourself
+                (also: <code>applied</code>, <code>submitted</code>, <code>finished</code>)</td></tr>
+        <tr><td><code>skip</code></td>
+            <td>leave the current field empty (also: <code>leave it</code>, <code>leave blank</code>)</td></tr>
+        <tr><td><code>yes</code> / <code>no</code></td>
+            <td>confirm or refuse a click or checkbox the agent proposes
+                (use <code>yes</code>, not <code>ok</code>)</td></tr>
+        <tr><td><code>attach resume</code></td>
+            <td>open the resume picker by hand (also: <code>cover letter</code> for the letter flow)</td></tr>
+        <tr><td>paste a URL</td>
+            <td>open that page when the agent is stuck</td></tr>
+        <tr><td><code>retry</code></td>
+            <td>try the model again after an outage</td></tr>
+        <tr><td><code>abort</code></td>
+            <td>end the session (also: <code>stop</code>, <code>cancel</code>)</td></tr>
+      </table>
+    </details>
   </section>
 
   <section id="view-referrals" hidden>
@@ -82,6 +117,34 @@
     </table>
   </section>
 </main>
+
+<div id="modalback" class="modal-backdrop" hidden>
+  <div id="attachmodal" class="modal" role="dialog" aria-modal="true">
+    <h3 id="rmtitle">Attachment</h3>
+    <div id="rmchanges" class="modal-changes" hidden></div>
+    <div class="row" id="rmlinks">
+      <a id="rmviewtailored" target="_blank" rel="noopener">View tailored PDF</a>
+      <a id="rmviewdefault" href="/api/resume/default.pdf" target="_blank" rel="noopener">View default PDF</a>
+    </div>
+    <div class="row" id="rmedittoggle" hidden>
+      <button id="rmtoggleedit" type="button">Edit source</button>
+    </div>
+    <textarea id="rmtext" class="modal-text" rows="12" hidden></textarea>
+    <div class="row" id="rmreviserow" hidden>
+      <input id="rminstruction" type="text" size="46" placeholder="Ask for a change, e.g. make the second paragraph shorter">
+      <button id="rmrevise">Ask for changes</button>
+    </div>
+    <div id="rmwarn" class="muted"></div>
+    <div class="row">
+      <button id="rmusetailored">Use tailored resume</button>
+      <button id="rmusedefault">Use default resume</button>
+      <button id="rmuseedited">Save edits &amp; use</button>
+      <button id="rmuse">Use this</button>
+      <button id="rmskip">Skip</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>

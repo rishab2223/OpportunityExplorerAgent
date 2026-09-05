@@ -13,7 +13,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--reload", action="store_true")
     args = parser.parse_args(argv)
-    uvicorn.run("src.web.app:app", host=args.host, port=args.port, reload=args.reload)
+    # The UI holds SSE streams open (run logs, apply chat); without a graceful-
+    # shutdown timeout, Ctrl+C waits forever for those connections to close.
+    uvicorn.run(
+        "src.web.app:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        timeout_graceful_shutdown=3,
+    )
     return 0
 
 
