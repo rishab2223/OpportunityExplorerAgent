@@ -41,6 +41,8 @@ class HistoryConfig(BaseModel):
     # Jobs in either referral state (pending or sent) stay out of later runs
     # until the referral is cleared as failed.
     skip_referral: bool = True
+    # Jobs marked closed (no longer accepting applications) never come back.
+    skip_closed: bool = True
     # Also match by normalized company+title when the site reissued its job id.
     match_similar: bool = True
 

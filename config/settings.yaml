@@ -14,6 +14,7 @@ history:
   skip_applied: true    # drop jobs already applied to
   skip_skipped: false   # skipped jobs come back next run
   skip_referral: true   # jobs with a referral pending/sent stay out until cleared as failed
+  skip_closed: true     # jobs no longer accepting applications never come back
   match_similar: true   # also match by company+title when the site reissued its id
 
 # Which LLM writes the tailored resume + interview prep: openai | claude.

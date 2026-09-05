@@ -16,7 +16,7 @@ There is no email, Google Sheet, or Google Drive. The resume is always a local f
 3. **Score** — one cheap LLM call per scraped job (plain text from the resume)
 4. **Filter** — keep jobs with `relevance >= min_score` (default 7, so 7–10)
 5. **Enrich** — for `.tex` input, per-section tailored edits (summary, skills, bullet rewording) spliced into your original LaTeX source, plus interview prep; for PDF, markdown suggestions plus interview prep. The model never rewrites the whole document: the preamble, section headings, and layout come through byte-identical, sections cannot be dropped, and edits that fail validation (unbalanced braces/environments, forbidden commands, big length changes) are rejected and retried once with the reasons named — a rejected section keeps its original text
-6. **Dump** — `outputs/{timestamp}/`, compiling each tailored `.tex` to a `.pdf` (also writes a run summary after a failure)
+6. **Dump** — `outputs/{timestamp}/`, compiling each tailored `.tex` to a `.pdf` and keeping it to **one page** (also writes a run summary after a failure). The model writes LaTeX blind, so length is enforced by measurement, not by asking: the model may add genuinely useful content (up to a 1.15× overall cap that blocks runaway rewrites), knowing the declared cost — if the compiled PDF runs past one page, content is dropped in a fixed priority order the model is told about: the CCNA certification bullet first, then the whole Certifications section, recompiling after each cut and stopping as soon as it fits. Every cut is named in the run log, and a resume that is still too long keeps its content and is flagged on the row rather than gutted further. Experience, Skills, Summary and Education are never touched.
 
 If a step fails, later steps do not run. A run summary is still written so you can see which step failed.
 
@@ -152,14 +152,14 @@ Each run uses a timestamp folder, e.g. `outputs/20260823T140406/`:
 | `{stamp}/run.log` | always | Every progress line from that run |
 | `{stamp}/shortlisted.json` and `outputs/shortlisted.json` | success only | Enriched matches (URLs, scores, interview prep, resume-edit changelog, `resume_tex_file`, `resume_pdf_path`) |
 | `{stamp}/{company}_{job_title}.tex` | success, and resume input was `.tex` | Tailored one-page resume per shortlisted job |
-| `{stamp}/{company}_{job_title}.pdf` | when a LaTeX toolchain is installed | Compiled resume, the path shown in the UI table |
+| `{stamp}/{company}_{job_title}.pdf` | when a LaTeX toolchain is installed | Compiled resume, trimmed to one page, the path shown in the UI table |
 | `{stamp}/applications.json` | after you skip or apply | Your per-job decision and apply status |
 
 `outputs/run.json` / `outputs/shortlisted.json` are copies of the latest run.
 
 ### Job history
 
-Apify returns many of the same postings run after run. A small SQLite database at `localData/job_history.db` (created automatically, gitignored, nothing to install — SQLite ships inside Python) remembers every job you applied to — via **Mark applied** on a row, or automatically when an assisted-apply session finishes — and drops those jobs **right after scrape** on later runs, before they cost a scoring or enrichment call. **Skip** is recorded too but does not block by default (`history.skip_skipped`).
+Apify returns many of the same postings run after run. A small SQLite database at `localData/job_history.db` (created automatically, gitignored, nothing to install — SQLite ships inside Python) remembers every job you applied to — via **Mark applied** on a row, or automatically when an assisted-apply session finishes — and drops those jobs **right after scrape** on later runs, before they cost a scoring or enrichment call. **Skip** is recorded too but does not block by default (`history.skip_skipped`). **Closed** marks a posting that stopped accepting applications (LinkedIn's "No longer accepting applications" banner is also detected automatically when you Start apply on one); closed jobs never come back (`history.skip_closed`), and Unmark reverses any of these.
 
 Matching is by job id first, then by normalized company+title (`history.match_similar`) for the ~5% of postings whose id changes between scrapes; every company+title match is named in the run log, since it could hide a genuinely new opening with the same title. **Unmark** on a row reverses a mistake; deleting `localData/job_history.db` resets everything. Inspect it any time with `python -m sqlite3 localData/job_history.db "SELECT company, title, status, contact, marked_at FROM job_history"`.
 
@@ -198,18 +198,26 @@ The UI never downloads files. Copy the path from the table and open the PDF wher
 
 Click **Start apply** on a row. This is deliberately supervised, one job at a time.
 
-Before the first run, fill in [`localData/apply_profile.json`](localData/) (created automatically, gitignored) with your name, email, phone, notice period, CTC expectations, and work authorization. Answers you give in chat can be added to its `learned` map and reused next time.
+Before the first run, fill in [`localData/apply_profile.json`](localData/) (created automatically, gitignored) with your name, email, phone, notice period, CTC expectations, and work authorization — every field filled there is a question the agent never has to ask.
 
-The form-filling model is `apply_provider` in `settings.yaml` (`claude` → `claude.apply_model`, default `claude-opus-5` at `apply_effort: low`; `openai` → `openai.apply_model`). Each step is one structured decision, so a low effort setting keeps the chat responsive.
+The form-filling model is `apply_provider` in `settings.yaml` (`claude` → `claude.apply_model`, default `claude-opus-5` at `apply_effort: low`; `openai` → `openai.apply_model`) — but most fields never reach it. A deterministic resolver fills everything the profile or the answer bank already covers (contact fields via their `autocomplete` attributes, links, notice period, CTC…), the script clicks Next/Continue/Review wizard buttons itself, and the model gets **one batched call per page** for only the fields that remain. A typical application costs 0-3 model calls; the session log ends with the exact tally (`Model calls this session: N`).
+
+**The answer bank.** Any question you answer in chat is remembered in the `known_answers` table of `localData/job_history.db`, keyed by topic so every phrasing of "notice period" is one entry. Next application, it's filled automatically: neutral answers silently (logged as `[saved]`), legal/eligibility answers only after you confirmed "remember this?" once — and every reuse prints a visible `[saved] question -> answer` line. OTPs, passwords and captchas are never stored, and neither is anything mentioning the specific company. Fix a wrong entry any time: `python -m sqlite3 localData/job_history.db "SELECT * FROM known_answers"`.
+
+**Attachments are built when the form asks for them**, never ahead of time — a form that never wants a resume or cover letter costs nothing.
+
+- **Resume.** The moment an upload field is detected, the tailored `.tex` is compiled (needs a LaTeX toolchain such as MiKTeX on PATH) and a dialog offers the **tailored PDF** or your **default resume** (`resume.local_path`, served via `/api/resume/default.pdf`), with the model's edit changelog and links to view both. *Edit source* reveals the tailored LaTeX for small fixes: it is validated, compiled and re-measured for one page before use, and a broken edit is rolled back with the error shown. The choice is remembered for the rest of the session.
+- **Cover letter.** When a cover-letter field is detected, the model drafts a short one (~3 paragraphs, plain voice) and the dialog opens with it in an editable box. Edit it freely — that costs nothing — or *Ask for changes* to have the model revise it (one call each). On accept, a textarea gets the text and a file input gets a small compiled PDF written to the run folder. Letters are never reused across jobs and never stored in the answer bank.
+- **If detection misses the field**, the **Attach resume** and **Cover letter** buttons beside the chat box (or typing `attach resume` / `cover letter`) start either flow by hand. *Skip* in either dialog leaves the field untouched.
 
 What happens:
 
 1. A visible Chrome opens on the apply URL, using the persistent profile at `localData/chrome-profile`. Log into the job site once yourself; the session is remembered.
-2. The agent reads the visible form fields and fills the ones it can justify from your profile, learned answers, or resume, logging every field it touches.
-3. It stops and asks in the chat pane for anything else: unknown questions, OTPs, captchas, consent and legal checkboxes. Answer, or handle it in the browser yourself and type `done`. Type `skip` to leave a field alone, `abort` to stop.
-4. It never submits on its own. When the form is ready it asks, and only clicks Submit after you reply `apply`.
+2. On a LinkedIn job the agent opens the apply flow itself: **Easy Apply** jobs get the in-page modal; **Apply on company website** jobs open the employer's form in a new tab, which the agent follows (the log shows `Switched to <url>`).
+3. The resolver fills what it can, the model plans the rest, and the agent stops and asks in the chat pane for anything unknown: OTPs, captchas, consent and legal questions. Answer, or handle it in the browser yourself and type `done`. Type `skip` to leave a field alone, paste a URL to send the agent there, `abort` to stop.
+4. **The agent never clicks submit — you do.** When everything is filled it says so and waits; you review the form, click Submit in the browser yourself, and type `done`. This is enforced in code (a submit click raises), not just prompted.
 
-OTPs and other secrets are held in memory for the session and never written to disk. The agent will not invent visa status, salary, or legal answers: anything that reads like a legal or eligibility declaration (consent, terms, work authorisation, citizenship, background checks, demographics) is always asked, and a yes/no you type is parsed on whole words with negatives winning — "I don't agree" leaves the box unticked. Low-confidence button clicks are asked as a yes/no and only clicked when you approve. There is no captcha solving and no unattended mass-apply.
+OTPs and other secrets are held in memory for the session and never written to disk. The agent will not invent visa status, salary, or legal answers: anything that reads like a legal or eligibility declaration (consent, terms, work authorisation, citizenship, background checks, demographics) is gated — answered from your confirmed saved answer with a loud log line, or asked. For radio groups the gate acts only on the option that matches your answer, so a saved "No" can never tick the "Yes" box. A yes/no you type is parsed on whole words with negatives winning — "I don't agree" leaves the box unticked. There is no captcha solving and no unattended mass-apply.
 
 ## Daily schedule
 
