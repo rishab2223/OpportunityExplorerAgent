@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from queue import Empty
-from typing import Iterator
+from typing import Any, Iterator
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -17,6 +19,13 @@ from src.resume.loader import load_resume
 from src.web import runner, runs
 
 HEARTBEAT_SECONDS = 15
+
+# Set by the server's Ctrl+C handler (src.web.__main__). The SSE generators
+# below block on their queues; without this they outlive uvicorn's graceful
+# window and get cancelled, which prints an "Exception in ASGI application"
+# traceback on every stop.
+SHUTTING_DOWN = threading.Event()
+_STOP = object()
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -269,6 +278,14 @@ def api_apply_chat(session_id: str, payload: dict = Body(...)) -> dict:
     text = str(payload.get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
+    if sess.status != "waiting_for_user":
+        # Anything queued while the worker is busy would be consumed as the
+        # answer to its NEXT question - typed into a field and possibly saved
+        # to the answer bank. Refuse it loudly instead.
+        raise HTTPException(
+            status_code=409,
+            detail="the agent is busy right now - wait for its next question, then answer",
+        )
     sess.answer(text)
     return sess.snapshot()
 
@@ -298,14 +315,22 @@ def _apply_stream(session_id: str) -> Iterator[str]:
         return
     queue, backlog = sess.subscribe()
     try:
-        for event in backlog:
+        for index, event in enumerate(backlog):
+            # A replayed question/choice that was already answered must not
+            # reopen a modal or re-arm the chat: a reconnecting page would
+            # otherwise send a stale reply as the answer to the LIVE question.
+            if event.get("type") in ("question", "choice") and any(
+                later.get("type") in ("answer", "done") for later in backlog[index + 1:]
+            ):
+                event = {**event, "type": "history"}
             yield _sse(event)
             if event.get("type") == "done":
                 return
         while True:
-            try:
-                event = queue.get(timeout=HEARTBEAT_SECONDS)
-            except Empty:
+            event = _next_event(queue)
+            if event is _STOP:
+                return
+            if event is None:
                 yield ": ping\n\n"
                 continue
             yield _sse(event)
@@ -313,6 +338,23 @@ def _apply_stream(session_id: str) -> Iterator[str]:
                 return
     finally:
         sess.unsubscribe(queue)
+
+
+def _next_event(queue) -> Any:
+    """The next queued event, None when it is time for a heartbeat, or _STOP
+    once the server is shutting down - checked every second so an open
+    stream ends inside uvicorn's graceful window instead of being cancelled."""
+    deadline = time.monotonic() + HEARTBEAT_SECONDS
+    while True:
+        if SHUTTING_DOWN.is_set():
+            return _STOP
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            return queue.get(timeout=min(1.0, remaining))
+        except Empty:
+            continue
 
 
 def _sse(event: dict) -> str:
@@ -337,9 +379,10 @@ def _log_stream(stamp: str) -> Iterator[str]:
         for line in backlog:
             yield _sse({"type": "log", "text": line})
         while True:
-            try:
-                event = queue.get(timeout=HEARTBEAT_SECONDS)
-            except Empty:
+            event = _next_event(queue)
+            if event is _STOP:
+                return
+            if event is None:
                 yield ": ping\n\n"
                 continue
             yield _sse(event)

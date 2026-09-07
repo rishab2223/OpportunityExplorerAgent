@@ -3,9 +3,64 @@ let currentJobId = "";
 let jobsById = {};
 let lastJobs = [];
 let shortlistPage = 0;
+let referralPage = 0;
 const PAGE_SIZE = 15;
 
 const $ = (id) => document.getElementById(id);
+
+// Which page numbers to show: always the first and last, the current one
+// with two neighbours each side, and "…" where numbers are skipped.
+function pageNumbers(page, pages) {
+  if (pages <= 9) return Array.from({ length: pages }, (_, i) => i);
+  const shown = new Set([0, pages - 1]);
+  for (let i = page - 2; i <= page + 2; i++) if (i >= 0 && i < pages) shown.add(i);
+  const out = [];
+  let last = -1;
+  [...shown].sort((a, b) => a - b).forEach((i) => {
+    if (last >= 0 && i - last > 1) out.push("gap");
+    out.push(i);
+    last = i;
+  });
+  return out;
+}
+
+// First / Prev / 1 2 3 … / Next / Last for a table. `go(page)` re-renders.
+function renderPager(el, page, pages, total, noun, go) {
+  el.replaceChildren();
+  el.hidden = total <= PAGE_SIZE;
+  if (el.hidden) return;
+  const button = (text, target, opts = {}) => {
+    const b = document.createElement("button");
+    b.textContent = text;
+    b.type = "button";
+    if (opts.title) b.title = opts.title;
+    if (opts.current) {
+      b.classList.add("current");
+      b.setAttribute("aria-current", "page");
+    }
+    b.disabled = opts.disabled || opts.current || false;
+    b.addEventListener("click", () => go(target));
+    el.appendChild(b);
+  };
+  button("« First", 0, { disabled: page === 0, title: "First page" });
+  button("‹ Prev", page - 1, { disabled: page === 0, title: "Previous page" });
+  pageNumbers(page, pages).forEach((n) => {
+    if (n === "gap") {
+      const gap = document.createElement("span");
+      gap.className = "muted";
+      gap.textContent = "…";
+      el.appendChild(gap);
+    } else {
+      button(String(n + 1), n, { current: n === page });
+    }
+  });
+  button("Next ›", page + 1, { disabled: page >= pages - 1, title: "Next page" });
+  button("Last »", pages - 1, { disabled: page >= pages - 1, title: "Last page" });
+  const info = document.createElement("span");
+  info.className = "muted";
+  info.textContent = `Page ${page + 1} of ${pages} - ${total} ${noun}`;
+  el.appendChild(info);
+}
 
 function appendLog(box, text) {
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
@@ -223,12 +278,10 @@ function renderShortlist(jobs) {
   body.replaceChildren();
   const pages = Math.max(1, Math.ceil(jobs.length / PAGE_SIZE));
   shortlistPage = Math.min(Math.max(shortlistPage, 0), pages - 1);
-  $("jobspager").hidden = jobs.length <= PAGE_SIZE;
-  $("pageinfo").textContent = jobs.length
-    ? `Page ${shortlistPage + 1} of ${pages} - ${jobs.length} job(s)`
-    : "";
-  $("prevpage").disabled = shortlistPage === 0;
-  $("nextpage").disabled = shortlistPage >= pages - 1;
+  renderPager($("jobspager"), shortlistPage, pages, jobs.length, "job(s)", (p) => {
+    shortlistPage = p;
+    renderJobs(lastJobs);
+  });
   if (!jobs.length) {
     emptyRow(body, 9, "No shortlisted jobs left in this run.");
     return;
@@ -276,11 +329,18 @@ function renderReferrals(jobs) {
     ? `Run ${currentStamp}: ${pending} pending, ${jobs.length - pending} sent`
     : "";
   $("nav-referrals").textContent = jobs.length ? `Referrals (${jobs.length})` : "Referrals";
+  const pages = Math.max(1, Math.ceil(jobs.length / PAGE_SIZE));
+  referralPage = Math.min(Math.max(referralPage, 0), pages - 1);
+  renderPager($("referralspager"), referralPage, pages, jobs.length, "referral(s)", (p) => {
+    referralPage = p;
+    renderJobs(lastJobs);
+  });
   if (!jobs.length) {
     emptyRow(body, 7, "No referrals yet - use Referral on a shortlist row.");
     return;
   }
-  jobs.forEach((job) => {
+  const start = referralPage * PAGE_SIZE;
+  jobs.slice(start, start + PAGE_SIZE).forEach((job) => {
     const row = document.createElement("tr");
     row.dataset.jobId = job.job_id;
     const add = rowCellAdder(row);
@@ -378,7 +438,7 @@ async function decide(jobId, decision) {
 
 async function loadJobs(stamp) {
   if (!stamp) return;
-  if (stamp !== currentStamp) shortlistPage = 0;
+  if (stamp !== currentStamp) shortlistPage = referralPage = 0;
   currentStamp = stamp;
   try {
     const [run, data] = await Promise.all([
@@ -538,6 +598,7 @@ function streamApply(sessionId) {
     const prefix = {
       question: "AGENT ASKS: ",
       choice: "AGENT ASKS: ",
+      history: "AGENT ASKED: ",  // an already-answered prompt, replayed
       answer: "YOU: ",
       error: "ERROR: ",
       done: "SESSION ",
@@ -574,6 +635,26 @@ function streamApply(sessionId) {
       applySource.close();
       applySource = null;
     }
+    if (!applySessionId) return;
+    // Reconnect if the session is still alive; otherwise unlock the UI so
+    // Start apply works again instead of "already running" forever.
+    const sid = applySessionId;
+    setTimeout(async () => {
+      if (applySessionId !== sid || applySource) return;
+      try {
+        const state = await getJSON("/api/apply/status");
+        const dead = ["applied", "failed", "aborted", "closed", "idle"];
+        if (state.session_id === sid && !dead.includes(state.status)) {
+          streamApply(sid);
+        } else {
+          applySessionId = "";
+          applyJobId = "";
+          setChatEnabled(false);
+          appendLog($("applylog"), "--- connection lost and the session is over; Start apply begins a new one ---");
+          loadJobs(currentStamp);
+        }
+      } catch {}
+    }, 1500);
   };
 }
 
@@ -686,13 +767,26 @@ async function abortApply() {
   try {
     await postJSON(`/api/apply/${applySessionId}/abort`, {});
   } catch (err) {
-    appendLog($("applylog"), `Could not abort: ${err.message}`);
+    // The session is probably already gone; unlock the UI regardless so the
+    // user is never stuck unable to abort or start fresh.
+    appendLog($("applylog"), `Could not abort (${err.message}); resetting.`);
+    if (applySource) {
+      applySource.close();
+      applySource = null;
+    }
+    applySessionId = "";
+    applyJobId = "";
+    setChatEnabled(false);
+    loadJobs(currentStamp);
   }
 }
 
 async function resumeActiveApply() {
   const state = await getJSON("/api/apply/status");
-  if (state.session_id && state.status !== "idle") {
+  // Only a LIVE session is re-armed; a finished one used to be replayed and
+  // its chat re-enabled on every page load.
+  const dead = ["applied", "failed", "aborted", "closed", "idle"];
+  if (state.session_id && !dead.includes(state.status)) {
     applyJobId = state.job_id || "";
     setLog($("applylog"), "");
     setChatEnabled(true);
@@ -738,15 +832,6 @@ document.addEventListener("keydown", (ev) => {
 
 $("attachresume").addEventListener("click", () => sendChoice("attach resume"));
 $("attachletter").addEventListener("click", () => sendChoice("cover letter"));
-
-$("prevpage").addEventListener("click", () => {
-  shortlistPage -= 1;
-  renderJobs(lastJobs);
-});
-$("nextpage").addEventListener("click", () => {
-  shortlistPage += 1;
-  renderJobs(lastJobs);
-});
 
 $("start").addEventListener("click", startRun);
 $("stamp").addEventListener("change", (ev) => loadJobs(ev.target.value));

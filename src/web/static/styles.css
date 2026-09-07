@@ -66,6 +66,23 @@ input:disabled {
   font-size: 13px;
 }
 
+/* Table pagers: First / Prev / 1 2 3 … / Next / Last */
+.pager button {
+  min-width: 34px;
+  padding: 3px 8px;
+}
+.pager button.current {
+  font-weight: 700;
+  background: #1a73e8;
+  color: #fff;
+  border-color: #1a73e8;
+  cursor: default;
+}
+.pager button:disabled:not(.current) {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* Collapsible Selected-job panel: the 780px PDF preview otherwise pushes the
    Apply chat far below the table. */
 #jobdetail summary {
