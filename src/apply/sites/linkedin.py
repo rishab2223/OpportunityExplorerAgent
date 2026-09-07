@@ -94,11 +94,21 @@ def start(page, sess) -> str:
     if kind == "easy_apply":
         try:
             page.wait_for_selector("div[role=dialog]", timeout=10000)
-            page.wait_for_timeout(800)  # let the first step render
-            sess.log("[linkedin] Easy Apply - opened the application modal.")
         except Exception:
             page.wait_for_timeout(1500)
             sess.log("[linkedin] Clicked Easy Apply, but no dialog appeared yet.")
+            return kind
+        # The shell (title, close button, spinner) comes first; the step's
+        # fields arrive a moment later. Reading the page before they exist
+        # meant the snapshot scoped to the page BEHIND the modal.
+        try:
+            page.wait_for_selector(
+                "div[role=dialog] :is(input, select, textarea)", timeout=10000
+            )
+            page.wait_for_timeout(500)  # let the rest of the step render
+            sess.log("[linkedin] Easy Apply - opened the application modal.")
+        except Exception:
+            sess.log("[linkedin] Easy Apply modal is open, but its form has not loaded yet.")
     else:
         page.wait_for_timeout(3000)
         sess.log("[linkedin] External apply - following the employer's site.")

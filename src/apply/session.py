@@ -16,6 +16,17 @@ class Aborted(Exception):
     pass
 
 
+class PageChanged(Exception):
+    """Raised from idle_tick while the worker waits at a hand-off prompt: the
+    user opened a form (an Easy Apply popup, a new tab) or submitted the
+    application instead of typing, so the wait ends and the worker acts on
+    the page. `reason` is 'fields', 'url', 'tab' or 'submitted'."""
+
+    def __init__(self, reason: str = "fields") -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class ApplySession:
     """One assisted-apply run. The worker thread blocks on `ask` until the user replies."""
 
@@ -35,6 +46,8 @@ class ApplySession:
         # UI's reload on "done" already sees the recorded outcome (history row,
         # per-run status). Consumed once.
         self.on_outcome = None
+        # Called roughly once a second while waiting for the user (see _wait).
+        self.idle_tick = None
 
     def emit(self, event_type: str, text: str, **extra: Any) -> None:
         # extra may itself carry a "kind" key (choice events), so the event
@@ -73,6 +86,21 @@ class ApplySession:
             except Empty:
                 if self._abort.is_set():
                     raise Aborted("session aborted")
+                # Sync Playwright only delivers page events (a file picker the
+                # user just opened) while the worker is talking to the browser;
+                # the worker installs a tick so those are serviced mid-wait.
+                tick = self.idle_tick
+                if tick is not None:
+                    try:
+                        tick()
+                    except PageChanged:
+                        self.pending_question = ""
+                        self.status = "running"
+                        # The prompt is withdrawn: the page answered it.
+                        self.emit("answer", "(the page changed; reading it again)")
+                        raise
+                    except Exception:
+                        pass
                 continue
             break
         self.pending_question = ""

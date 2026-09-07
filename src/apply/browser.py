@@ -11,9 +11,26 @@ MAX_FIELDS = 60
 SNAPSHOT_JS = """
 () => {
   const out = [];
+  // querySelectorAll stops at shadow boundaries, and LinkedIn's Easy Apply
+  // modal (the whole thing: dialog, fields, buttons) lives inside an open
+  // shadow root on div#interop-outlet - so the scan saw only the page BEHIND
+  // the modal and the model clicked the blocked background "Easy Apply"
+  // button. deepAll walks open shadow roots too, in document order.
+  // Playwright's own locators pierce them, so data-oea-id keeps working.
+  const deepAll = (start, sel) => {
+    const found = [];
+    const walk = (node) => {
+      for (const el of node.querySelectorAll('*')) {
+        if (el.matches(sel)) found.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      }
+    };
+    walk(start);
+    return found;
+  };
   // Clear ids from earlier snapshots first: a hidden wizard step keeps its old
   // attributes, and a stale [data-oea-id] match would act on the wrong element.
-  for (const el of document.querySelectorAll('[data-oea-id]')) {
+  for (const el of deepAll(document, '[data-oea-id]')) {
     el.removeAttribute('data-oea-id');
   }
   const selector = 'input, textarea, select, button, [role=button], [role=checkbox], a[href]';
@@ -23,20 +40,28 @@ SNAPSHOT_JS = """
   // the MAX_FIELDS budget and the dialog's own fields - appended at the END
   // of the DOM - were truncated away, so the form looked invisible.
   let root = document;
-  for (const d of document.querySelectorAll(
+  let sawDialog = false;
+  for (const d of deepAll(document,
       '[role=dialog], [role=alertdialog], dialog[open], [aria-modal="true"]')) {
     const ds = window.getComputedStyle(d);
     const dr = d.getBoundingClientRect();
     if (ds.display === 'none' || ds.visibility === 'hidden') continue;
     if (dr.width < 260 || dr.height < 120) continue;
+    sawDialog = true;
     // Cookie-consent wrappers are role=dialog shells whose real content sits
     // in an iframe: scoping to one hid a whole SuccessFactors form. Only a
     // dialog that itself holds interactive elements may own the scan.
-    if (!d.querySelector(selector)) continue;
+    if (!deepAll(d, selector).length) continue;
     root = d;  // dialogs stack in DOM order; the last visible one is on top
   }
+  // A modal whose form is still loading (LinkedIn Easy Apply shows its shell
+  // and close button first, the fields a moment later) must not hand the
+  // scan to the page BEHIND it: the model then clicks background buttons the
+  // overlay blocks. The worker re-reads while this flag is set.
+  window.__oeaDialogPending = sawDialog &&
+    (root === document || !deepAll(root, 'input, textarea, select').length);
   let i = 0;
-  for (const el of root.querySelectorAll(selector)) {
+  for (const el of deepAll(root, selector)) {
     const style = window.getComputedStyle(el);
     const rect = el.getBoundingClientRect();
     if (style.visibility === 'hidden' || style.display === 'none') continue;
@@ -56,7 +81,8 @@ SNAPSHOT_JS = """
     if (el.labels && el.labels.length) label = el.labels[0].innerText;
     if (!label) label = el.getAttribute('aria-label') || '';
     if (!label && el.id) {
-      const forLabel = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      // Inside a shadow root the label lives in that root, not the document.
+      const forLabel = el.getRootNode().querySelector('label[for="' + CSS.escape(el.id) + '"]');
       if (forLabel) label = forLabel.innerText;
     }
     if (!label) {
@@ -91,6 +117,57 @@ SNAPSHOT_JS = """
         if (block) group = (block.innerText || '').split(String.fromCharCode(10))[0];
       }
     }
+    // Tile buttons ("Attach", "Upload") and file inputs labelled only
+    // "Attach" say nothing about WHAT they attach; the nearest heading above
+    // them does ("Resume/CV", "Cover Letter") - Greenhouse renders that heading
+    // as a div.label, so class names count as headings too.
+    const clickable = el.tagName === 'BUTTON' || el.tagName === 'A' ||
+      el.getAttribute('role') === 'button';
+    if ((clickable || type === 'file') && !group) {
+      let box = el.parentElement;
+      for (let depth = 0; box && depth < 5 && !group; depth++, box = box.parentElement) {
+        for (const h of box.querySelectorAll(
+            'label, legend, h1, h2, h3, h4, h5, h6, [role=heading], strong, b, [class*="label" i]')) {
+          if (h === el || h.contains(el)) continue;
+          if (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) {
+            const t = (h.innerText || '').trim();
+            if (t && t.length < 120) group = t;  // the last heading BEFORE the element is the nearest
+          }
+        }
+      }
+    }
+    // Every field: the nearest heading above it names its section ("Work
+    // Experience", "Education") - a repeating entry the model fills from the
+    // resume, and where the profile's location/company must NOT be applied.
+    let section = '';
+    {
+      let box = el.parentElement;
+      for (let depth = 0; box && depth < 7 && !section; depth++, box = box.parentElement) {
+        for (const h of box.querySelectorAll(
+            'h1, h2, h3, h4, h5, h6, [role=heading], legend, ' +
+            '[class*="heading" i], [class*="sectiontitle" i], [class*="section-title" i], ' +
+            '[data-automation-id*="title" i], [data-automation-id*="heading" i]')) {
+          if (h === el || h.contains(el)) continue;
+          if (h.querySelector('input, select, textarea, button')) continue;  // a wrapper, not a title
+          if (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) {
+            const t = (h.innerText || '').trim();
+            if (t && t.length < 80) section = t;
+          }
+        }
+      }
+    }
+    // Date parts labelled only "Month" / "Year" (Workday's From / To
+    // widgets): carry the enclosing group's name so From and To differ.
+    if (!group && /^(month|year|day|mm|yyyy|dd)$/i.test((label || '').trim())) {
+      const g = el.closest('[role=group], fieldset');
+      if (g) {
+        const named = g.querySelector('legend, label');
+        const gl = g.getAttribute('aria-label') || (named ? named.innerText : '') ||
+          (g.getAttribute('aria-labelledby') && document.getElementById(g.getAttribute('aria-labelledby'))
+            ? document.getElementById(g.getAttribute('aria-labelledby')).innerText : '');
+        if (gl) group = gl.trim();
+      }
+    }
     const item = {
       id: i,
       tag: el.tagName.toLowerCase(),
@@ -99,9 +176,11 @@ SNAPSHOT_JS = """
       haspopup: el.getAttribute('aria-haspopup') || '',
       autocomplete: el.getAttribute('autocomplete') || '',
       path: path,
+      section: section.slice(0, 80),
       group: (group || '').trim().slice(0, 160),
       label: (label || '').trim().slice(0, 200),
       name: el.getAttribute('name') || '',
+      elid: el.id || '',  // Greenhouse names its file inputs by id ("resume", "cover_letter")
       required: el.required === true || el.getAttribute('aria-required') === 'true',
       value: (el.value || '').toString().slice(0, 200),
       text: (el.innerText || '').trim().slice(0, 80),
@@ -232,9 +311,76 @@ def last_snapshot_error() -> str:
     return _last_snapshot_error
 
 
+def dialog_pending(page) -> bool:
+    """True when the last snapshot saw an open modal that has no form
+    controls yet (still loading), so its fields are not in the snapshot."""
+    try:
+        return bool(page.evaluate("() => !!window.__oeaDialogPending"))
+    except Exception:
+        return False
+
+
+PAGE_TEXT_JS = """
+() => {
+  // body.innerText skips shadow roots, and LinkedIn renders its Easy Apply
+  // modal AND its "Your application was sent" confirmation inside one - the
+  // submitted-page check never saw it. Append each open shadow root's text.
+  const parts = [document.body ? document.body.innerText || '' : ''];
+  const walk = (node) => {
+    for (const el of node.querySelectorAll('*')) {
+      if (!el.shadowRoot) continue;
+      for (const child of el.shadowRoot.children) parts.push(child.innerText || '');
+      walk(el.shadowRoot);
+    }
+  };
+  walk(document);
+  return parts.join('\\n');
+}
+"""
+
+
 def page_text(page, limit: int = 2500) -> str:
     try:
-        return (page.inner_text("body") or "")[:limit]
+        return (page.evaluate(PAGE_TEXT_JS) or "")[:limit]
+    except Exception:
+        try:
+            return (page.inner_text("body") or "")[:limit]
+        except Exception:
+            return ""
+
+
+ALERTS_JS = """
+() => {
+  // Workday's "Errors Found" banner and its inline "Error: The field ... is
+  // required" carry no alert role - only class/automation-id names with
+  // "error" in them - so those count too, limited to short visible text.
+  const sel = '[role=alert], [aria-live="assertive"], [aria-invalid="true"], ' +
+    '[data-automation-id*="error" i], [class*="error" i], [id*="error" i]';
+  const seen = new Set(), out = [];
+  const walk = (node) => {
+    for (const el of node.querySelectorAll('*')) {
+      if (el.matches(sel) && el.getClientRects().length) {
+        let t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+        if (!t && el.labels && el.labels[0]) t = 'invalid: ' + el.labels[0].innerText.trim();
+        if (!t || t.length > 240) continue;
+        // keep the innermost message, not every wrapper that repeats it
+        if ([...seen].some(s => s.includes(t) || t.includes(s))) continue;
+        seen.add(t); out.push(t.slice(0, 160));
+      }
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+  };
+  walk(document);
+  return out.slice(0, 8).join(' | ');
+}
+"""
+
+
+def alerts(page) -> str:
+    """Visible validation messages on the page ("Error: Country is required"),
+    for the model and the user when a Next click goes nowhere."""
+    try:
+        return page.evaluate(ALERTS_JS) or ""
     except Exception:
         return ""
 

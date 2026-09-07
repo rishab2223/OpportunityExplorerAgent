@@ -90,9 +90,58 @@ class ProfileMappingTests(ResolverTestCase):
         self.assertIsNone(resolver.resolve(field(label="Work authorization")))
 
 
+class CountryAndDialCodeTests(ResolverTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._write_profile({**DUMMY_PROFILE, "location": "Gurgaon, India"})
+
+    def _write_profile(self, data: dict) -> None:
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_country_derived_from_location(self) -> None:
+        got = resolver.resolve(field(label="Country"))
+        self.assertEqual(got, ("India", "profile"))
+        got = resolver.resolve(field(label="Country of residence"))
+        self.assertEqual(got, ("India", "profile"))
+
+    def test_country_select_picks_the_matching_option(self) -> None:
+        got = resolver.resolve(field(tag="select", type="", label="Country",
+                                     options=["Select", "Diego Garcia (+246)", "India (+91)"]))
+        self.assertEqual(got, ("India (+91)", "profile"))
+
+    def test_wrong_dial_code_default_is_overridden(self) -> None:
+        # Greenhouse's phone widget defaulted to +246; the one existing value
+        # the resolver may replace.
+        got = resolver.resolve(field(tag="select", type="", label="Country", value="+246",
+                                     options=["+246", "+91", "+1"]))
+        self.assertEqual(got, ("+91", "profile"))
+
+    def test_right_dial_code_is_left_alone(self) -> None:
+        self.assertIsNone(resolver.resolve(field(tag="select", type="", label="Country",
+                                                 value="+91", options=["+246", "+91"])))
+
+    def test_no_dial_code_when_phone_has_no_prefix(self) -> None:
+        self._write_profile({**DUMMY_PROFILE, "phone": "9000000000"})
+        self.assertIsNone(resolver.resolve(field(tag="select", type="", label="Country",
+                                                 value="+246", options=["+246", "+91"])))
+
+    def test_explicit_phone_country_code_wins(self) -> None:
+        self._write_profile({**DUMMY_PROFILE, "phone": "9000000000", "phone_country_code": "91"})
+        got = resolver.resolve(field(tag="select", type="", label="Country",
+                                     value="+246", options=["+246", "+91"]))
+        self.assertEqual(got, ("+91", "profile"))
+
+
 class ControlTypeTests(ResolverTestCase):
     def test_file_input_is_resume(self) -> None:
+        # Unlabelled (single-upload forms) and resume-named inputs get the resume.
         self.assertEqual(resolver.resolve(field(type="file")), ("", "resume"))
+        self.assertEqual(resolver.resolve(field(type="file", label="Upload CV")), ("", "resume"))
+
+    def test_other_file_inputs_are_left_for_the_model(self) -> None:
+        # Regression: every file input got the resume, portfolio uploads included.
+        self.assertIsNone(resolver.resolve(field(type="file", label="Portfolio")))
+        self.assertIsNone(resolver.resolve(field(type="file", name="certificates")))
 
     def test_checkbox_radio_button_never_resolved(self) -> None:
         self.assertIsNone(resolver.resolve(field(type="checkbox", label="Notice period")))
@@ -132,3 +181,105 @@ class MatchOptionTests(unittest.TestCase):
         self.assertEqual(resolver.match_option("days", ["30 days", "60 days"]), "")
         self.assertEqual(resolver.match_option("90 days", ["30 days", "60 days"]), "")
         self.assertEqual(resolver.match_option("", ["a"]), "")
+
+
+class CityFromLocationTests(ResolverTestCase):
+    def test_city_field_gets_only_the_city(self) -> None:
+        profile.PROFILE_PATH.write_text(
+            json.dumps({**DUMMY_PROFILE, "location": "Gurgaon, India"}), encoding="utf-8"
+        )
+        self.assertEqual(resolver.resolve(field(label="City")), ("Gurgaon", "profile"))
+        self.assertEqual(resolver.resolve(field(label="Current Location")), ("Gurgaon, India", "profile"))
+
+
+class PlaceholderSelectTests(ResolverTestCase):
+    def test_placeholder_select_counts_as_empty(self) -> None:
+        # LinkedIn Easy Apply: <select> showing "Select an option" is blank.
+        opts = ["Select an option", "United States of America", "India"]
+        self.assertTrue(resolver.is_blank(field(tag="select", type="", label="Country",
+                                                value="Select an option", options=opts)))
+        self.assertFalse(resolver.is_blank(field(tag="select", type="", label="Country",
+                                                 value="India", options=opts)))
+        self.assertTrue(resolver.is_blank(field(label="City", value="")))
+        self.assertFalse(resolver.is_blank(field(label="City", value="Pune")))
+
+    def test_country_select_on_placeholder_is_filled(self) -> None:
+        profile.PROFILE_PATH.write_text(
+            json.dumps({**DUMMY_PROFILE, "location": "Gurgaon, India"}), encoding="utf-8"
+        )
+        opts = ["Select an option", "United States of America", "India"]
+        got = resolver.resolve(field(tag="select", type="", label="Country",
+                                     value="Select an option", options=opts))
+        self.assertEqual(got, ("India", "profile"))
+
+    def test_location_city_label(self) -> None:
+        profile.PROFILE_PATH.write_text(
+            json.dumps({**DUMMY_PROFILE, "location": "Gurgaon, India"}), encoding="utf-8"
+        )
+        self.assertEqual(resolver.resolve(field(label="Location (city)")), ("Gurgaon", "profile"))
+
+
+class ListboxButtonResolveTests(ResolverTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        profile.PROFILE_PATH.write_text(json.dumps({
+            **DUMMY_PROFILE, "location": "Gurgaon, India", "phone": "9000000000",
+            "phone_country_code": "+91"}), encoding="utf-8")
+
+    def _button(self, label, text="Select One"):
+        # type="button", exactly as the snapshot reports Workday's dropdowns.
+        return field(tag="button", type="button", haspopup="listbox", label=label, text=text, value="")
+
+    def test_given_names_label(self) -> None:
+        self.assertEqual(resolver.resolve(field(label="Given Name(s)*")), ("Test", "profile"))
+        self.assertEqual(resolver.resolve(field(label="Family Name*")), ("User", "profile"))
+
+    def test_blank_and_filled(self) -> None:
+        self.assertTrue(resolver.is_blank(self._button("Country*")))
+        self.assertFalse(resolver.is_blank(self._button("Country*", text="India")))
+
+    def test_country_and_phone_code_buttons(self) -> None:
+        self.assertEqual(resolver.resolve(self._button("Country*")), ("India", "profile"))
+        self.assertEqual(resolver.resolve(self._button("Country Phone Code*")), ("+91", "profile"))
+        self.assertEqual(resolver.resolve(self._button("Phone Device Type*")), None)
+        self.assertIsNone(resolver.resolve(self._button("Country*", text="India")))
+
+    def test_phone_code_select_with_option_text(self) -> None:
+        got = resolver.resolve(field(tag="select", type="", label="Country Phone Code",
+                                     value="", options=["Select One", "India (+91)", "Canada (+1)"]))
+        self.assertEqual(got, ("India (+91)", "profile"))
+
+
+class RepeatingSectionTests(ResolverTestCase):
+    def test_entry_fields_are_left_to_the_model(self) -> None:
+        # Workday "My Experience": the profile's location is not a past job's.
+        self.assertIsNone(resolver.resolve(field(label="Location", section="Work Experience")))
+        self.assertIsNone(resolver.resolve(field(label="Company", section="Employment History")))
+        self.assertIsNone(resolver.resolve(field(label="Location", section="Education")))
+        self.assertEqual(resolver.resolve(field(label="Location", section="Contact Information")),
+                         ("Gurgaon", "profile"))
+        self.assertEqual(resolver.resolve(field(label="Location")), ("Gurgaon", "profile"))
+
+
+class AccentAndAddressTests(ResolverTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        profile.PROFILE_PATH.write_text(json.dumps({
+            **DUMMY_PROFILE, "state": "Haryana", "address_line1": "12 Test Lane"}), encoding="utf-8")
+
+    def test_accent_insensitive_option_match(self) -> None:
+        # Workday spells the Indian states with macrons.
+        opts = ["Select One", "Bihār", "Haryāna", "Himāchal Pradesh"]
+        self.assertEqual(resolver.match_option("Haryana", opts), "Haryāna")
+        self.assertEqual(resolver.match_option("bihar", opts), "Bihār")
+        self.assertEqual(resolver.match_option("Pradesh", opts), "Himāchal Pradesh")
+
+    def test_state_and_address_rules(self) -> None:
+        opts = ["Select One", "Haryāna", "Kerala"]
+        self.assertEqual(resolver.resolve(field(tag="select", type="", label="State*", options=opts)),
+                         ("Haryāna", "profile"))
+        self.assertEqual(resolver.resolve(field(tag="button", type="button", haspopup="listbox",
+                                                label="State*", text="Select One")),
+                         ("Haryana", "profile"))
+        self.assertEqual(resolver.resolve(field(label="Address Line 1")), ("12 Test Lane", "profile"))
+        self.assertIsNone(resolver.resolve(field(label="Address Line 2")))

@@ -47,6 +47,16 @@ class ResumeFieldTests(unittest.TestCase):
     def test_unlabelled_file_input_defaults_to_resume(self) -> None:
         self.assertTrue(is_resume_field(field()))
 
+    def test_greenhouse_inputs_identified_by_id_or_heading(self) -> None:
+        # Both Greenhouse file inputs are labelled "Attach"; the element id
+        # ("resume" / "cover_letter") or the heading above them decides.
+        self.assertTrue(is_resume_field(field(label="Attach", elid="resume")))
+        self.assertFalse(is_resume_field(field(label="Attach", elid="cover_letter")))
+        self.assertTrue(is_resume_field(field(label="Attach", group="Resume/CV *")))
+        self.assertFalse(is_resume_field(field(label="Attach", group="Cover Letter")))
+        # A labelled non-resume upload is neither.
+        self.assertFalse(is_resume_field(field(label="Attach", group="Portfolio")))
+
     def test_cover_letter_upload_is_not_a_resume(self) -> None:
         self.assertFalse(is_resume_field(field(label="Upload cover letter")))
 
@@ -65,6 +75,21 @@ class UploadTileTests(unittest.TestCase):
             {"tag": "button", "text": "Attach a Cover Letter", "label": ""}), "letter")
         self.assertEqual(_upload_tile_kind(
             {"tag": "div", "role": "button", "text": "Add resume", "label": ""}), "resume")
+
+    def test_greenhouse_tiles_use_the_section_heading(self) -> None:
+        # "Attach" alone names nothing; the snapshot's group carries the
+        # heading above the tile.
+        from src.apply.worker import _upload_tile_kind
+
+        self.assertEqual(_upload_tile_kind(
+            {"tag": "button", "text": "Attach", "label": "", "group": "Resume/CV"}), "resume")
+        self.assertEqual(_upload_tile_kind(
+            {"tag": "button", "text": "Attach", "label": "", "group": "Cover Letter"}), "letter")
+        # The sibling tiles under the same heading are not upload verbs.
+        self.assertEqual(_upload_tile_kind(
+            {"tag": "button", "text": "Dropbox", "label": "", "group": "Resume/CV"}), "")
+        self.assertEqual(_upload_tile_kind(
+            {"tag": "button", "text": "Enter manually", "label": "", "group": "Resume/CV"}), "")
 
     def test_non_tiles_are_ignored(self) -> None:
         from src.apply.worker import _upload_tile_kind
@@ -234,3 +259,115 @@ class CoverLetterFlowTests(unittest.TestCase):
         attach = self._attach(sess)
         self.assertEqual(attach.cover_letter(for_upload=False), "")
         self.assertIn("empty", sess.choices[1][1]["error"])
+
+
+class LetterReuseTests(unittest.TestCase):
+    """A letter drafted for a job survives the session: the next session for
+    the SAME job reopens the modal on it (no draft call); the draft, every
+    revision and the accepted edit are all kept."""
+
+    def setUp(self) -> None:
+        from src import history
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self._original_db = history.DB_PATH
+        history.DB_PATH = self.dir / "job_history.db"
+        patcher = mock.patch(
+            "src.apply.profile.load_profile", return_value={"full_name": "Test User"}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.calls = 0
+
+    def tearDown(self) -> None:
+        from src import history
+
+        history.DB_PATH = self._original_db
+        self._tmp.cleanup()
+
+    def _invoke(self, system, user, schema):
+        self.calls += 1
+        return schema(text="Revised letter." if "revise" in system.lower() else "Drafted letter.")
+
+    def _attach(self, sess, job_id="test:reuse"):
+        job = {"job_id": job_id, "company": "X", "title": "Y"}
+        return Attachments(sess, job, "resume text", self._invoke, None, self.dir)
+
+    def test_second_session_reopens_the_same_letter_without_a_call(self) -> None:
+        first = ScriptedSession(["__use__\nDrafted letter, hand-edited."])
+        self.assertEqual(self._attach(first).cover_letter(for_upload=False), "Drafted letter, hand-edited.")
+        self.assertEqual(self.calls, 1)
+
+        second = ScriptedSession(["__use__\nDrafted letter, hand-edited."])
+        attach = self._attach(second)
+        self.assertEqual(attach.cover_letter(for_upload=False), "Drafted letter, hand-edited.")
+        self.assertEqual(self.calls, 1)  # no second draft
+        self.assertEqual(second.choices[0][1]["text"], "Drafted letter, hand-edited.")
+        self.assertTrue(any("Reusing the cover letter" in line for line in second.logs), second.logs)
+
+    def test_abort_right_after_the_draft_still_reuses_it(self) -> None:
+        from src.apply.session import Aborted
+
+        class AbortingSession(ScriptedSession):
+            def ask_choice(self, kind, text, meta=None):
+                self.choices.append((kind, meta or {}))
+                raise Aborted("user aborted")
+
+        with self.assertRaises(Aborted):
+            self._attach(AbortingSession([])).cover_letter(for_upload=False)
+        self.assertEqual(self.calls, 1)
+
+        second = ScriptedSession(["skip"])
+        self._attach(second).cover_letter(for_upload=False)
+        self.assertEqual(self.calls, 1)
+        self.assertEqual(second.choices[0][1]["text"], "Dear X team,\n\nDrafted letter.\n\nRegards,\nTest User")
+
+    def test_revision_is_kept_and_other_jobs_are_untouched(self) -> None:
+        sess = ScriptedSession(["__revise__ shorter", "__use__\nRevised letter."])
+        self._attach(sess).cover_letter(for_upload=False)
+        self.assertEqual(self.calls, 2)
+
+        again = ScriptedSession(["skip"])
+        self._attach(again).cover_letter(for_upload=False)
+        self.assertEqual(again.choices[0][1]["text"], "Revised letter.")
+        self.assertEqual(self.calls, 2)
+
+        other = ScriptedSession(["skip"])
+        self._attach(other, job_id="test:other").cover_letter(for_upload=False)
+        self.assertEqual(self.calls, 3)  # a different job drafts its own
+
+    def test_no_job_id_means_nothing_is_stored(self) -> None:
+        from src.apply import cover_letter
+
+        sess = ScriptedSession(["__use__\nDrafted letter."])
+        Attachments(sess, {"company": "X", "title": "Y"}, "r", self._invoke, None, self.dir).cover_letter(for_upload=False)
+        self.assertEqual(cover_letter.load_saved(""), "")
+
+
+class GenericPickerTests(unittest.TestCase):
+    def test_bare_select_file_uses_the_page_text(self) -> None:
+        # Workday's resume step: a "Select file" button, the input hidden, the
+        # only clue the step's own wording.
+        from src.apply.worker import _upload_tile_kind
+
+        tile = {"tag": "button", "text": "Select file", "label": "Select file", "group": ""}
+        self.assertEqual(_upload_tile_kind(tile), "")
+        self.assertEqual(_upload_tile_kind(tile, "Autofill with Resume. Upload your resume. Next"), "resume")
+        self.assertEqual(_upload_tile_kind(tile, "Add your cover letter here"), "letter")
+        self.assertEqual(_upload_tile_kind(tile, "Upload a photo of your certificate"), "")
+        # A heading of its own still wins over the page text.
+        self.assertEqual(_upload_tile_kind({**tile, "group": "Cover Letter"}, "Upload your resume"), "letter")
+
+
+class BareAddIsNotAPickerTests(unittest.TestCase):
+    def test_add_alone_never_uploads(self) -> None:
+        # Workday's My Experience: "Add" under Work Experience was taken for a
+        # picker and the resume went in "via 'Add'".
+        from src.apply.worker import _is_picker_button, _upload_tile_kind
+
+        add = {"tag": "button", "text": "Add", "label": "Add", "group": "Work Experience"}
+        self.assertFalse(_is_picker_button(add))
+        self.assertEqual(_upload_tile_kind(add, "Resume/CV Upload a file (5MB max)"), "")
+        self.assertTrue(_is_picker_button({"tag": "button", "text": "Add files", "label": ""}))
+        self.assertTrue(_is_picker_button({"tag": "button", "text": "Select files", "label": ""}))
