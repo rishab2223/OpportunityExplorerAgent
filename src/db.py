@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS known_answers (
   first_seen   TEXT NOT NULL,
   last_used    TEXT
 );
+CREATE TABLE IF NOT EXISTS cover_letters (
+  job_id     TEXT PRIMARY KEY,
+  company    TEXT,
+  title      TEXT,
+  text       TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """
 
 _INIT_LOCK = threading.Lock()

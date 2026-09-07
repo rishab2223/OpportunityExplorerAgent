@@ -117,3 +117,19 @@ class MigrationTests(BankTestCase):
         answers.remember("notice period", "30 days")
         self.assertEqual(answers.migrate_learned(learned), 0)
         self.assertEqual(answers.recall("notice period")["answer"], "30 days")
+
+
+class PhoneTopicScopeTests(unittest.TestCase):
+    def test_phone_topic_is_the_plain_question_only(self) -> None:
+        from src.answers import question_key
+
+        self.assertEqual(question_key("Phone number"), "phone")
+        self.assertEqual(question_key("Mobile"), "phone")
+        self.assertEqual(question_key("Contact Number"), "phone")
+        # Workday's neighbours must NOT share the key: "Mobile" (a device
+        # type) was replayed as the country code and the extension.
+        self.assertNotEqual(question_key("Phone Device Type"), "phone")
+        self.assertNotEqual(question_key("Country Phone Code"), "phone")
+        self.assertNotEqual(question_key("Phone Extension"), "phone")
+        self.assertEqual(question_key("Email address"), "email")
+        self.assertNotEqual(question_key("Email preferences"), "email")

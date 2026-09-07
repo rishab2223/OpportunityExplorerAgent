@@ -92,7 +92,7 @@ class CoverLetter(BaseModel):
 
 def is_cover_letter(field: dict[str, Any]) -> bool:
     haystack = " ".join(
-        str(field.get(key) or "") for key in ("label", "name", "group", "text")
+        str(field.get(key) or "") for key in ("label", "name", "elid", "group", "text")
     )
     return bool(COVER_LETTER_RE.search(haystack))
 
@@ -117,6 +117,48 @@ def frame(text: str, job: dict[str, Any], profile: dict[str, Any]) -> str:
     if not _SIGNOFF_RE.match(paras[-1].splitlines()[0].strip()):
         framed.append(f"Regards,\n{name}")
     return "\n\n".join(framed)
+
+
+def load_saved(job_id: str) -> str:
+    """The letter drafted for this job in an earlier session, or ''. An
+    aborted session must not cost a second draft call: the text is kept in
+    the local database and the modal reopens on it."""
+    if not job_id:
+        return ""
+    from src import db
+
+    conn = db.connect()
+    try:
+        row = conn.execute(
+            "SELECT text FROM cover_letters WHERE job_id = ?", (job_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return (row["text"] if row else "") or ""
+
+
+def save(job_id: str, job: dict[str, Any], text: str) -> None:
+    """Keep the current letter for this job: after the draft, each revision
+    and the accepted edit, so whatever the session did last survives it."""
+    if not job_id or not (text or "").strip():
+        return
+    from datetime import datetime, timezone
+
+    from src import db
+
+    conn = db.connect()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO cover_letters (job_id, company, title, text, updated_at)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(job_id) DO UPDATE SET text = excluded.text,"
+                "  updated_at = excluded.updated_at",
+                (job_id, str(job.get("company") or ""), str(job.get("title") or ""),
+                 text, datetime.now(timezone.utc).isoformat()),
+            )
+    finally:
+        conn.close()
 
 
 def draft(invoke, job: dict[str, Any], resume_text: str, profile_text: str) -> str:

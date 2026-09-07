@@ -43,8 +43,12 @@ TOPICS: dict[str, re.Pattern[str]] = {
     "linkedin_url": re.compile(r"\blinkedin\b"),
     "github_url": re.compile(r"\bgithub\b"),
     "portfolio_url": re.compile(r"\b(portfolio|personal (web)?site)\b"),
-    "phone": re.compile(r"\b(phone|mobile|contact number)\b"),
-    "email": re.compile(r"\be[- ]?mail\b"),
+    # Anchored: a loose \bphone\b collapsed "Phone Device Type", "Country
+    # Phone Code" and "Phone Extension" onto one key, so "Mobile" (the device
+    # type) was replayed as a country code. The profile fills the real phone
+    # and email fields anyway; the bank only needs the plain question.
+    "phone": re.compile(r"^(mobile|phone|cell|telephone|contact)( phone)?( number| no)?$"),
+    "email": re.compile(r"^(work |primary |personal |your )?e[- ]?mail( address| id)?$"),
     "gender": re.compile(r"\bgender\b|\bsex\b"),
     "disability": re.compile(r"\bdisabilit\w*\b"),
     "veteran": re.compile(r"\bveteran\b|\bmilitary\b"),
@@ -109,6 +113,25 @@ def recall(label: str, group: str = "") -> dict[str, str] | None:
             )
     finally:
         conn.close()
+    return {"key": row["question_key"], "question": row["question"],
+            "answer": row["answer"], "kind": row["kind"]}
+
+
+def lookup(key: str) -> dict[str, str] | None:
+    """The stored entry for a topic slug, without counting it as a use."""
+    if not key:
+        return None
+    conn = db.connect()
+    try:
+        row = conn.execute(
+            "SELECT question_key, question, answer, kind FROM known_answers"
+            " WHERE question_key = ?",
+            (key,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
     return {"key": row["question_key"], "question": row["question"],
             "answer": row["answer"], "kind": row["kind"]}
 
