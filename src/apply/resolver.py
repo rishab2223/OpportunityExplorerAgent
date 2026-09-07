@@ -119,13 +119,64 @@ _FILLABLE_TYPES = ("", "text", "email", "tel", "url", "number", "search")
 # are the model's to fill from the resume.
 REPEATING_SECTION_RE = re.compile(
     r"\b(work|professional|employment)\s+(experience|history)\b|\beducation\b"
-    r"|\blanguages?\b|\bcertifications?\b|\bprevious employment\b",
+    r"|\blanguages?\b|\bcertifications?\b|\bprevious employment\b"
+    r"|\bwebsites?\b|\bsocial (network|media) (urls?|links?)\b|\bonline profiles?\b",
     re.IGNORECASE,
 )
+# Sections the PROFILE can fill entry by entry, no model needed: the k-th
+# "Language" select gets the k-th profile language, the k-th "URL" the k-th
+# link. (Work Experience and Education come from the resume via the model.)
+LANGUAGES_SECTION_RE = re.compile(r"\blanguages?\b", re.IGNORECASE)
+WEBSITES_SECTION_RE = re.compile(
+    r"\bwebsites?\b|\bsocial (network|media) (urls?|links?)\b|\bonline profiles?\b", re.IGNORECASE
+)
+_LEVEL_LABEL_RE = re.compile(r"\b(overall|proficiency|level|fluency|reading|writing|speaking)\b", re.IGNORECASE)
+_URL_LABEL_RE = re.compile(r"\b(url|website|link|address)\b", re.IGNORECASE)
 
 
 def in_repeating_section(field: dict[str, Any]) -> bool:
     return bool(REPEATING_SECTION_RE.search(str(field.get("section") or "")))
+
+
+def profile_languages(data: dict[str, Any]) -> list[tuple[str, str]]:
+    """'English - Intermediate; Hindi - Fluent' -> [("English", "Intermediate"),
+    ("Hindi", "Fluent")]. Accepts ':', '(' and ',' as separators too."""
+    out = []
+    for part in re.split(r"[;,\n]+", str(data.get("languages") or "")):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r"^\s*([^-:(]+?)\s*(?:[-:(]\s*([^)]+?)\s*\)?)?\s*$", part)
+        if m:
+            out.append((m.group(1).strip(), (m.group(2) or "").strip()))
+    return out
+
+
+def profile_links(data: dict[str, Any]) -> list[str]:
+    return [str(data.get(k) or "").strip() for k in ("linkedin", "github", "portfolio") if str(data.get(k) or "").strip()]
+
+
+def entry_value(field: dict[str, Any], data: dict[str, Any]) -> str | None:
+    """The profile value for the k-th field of its kind inside a Languages or
+    Websites section (k = field['ordinal'], set by the sweep in page order),
+    or None when this is not such a field."""
+    section = str(field.get("section") or "")
+    label = str(field.get("label") or "")
+    ordinal = int(field.get("ordinal") or 0)
+    if LANGUAGES_SECTION_RE.search(section):
+        langs = profile_languages(data)
+        if ordinal >= len(langs):
+            return None
+        name, level = langs[ordinal]
+        if re.match(r"^\s*languages?\b", label, re.IGNORECASE):
+            return name
+        if _LEVEL_LABEL_RE.search(label):
+            return level or None
+        return None
+    if WEBSITES_SECTION_RE.search(section) and _URL_LABEL_RE.search(label):
+        links = profile_links(data)
+        return links[ordinal] if ordinal < len(links) else None
+    return None
 _DIAL_CODE_RE = re.compile(r"\+\d{1,3}\b")
 # A dropdown showing "Select an option" holds nothing; treating that as a
 # value left LinkedIn's Country select untouched.
@@ -194,7 +245,19 @@ def resolve(field: dict[str, Any], job: dict[str, Any] | None = None) -> tuple[s
     if tag not in ("input", "textarea", "select") and not listbox:
         return None
     if in_repeating_section(field):
-        return None  # a job entry's Location is that job's, not the profile's
+        # Languages and Websites entries come from the profile in order; a
+        # job entry's Location is that job's, not the profile's (model).
+        if not is_blank(field):
+            return None
+        value = entry_value(field, profile.load_profile())
+        if not value:
+            return None
+        if tag == "select":
+            option = match_option(value, field.get("options") or [])
+            return (option, "profile") if option else None
+        if listbox or tag in ("input", "textarea"):
+            return value, "profile"
+        return None
     # A dropdown button is type="button" - it must not fall to this guard.
     if not listbox and field_type in ("checkbox", "radio", "submit", "button", "reset", "image", "password"):
         return None

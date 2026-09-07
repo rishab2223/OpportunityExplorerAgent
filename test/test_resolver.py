@@ -283,3 +283,44 @@ class AccentAndAddressTests(ResolverTestCase):
                          ("Haryana", "profile"))
         self.assertEqual(resolver.resolve(field(label="Address Line 1")), ("12 Test Lane", "profile"))
         self.assertIsNone(resolver.resolve(field(label="Address Line 2")))
+
+
+class ProfileSectionEntryTests(ResolverTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        profile.PROFILE_PATH.write_text(json.dumps({
+            **DUMMY_PROFILE, "languages": "English - Intermediate; Hindi - Fluent",
+            "github": "https://github.com/test"}), encoding="utf-8")
+
+    def test_languages_parse(self) -> None:
+        self.assertEqual(resolver.profile_languages({"languages": "English - Intermediate; Hindi - Fluent"}),
+                         [("English", "Intermediate"), ("Hindi", "Fluent")])
+        self.assertEqual(resolver.profile_languages({"languages": "English (Fluent), Hindi: Native"}),
+                         [("English", "Fluent"), ("Hindi", "Native")])
+        self.assertEqual(resolver.profile_languages({"languages": "Tamil"}), [("Tamil", "")])
+        self.assertEqual(resolver.profile_languages({}), [])
+
+    def test_kth_language_entry(self) -> None:
+        opts = ["Select One", "English", "Hindi", "Tamil"]
+        first = field(tag="select", type="", label="Language*", section="Languages 1", options=opts, ordinal=0)
+        second = field(tag="select", type="", label="Language*", section="Languages", options=opts, ordinal=1)
+        third = field(tag="select", type="", label="Language*", section="Languages", options=opts, ordinal=2)
+        self.assertEqual(resolver.resolve(first), ("English", "profile"))
+        self.assertEqual(resolver.resolve(second), ("Hindi", "profile"))
+        self.assertIsNone(resolver.resolve(third))
+        level = field(tag="select", type="", label="Overall*", section="Languages 2",
+                      options=["Select One", "Intermediate", "Fluent"], ordinal=1)
+        self.assertEqual(resolver.resolve(level), ("Fluent", "profile"))
+        # A listbox button for the language works the same way.
+        button = field(tag="button", type="button", haspopup="listbox", label="Language*",
+                       text="Select One", section="Languages", ordinal=1)
+        self.assertEqual(resolver.resolve(button), ("Hindi", "profile"))
+
+    def test_websites_take_the_profile_links_in_order(self) -> None:
+        self.assertEqual(resolver.resolve(field(label="URL*", section="Websites 1", ordinal=0)),
+                         ("https://linkedin.com/in/test", "profile"))
+        self.assertEqual(resolver.resolve(field(label="URL*", section="Websites", ordinal=1)),
+                         ("https://github.com/test", "profile"))
+        self.assertIsNone(resolver.resolve(field(label="URL*", section="Websites", ordinal=2)))
+        # Work Experience stays the model's.
+        self.assertIsNone(resolver.resolve(field(label="Location", section="Work Experience 1", ordinal=0)))

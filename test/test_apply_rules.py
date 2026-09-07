@@ -682,3 +682,118 @@ class RefillTests(TempDbTestCase):
             worker._sweep(None, [dict(field, label="Fax")], {worker._field_key(dict(field, label="Fax"), "Fax")},
                           attempts, {}, "", Sess(), written=written)
         self.assertEqual(calls, [])
+
+
+class SuggestionRowTests(unittest.TestCase):
+    def test_placeholder_rows_are_not_suggestions(self) -> None:
+        from src.apply.worker import _real_suggestions
+
+        self.assertFalse(_real_suggestions(["No Items.", "No Items."]))
+        self.assertFalse(_real_suggestions(["Loading...", ""]))
+        self.assertTrue(_real_suggestions(["No Items.", "JavaScript"]))
+        self.assertTrue(_real_suggestions(["India (+91)"]))
+
+
+class HoldsTests(unittest.TestCase):
+    def test_reformatted_phone_counts_as_held(self) -> None:
+        from src.apply.worker import _holds
+
+        class Loc:
+            def __init__(self, shown):
+                self.shown = shown
+
+            def input_value(self, timeout=0):
+                return self.shown
+
+        self.assertTrue(_holds(Loc("9000000000"), "9000000000"))
+        self.assertTrue(_holds(Loc("090000 00000"), "9000000000"))   # national format, trunk 0
+        self.assertTrue(_holds(Loc("+91 90000 00000"), "+91 9000000000"))
+        self.assertFalse(_holds(Loc(""), "9000000000"))
+        self.assertFalse(_holds(Loc("9000000001"), "9000000000"))
+        self.assertFalse(_holds(Loc("Gurgaon"), "Noida"))
+
+
+class ModelNextRefusedTests(TempDbTestCase):
+    """The model may not advance the wizard itself: with sections still empty
+    it is told which, and otherwise the loop's own review prompt does it."""
+
+    def _run(self, holder):
+        from src.apply.worker import _run_action
+
+        class Sess:
+            def log(self, t):
+                pass
+
+        fields = [{"id": 7, "tag": "button", "text": "Next", "label": "Next", "section": ""}]
+        notes = []
+        result = _run_action(None, ApplyAction(action="click", field_id=7, confidence=0.99), fields,
+                             {}, "", Sess(), [], notes, set(), {}, {}, set(), attach=None, holder=holder)
+        return result, notes
+
+    def test_next_refused_while_sections_are_empty(self) -> None:
+        result, notes = self._run({"pending_sections": ["Education", "Languages"], "confirm_advance": False})
+        self.assertEqual(result, "refused")
+        self.assertIn("Education, Languages", notes[-1])
+
+    def test_next_refused_in_review_mode(self) -> None:
+        result, notes = self._run({"pending_sections": [], "confirm_advance": True})
+        self.assertEqual(result, "refused")
+        self.assertIn("reviewed", notes[-1])
+
+    def test_advance_button_matcher(self) -> None:
+        from src.apply.worker import _is_advance_button
+
+        self.assertTrue(_is_advance_button({"tag": "button", "text": "Next"}))
+        self.assertTrue(_is_advance_button({"tag": "button", "text": "Save and Continue"}))
+        self.assertFalse(_is_advance_button({"tag": "a", "text": "Code Review"}))
+        self.assertFalse(_is_advance_button({"tag": "button", "type": "submit", "text": "Submit application"}))
+
+
+class DatePartTests(unittest.TestCase):
+    def test_leading_zero_dropped_by_the_widget_still_counts(self) -> None:
+        from src.apply.worker import _same_number
+
+        self.assertTrue(_same_number("7", "07"))
+        self.assertTrue(_same_number("2020", "2020"))
+        self.assertFalse(_same_number("8", "07"))
+        self.assertFalse(_same_number("", "07"))
+
+
+class OrdinalKeyTests(unittest.TestCase):
+    def test_repeated_entries_get_their_own_identity(self) -> None:
+        first = {"tag": "select", "type": "", "label": "Language*", "section": "Languages", "ordinal": 0}
+        second = {"tag": "select", "type": "", "label": "Language*", "section": "Languages", "ordinal": 1}
+        self.assertNotEqual(_field_key(first, "Language*"), _field_key(second, "Language*"))
+        # The first entry's key is unchanged by the numbering (bank-era keys).
+        self.assertEqual(_field_key(first, "Language*"),
+                         _field_key({"tag": "select", "type": "", "label": "Language*", "section": "Languages"}, "Language*"))
+        # Radio options repeat by design (one per choice) and keep group keys.
+        a = {"tag": "input", "type": "radio", "label": "Yes", "group": "Sponsorship", "ordinal": 0}
+        b = {"tag": "input", "type": "radio", "label": "Yes", "group": "Sponsorship", "ordinal": 1}
+        self.assertEqual(_field_key(a, "Yes"), _field_key(b, "Yes"))
+
+
+class NumberedEntryTests(unittest.TestCase):
+    def test_entry_number_in_the_title_is_the_position(self) -> None:
+        from unittest import mock
+
+        from src.apply import worker
+
+        fields = [
+            {"id": 1, "tag": "select", "type": "", "label": "Language*", "section": "Languages 1", "value": "", "options": ["Select One", "English", "Hindi"]},
+            {"id": 2, "tag": "select", "type": "", "label": "Language*", "section": "Languages 2", "value": "", "options": ["Select One", "English", "Hindi"]},
+        ]
+        written = []
+        with mock.patch.object(worker, "_apply_value", side_effect=lambda page, f, v, p, s, source="": written.append((f["section"], v))), \
+                mock.patch("src.apply.profile.load_profile", return_value={"languages": "English - Intermediate; Hindi - Fluent"}):
+            class Sess:
+                def log(self, t):
+                    pass
+            worker._sweep(None, fields, set(), {}, {}, "", Sess())
+        self.assertEqual(written, [("Languages 1", "English"), ("Languages 2", "Hindi")])
+
+    def test_add_another_is_always_a_section_button(self) -> None:
+        from src.apply.worker import _is_section_add
+
+        self.assertTrue(_is_section_add({"tag": "button", "text": "Add Another", "section": "", "group": "Role Description"}))
+        self.assertFalse(_is_section_add({"tag": "button", "text": "Add", "section": "", "group": ""}))

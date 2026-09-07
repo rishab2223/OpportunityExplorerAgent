@@ -28,6 +28,9 @@ MAX_CONSECUTIVE_ERRORS = 5
 MAX_NOOP_STREAK = 4
 MAX_EMPTY_SNAPSHOTS = 3
 DIALOG_LOAD_RETRIES = 4   # x1.5s: how long an open modal may take to show its form
+# Stop at every filled step and wait for "next" (or the candidate's own click)
+# before advancing a wizard. "auto next" in the chat turns it off for a session.
+ASK_BEFORE_ADVANCE = True
 MAX_LETTER_REVISIONS = 5
 # After a submitted application the visible browser stays up this long, so the
 # confirmation page is not closed mid-read (the session itself ends at once).
@@ -134,21 +137,26 @@ Rules:
   If a note says the value matched none of the options, pick from the listed ones.
 - Repeating sections - fields whose "section" is Work Experience, Education,
   Languages or similar: click that section's "Add" button, then fill the revealed
-  entry FROM THE RESUME: job title, employer, that job's location, dates exactly as
+  entry FROM THE RESUME: job title, employer, that job's location (the current job's
+  is the profile's current_company_location when given), dates exactly as
   the resume gives them (a "Month" field under group "From" takes the start month),
   the "currently work here" box for the present job, a short role description from
   the resume bullets. One entry per resume job or degree, most recent first; click
   "Add Another" (or "Add" again) for the next and stop when the resume has no more.
   Do not ask the candidate for these, and never invent employers, degrees or dates.
-  Languages come from the profile's "languages" entry (one Add per language, with
-  its proficiency); Skills typeaheads take the resume's main skills, one at a time
+  Languages and Websites entries are filled by the script from the profile (it
+  clicks their Add buttons itself) - leave those sections alone. Skills typeaheads
+  take the resume's main skills, one at a time
   (one fill action per skill on the same field). Date parts are digits only: a
   "Month" field takes "07", a "Year" field "2020". Education comes from the
   profile's "education" entry when present, else the resume.
 - Use "goto" with the URL in value when the application form lives at another address.
 - NEVER click a submit button (Submit, Apply now, Submit application, Send). The
   candidate always clicks submit themselves; when the form is complete, simply return
-  an empty plan. You may click next/continue/review buttons to advance a wizard.
+  an empty plan. Do not click Next/Continue/Review either: the script advances the
+  wizard once every field and every Add section on the step is done and the
+  candidate has reviewed it. A step with an empty Education or Languages section
+  is not done.
 - Skip fields that already contain a sensible value; never re-enter a value that is
   already there, and never touch a field marked already_handled.
 - Use action "done" only when the page clearly confirms the application was submitted.
@@ -358,7 +366,7 @@ def run_session(
         # Keep Playwright's event loop pumped while a chat question is
         # pending: a file picker the user opens on a tile is only serviced
         # during a browser call, and the worker makes none while it waits.
-        holder: dict[str, Any] = {"page": page, "watch": None}
+        holder: dict[str, Any] = {"page": page, "watch": None, "confirm_advance": ASK_BEFORE_ADVANCE}
 
         def idle_tick() -> None:
             holder["page"].wait_for_timeout(50)
@@ -521,6 +529,11 @@ def run_session(
                 continue
 
             # 2) Deterministic pass: profile + answer bank, zero model calls.
+            if _open_profile_sections(page, fields, handled, sess):
+                errors_in_a_row = 0
+                noop_streak = 0
+                last_llm_sig = ""
+                continue
             filled = _sweep(
                 page, fields, handled, attempts, job, attach.resume_path, sess,
                 attach=attach, written=written,
@@ -551,6 +564,36 @@ def run_session(
                         noop_streak += 1
                         continue
                     advance_label = _field_label(advance_field)
+                    if holder.get("confirm_advance", ASK_BEFORE_ADVANCE):
+                        # The candidate reads the step before it moves on:
+                        # prefilling and clicking Next straight away left no
+                        # chance to check anything.
+                        reply = _ask_watching(
+                            sess, holder, context, page, handled, fields,
+                            f"This step is filled in. Review it in the browser, then type next "
+                            f"to click '{advance_label}' - or click it yourself, fix anything, "
+                            "or tell me what to change. (Type auto next to stop asking.)",
+                        )
+                        if reply is None:
+                            attempts.pop(key, None)
+                            if holder.get("changed") == "submitted":
+                                outcome, outcome_text = "applied", "confirmed by the page"
+                                break
+                            continue
+                        lowered = reply.strip().lower()
+                        if lowered in ("auto next", "autonext", "auto"):
+                            holder["confirm_advance"] = False
+                            sess.log("Moving through the steps without asking from now on.")
+                        elif lowered in CONTINUE_WORDS or _is_affirmative(reply):
+                            pass  # click it below
+                        elif _manual_attachment(reply, attach, page, sess, notes):
+                            attempts.pop(key, None)
+                            continue
+                        else:
+                            notes.append(f"guidance from the candidate: {reply}")
+                            last_llm_sig = ""
+                            attempts.pop(key, None)
+                            continue
                     sig_before, url_before = _page_sig(fields), _safe_url(page)
                     try:
                         browser.locate(page, advance_field["id"]).click(timeout=15000)
@@ -674,17 +717,26 @@ def run_session(
 
             acted_keys: set[str] = set()
             executed = 0
+            refused = 0
             finished = False
             consumed: set[str] = set()
+            acted_before = set(acted_keys)
+            # What the model must not skip past: sections with no entry yet.
+            holder["pending_sections"] = sorted({
+                (f.get("section") or f.get("group") or _field_label(f)).strip()
+                for f in pending_adds
+            })
             for action in plan.actions[:MAX_PLAN_ACTIONS]:
                 if sess.aborted():
                     raise Aborted("user aborted")
                 result = _run_action(
                     page, action, fields, job, attach.resume_path, sess,
                     history, notes, handled, attempts, session_answers, acted_keys,
-                    attach=attach,
+                    attach=attach, holder=holder,
                 )
-                if result == "executed":
+                if result == "refused":
+                    refused += 1
+                elif result == "executed":
                     executed += 1
                     errors_in_a_row = 0
                     if action.action in ("fill", "select"):
@@ -721,7 +773,19 @@ def run_session(
             # now on; required ones keep coming back until dealt with. An Add
             # button the model passed over means the resume has no more
             # entries for that section.
-            for field in unresolved + pending_adds:
+            # Add sections are different: the model works one section at a
+            # time (all of Work Experience before Education), so an Add it did
+            # not touch in a plan that did other things is still to come. Only
+            # a plan with nothing left to do says the resume has no more
+            # entries - Hindi under Languages was skipped by the old rule.
+            plan_keys = acted_keys - acted_before
+            busy_with_sections = any(
+                _field_key(f, _field_label(f)) in plan_keys
+                and (resolver.in_repeating_section(f) or _is_section_add(f))
+                for f in fields
+            )
+            adds_done = [] if (refused or (executed and busy_with_sections)) else pending_adds
+            for field in unresolved + adds_done:
                 key = _field_key(field, _field_label(field))
                 if key and key not in acted_keys and not field.get("required"):
                     handled.add(key)
@@ -729,6 +793,11 @@ def run_session(
             if executed:
                 noop_streak = 0
                 last_llm_sig = ""
+            elif refused:
+                # The plan was only a Next we would not click: ask again with
+                # the note, rather than counting it as no progress.
+                last_llm_sig = ""
+                noop_streak += 1
             else:
                 noop_streak += 1
             if len(history) > HISTORY_LIMIT:
@@ -1313,6 +1382,20 @@ def _sweep(
     again later (Workday re-renders the address block when State changes)
     gets the same value once more instead of staying empty as "handled"."""
     filled = 0
+    # The k-th "Language" select in the Languages section is entry k. The
+    # snapshot numbers same-named fields (ordinal); older snapshots (tests)
+    # get the same numbering here.
+    if fields and "ordinal" not in fields[0]:
+        seen_labels: dict[tuple[str, str], int] = {}
+        for field in fields:
+            section = str(field.get("section") or "")
+            numbered = re.search(r"(\d+)\s*$", section)
+            slot = (re.sub(r"\s*\d+\s*$", "", section), profile.fingerprint(str(field.get("label") or "")))
+            if numbered:
+                field["ordinal"] = max(0, int(numbered.group(1)) - 1)
+            else:
+                field["ordinal"] = seen_labels.get(slot, 0)
+                seen_labels[slot] = field["ordinal"] + 1
     for field in fields:
         label = _field_label(field)
         key = _field_key(field, label)
@@ -1485,9 +1568,11 @@ def _run_action(
     session_answers: dict[str, str],
     acted_keys: set[str],
     attach: "Attachments | None" = None,
+    holder: dict[str, Any] | None = None,
 ) -> str:
     """One planned action, with every safety gate. Returns 'executed', 'asked',
-    'skipped', 'error', 'stale', 'goto' or 'done'."""
+    'skipped', 'refused' (a Next the model may not click yet), 'error',
+    'stale', 'goto' or 'done'."""
     field = _field_by_id(fields, action.field_id)
     label = (field or {}).get("label") or (field or {}).get("name") or ""
     group = (field or {}).get("group") or ""
@@ -1527,6 +1612,22 @@ def _run_action(
             f"'{_field_label(field)}' is the submit button; the candidate clicks it, not you"
         )
         return "skipped"
+    if action.action == "click" and holder is not None and _is_advance_button(field):
+        # Next / Continue is the loop's to click, after the step is complete
+        # and the candidate has looked at it. The model clicked Next past an
+        # empty Education and Languages section.
+        pending = holder.get("pending_sections") or []
+        if pending:
+            notes.append(
+                f"'{_field_label(field)}' was NOT clicked: these sections still have no entry: "
+                + ", ".join(pending) + " - click their Add button and fill them from the resume first"
+            )
+            return "refused"
+        notes.append(
+            f"'{_field_label(field)}' is clicked by the script once the step is complete and reviewed; "
+            "do not include it in the plan"
+        )
+        return "refused"
     if key:
         attempts[key] = attempts.get(key, 0) + 1
         if attempts[key] > MAX_ATTEMPTS_PER_FIELD:
@@ -1600,6 +1701,11 @@ def _run_action(
                     attach.calls += 1
                 except Exception as exc:
                     sess.log(f"Could not draft an answer: {_short(exc)}")
+            # "yes" to "should I set it to India (+91)?" means the proposed
+            # value, not the word - it was typed into the phone-code box.
+            if (action.action in ("fill", "select") and action.value.strip()
+                    and answer.strip().lower() in ("yes", "y", "yes please", "ok", "okay", "sure", "go ahead")):
+                answer = action.value.strip()
             if answer_key:
                 session_answers[answer_key] = answer
             _maybe_remember(sess, label, group, answer, action, job, field)
@@ -1702,31 +1808,38 @@ def _unresolved_fields(fields: list[dict[str, Any]], handled: set[str]) -> list[
     return out
 
 
+def _is_advance_button(field: dict[str, Any]) -> bool:
+    """A wizard's next/continue/review control - never a submit. Anchored at
+    the start of the label: "Review", "Continue to next step" - but never a
+    link that merely contains the word ("Code Review", a careers-page nav
+    item this clicked three times in a real session)."""
+    if _is_submit(field):
+        return False
+    tag = field.get("tag")
+    clickable = tag in ("button", "a") or field.get("role") == "button" or (
+        tag == "input" and (field.get("type") or "").lower() in ("button", "image")
+    )
+    if not clickable:
+        return False
+    for raw in (field.get("text", ""), field.get("label", ""), field.get("value", "")):
+        candidate = (raw or "").strip().lower()
+        if candidate and any(
+            re.match(rf"{re.escape(word)}\b", candidate) for word in ADVANCE_WORDS
+        ):
+            return True
+    return False
+
+
 def _find_advance(
     fields: list[dict[str, Any]], handled: set[str], attempts: dict[str, int]
 ) -> dict[str, Any] | None:
     """The wizard's next/continue/review button, if any - never a submit."""
     for field in fields:
-        if _is_submit(field):
+        if not _is_advance_button(field):
             continue
-        tag = field.get("tag")
-        clickable = tag in ("button", "a") or field.get("role") == "button" or (
-            tag == "input" and (field.get("type") or "").lower() in ("button", "image")
-        )
-        if not clickable:
+        if _field_key(field, _field_label(field)) in handled:
             continue
-        key = _field_key(field, _field_label(field))
-        if key in handled:
-            continue
-        # Anchored at the start of the label: "Review", "Continue to next step" -
-        # but never a link that merely contains the word ("Code Review", a
-        # careers-page nav item this clicked three times in a real session).
-        for raw in (field.get("text", ""), field.get("label", ""), field.get("value", "")):
-            candidate = (raw or "").strip().lower()
-            if candidate and any(
-                re.match(rf"{re.escape(word)}\b", candidate) for word in ADVANCE_WORDS
-            ):
-                return field
+        return field
     return None
 
 
@@ -1876,6 +1989,10 @@ def _field_key(field: dict[str, Any] | None, label: str) -> str:
         # entry are different controls; keyed on the label alone, filling the
         # first marked the second handled.
         text = f"{section} {text}"
+    ordinal = field.get("ordinal") or 0
+    if ordinal and (ftype not in ("radio", "checkbox")):
+        # The second "Language" select (entry 2) is not the first one.
+        text = f"{text} #{ordinal + 1}"
     return (
         profile.fingerprint(text)
         or field.get("path")
@@ -2015,7 +2132,7 @@ def _apply_value(
         _commit_combobox(page, locator, value, label, prefix, sess)
         return
     if DATE_PART_RE.match(label.strip()):
-        _type_date_part(locator, value, label, prefix, sess)
+        _type_date_part(page, locator, value, label, prefix, sess)
         return
     locator.fill(value, timeout=10000)
     # "Filled" must mean the field HOLDS the value: Workday showed empty
@@ -2037,7 +2154,14 @@ def _apply_value(
     if not _holds(locator, value):
         # A box that only takes a pick from the list it shows after typing
         # (Workday's Country Phone Code, Field of Study, Skills).
-        if _commit_typeahead(page, locator, value, label, prefix, sess):
+        # Workday's phone-code search matches "India", not "+91": offer the
+        # country name as a second query for dial codes.
+        alternatives: list[str] = []
+        if resolver._DIAL_CODE_RE.fullmatch(value.strip()):
+            country = resolver._country(profile.load_profile())
+            if country:
+                alternatives.append(country)
+        if _commit_typeahead(page, locator, value, label, prefix, sess, alternatives):
             return "typeahead"
         raise ValueError(
             f"typed '{value}' into '{label}' but the field did not keep it"
@@ -2056,15 +2180,18 @@ def _shown(locator) -> str:
         return "?"
 
 
-def _type_date_part(locator, value: str, label: str, prefix: str, sess) -> None:
+def _type_date_part(page, locator, value: str, label: str, prefix: str, sess) -> None:
     """Workday's MM / YYYY segments: keystrokes only. fill() plus a select-all
     retry left the widget showing "MM/2012" and "Invalid Date: 12/", so no
     select-all, no Tab (the widget moves on by itself after the digits) and
-    no second attempt - a wrong retry garbles both segments."""
+    no second attempt - a wrong retry garbles both segments. Focus, never
+    click: a click opens the month picker, which then covers the next
+    segment and made every click after it time out (five seconds of
+    scrolling attempts each)."""
     digits = re.sub(r"\D", "", value or "")
     if not digits:
         raise ValueError(f"'{value}' is not a date part for '{label}'")
-    locator.click(timeout=5000)
+    locator.focus(timeout=5000)
     try:
         current = locator.input_value(timeout=1000)
     except Exception:
@@ -2072,44 +2199,114 @@ def _type_date_part(locator, value: str, label: str, prefix: str, sess) -> None:
     for _ in range(len(current)):
         locator.press("Backspace")
     locator.press_sequentially(digits, delay=40, timeout=10000)
-    if not _holds(locator, digits):
-        raise ValueError(
-            f"typed '{digits}' into '{label}' but it shows '{_shown(locator)}'"
-        )
+    shown = _shown(locator)
+    # "07" is shown as "7" by the widget: the same month.
+    held = _holds(locator, digits) or _same_number(shown, digits)
+    try:
+        page.keyboard.press("Escape")  # close a picker the focus may have opened
+    except Exception:
+        pass
+    if not held:
+        raise ValueError(f"typed '{digits}' into '{label}' but it shows '{shown}'")
     sess.log(f"{prefix}Filled {label} = {digits}")
 
 
-def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess) -> bool:
+def _same_number(shown: str, typed: str) -> bool:
+    a, b = re.sub(r"\D", "", shown or ""), re.sub(r"\D", "", typed or "")
+    return bool(a) and bool(b) and int(a) == int(b)
+
+
+# Rows a suggestion list shows while it is still searching, never choices.
+_PLACEHOLDER_ROW_RE = re.compile(
+    r"^\s*(no items?|no results?|no matches|loading|searching|type to search)\b", re.IGNORECASE
+)
+
+
+def _real_suggestions(texts: list[str]) -> bool:
+    return any(t and not _PLACEHOLDER_ROW_RE.match(t) for t in texts)
+
+
+def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
+                      alternatives: list[str] | None = None) -> bool:
     """Type, wait for the suggestion list, click the matching entry. False
-    when no list appears (then it was just a text box that lost the value);
-    a list with no match is an error naming the suggestions, so the model
-    can pick one ("Computer Science" -> "Computer and Information Science")."""
-    try:
-        locator.click(timeout=3000)
-        locator.fill("")
-        locator.press_sequentially(value, delay=25, timeout=15000)
-    except Exception:
-        return False
-    texts: list[str] = []
-    options = None
-    for _ in range(6):
-        page.wait_for_timeout(400)
-        options, texts = _visible_options(page, locator)
-        if any(t for t in texts):
-            break
-    if not any(t for t in texts):
-        return False
-    index = _choose_option(texts, value)
-    if index < 0:
+    when no list appears for any query (then it was just a text box that
+    lost the value); a list with no match is an error naming the
+    suggestions, so the model can pick one ("Computer Science" ->
+    "Computer and Information Science"). `alternatives` are other queries
+    for the same value ("India" for "+91"); "No Items." rows shown while
+    Workday searches are waited out, never taken as suggestions."""
+    queries = [value] + [a for a in (alternatives or []) if a and a != value]
+    tried: list[str] = []
+    for query in queries:
         try:
-            page.keyboard.press("Escape")
+            locator.click(timeout=3000)
+            locator.fill("")
+            locator.press_sequentially(query, delay=25, timeout=15000)
+        except Exception as exc:
+            sess.log(f"Typeahead '{label}': could not type '{query}' ({_short(exc)})")
+            return False
+        texts: list[str] = []
+        options = None
+        pressed_enter = False
+        for tick in range(14):
+            page.wait_for_timeout(400)
+            options, texts = _visible_options(page, locator)
+            if _real_suggestions(texts):
+                break
+            if tick == 2 and not pressed_enter:
+                # Workday searches only on Enter: typing alone shows nothing
+                # (or the whole unfiltered list).
+                try:
+                    locator.press("Enter")
+                except Exception:
+                    pass
+                pressed_enter = True
+        if not _real_suggestions(texts):
+            tried.append(f"'{query}' -> rows: {', '.join(t for t in texts[:4] if t) or 'none'}")
+            continue
+        options, texts, index = _scroll_for_match(page, locator, value, options, texts)
+        if index < 0 and query != value:
+            index = _choose_option(texts, query)
+        if index < 0 and not pressed_enter:
+            # The list may be the unfiltered catalogue; ask for the search.
+            try:
+                locator.press("Enter")
+                for _ in range(8):
+                    page.wait_for_timeout(400)
+                    options, texts = _visible_options(page, locator)
+                    index = _choose_option(texts, value)
+                    if index >= 0 or (_real_suggestions(texts) and len(texts) < 40):
+                        break
+            except Exception:
+                pass
+        if index < 0:
+            try:
+                page.keyboard.press("Escape")
+                locator.fill("")  # leave no half-typed text behind
+            except Exception:
+                pass
+            seen: list[str] = []
+            for t in texts:
+                if t and not _PLACEHOLDER_ROW_RE.match(t) and t not in seen:
+                    seen.append(t)
+            raise ValueError(
+                f"'{value}' matches none of the suggestions for '{label}'; pick one of: "
+                + ", ".join(seen[:12])
+            )
+        options.nth(index).click(timeout=5000)
+        sess.log(f"{prefix}Selected '{texts[index]}' for {label} (typeahead)")
+        try:
+            page.keyboard.press("Escape")  # a multi-select keeps its list open
         except Exception:
             pass
-        shown = ", ".join(t for t in texts[:12] if t)
-        raise ValueError(f"'{value}' matches none of the suggestions for '{label}'; pick one of: {shown}")
-    options.nth(index).click(timeout=5000)
-    sess.log(f"{prefix}Selected '{texts[index]}' for {label} (typeahead)")
-    return True
+        return True
+    if tried:
+        sess.log(f"Typeahead '{label}': no suggestions after Enter for " + "; ".join(tried))
+    try:
+        locator.fill("")
+    except Exception:
+        pass
+    return False
 
 
 def _holds(locator, value: str) -> bool:
@@ -2119,9 +2316,15 @@ def _holds(locator, value: str) -> bool:
         current = locator.input_value(timeout=2000)
     except Exception:
         return True
-    return current.strip() == (value or "").strip() or (
-        bool(current.strip()) and current.strip().replace(" ", "") == value.strip().replace(" ", "")
-    )
+    if current.strip() == (value or "").strip():
+        return True
+    if bool(current.strip()) and current.strip().replace(" ", "") == value.strip().replace(" ", ""):
+        return True
+    # Phone widgets reformat what was typed once a country code is attached
+    # (Workday showed 9000000000 as the national "09000000000"). The number
+    # is held; retyping it would only garble it.
+    typed, shown = re.sub(r"\D", "", value or ""), re.sub(r"\D", "", current)
+    return len(typed) >= 6 and shown in (typed, "0" + typed) and typed == re.sub(r"\D", "", value)
 
 
 def _is_listbox_button(field: dict[str, Any]) -> bool:
@@ -2170,14 +2373,15 @@ def _visible_options(page, locator):
     if listbox:
         scope = page.locator(f'[id="{listbox}"]')
     else:
-        # No aria link: the widget's list is the LAST visible listbox (popups
-        # are appended to the end of the DOM). Reading page-wide options here
-        # picked up a phone-code popup left open next to the State dropdown.
-        boxes = page.locator("[role=listbox]:visible")
+        # No aria link: several popups can be open at once (a Skills list left
+        # open next to Field of Study), so take the list NEAREST the widget -
+        # the one whose top sits closest below (or beside) the input.
+        marked = False
         try:
-            scope = boxes.last if boxes.count() else page
+            marked = bool(locator.evaluate(NEAREST_LIST_JS))
         except Exception:
-            scope = page
+            marked = False
+        scope = page.locator("[data-oea-list='1']") if marked else page
     options = scope.locator(
         "[role=option]:visible, [role=listbox]:visible li, "
         "[data-automation-id=promptOption]:visible"   # Workday's suggestion rows
@@ -2187,6 +2391,63 @@ def _visible_options(page, locator):
     except Exception:
         texts = []
     return options, texts
+
+
+# Marks the option list nearest to the widget with data-oea-list="1" (and
+# clears the mark elsewhere). Returns true when one was found.
+NEAREST_LIST_JS = """
+(el) => {
+  for (const old of document.querySelectorAll('[data-oea-list]')) old.removeAttribute('data-oea-list');
+  const rows = [];
+  const walk = (n) => {
+    for (const e of n.querySelectorAll('[role=option], [data-automation-id=promptOption], [role=listbox] li')) {
+      if (e.getClientRects().length) rows.push(e);
+    }
+    for (const h of n.querySelectorAll('*')) if (h.shadowRoot) walk(h.shadowRoot);
+  };
+  walk(document);
+  if (!rows.length) return false;
+  // group rows by their list container
+  const lists = new Map();
+  for (const r of rows) {
+    const box = r.closest('[role=listbox]') || r.parentElement;
+    if (!lists.has(box)) lists.set(box, r.getBoundingClientRect());
+  }
+  const me = el.getBoundingClientRect();
+  let best = null, bestDist = Infinity;
+  for (const [box, rect] of lists) {
+    const dy = rect.top >= me.top ? rect.top - me.bottom : me.top - rect.bottom;
+    const dx = Math.max(0, rect.left - me.right, me.left - rect.right);
+    const dist = Math.max(0, dy) + dx;
+    if (dist < bestDist) { bestDist = dist; best = box; }
+  }
+  if (!best) return false;
+  best.setAttribute('data-oea-list', '1');
+  return true;
+}
+"""
+
+
+def _scroll_for_match(page, locator, value: str, options, texts: list[str]):
+    """Virtual lists (Workday's Search Results) render a window of rows:
+    scroll through them looking for the value. Returns (options, texts,
+    index) with index -1 when nothing turned up."""
+    index = _choose_option(texts, value)
+    seen_last = ""
+    for _ in range(6):
+        if index >= 0 or not texts:
+            break
+        try:
+            options.last.scroll_into_view_if_needed(timeout=2000)
+            page.wait_for_timeout(300)
+        except Exception:
+            break
+        options, texts = _visible_options(page, locator)
+        if texts and texts[-1] == seen_last:
+            break  # the end of the list
+        seen_last = texts[-1] if texts else ""
+        index = _choose_option(texts, value)
+    return options, texts, index
 
 
 def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess) -> None:
@@ -2326,6 +2587,55 @@ SECTION_ADD_RE = re.compile(
 )
 
 
+def _open_profile_sections(page, fields, handled, sess) -> bool:
+    """Languages and Websites entries come from the profile, so the script
+    itself clicks Add / Add Another until the page holds one entry per
+    profile item (the model skipped Hindi's Add Another), and retires the
+    button once they are all there. True when it clicked (re-snapshot)."""
+    data = profile.load_profile()
+    for field in fields:
+        if not _is_section_add(field):
+            continue
+        key = _field_key(field, _field_label(field))
+        if key in handled:
+            continue
+        scope = f"{field.get('section') or ''} {field.get('group') or ''} {field.get('text') or ''}"
+        if resolver.LANGUAGES_SECTION_RE.search(scope):
+            needed = len(resolver.profile_languages(data))
+            present = sum(
+                1 for f in fields
+                if resolver.LANGUAGES_SECTION_RE.search(str(f.get("section") or ""))
+                and re.match(r"^\s*languages?\b", str(f.get("label") or ""), re.IGNORECASE)
+                and f.get("tag") in ("select", "input", "button")
+            )
+            what = "Languages"
+        elif resolver.WEBSITES_SECTION_RE.search(scope):
+            needed = len(resolver.profile_links(data))
+            present = sum(
+                1 for f in fields
+                if resolver.WEBSITES_SECTION_RE.search(str(f.get("section") or ""))
+                and resolver._URL_LABEL_RE.search(str(f.get("label") or ""))
+                and f.get("tag") in ("input", "textarea")
+            )
+            what = "Websites"
+        else:
+            continue
+        if needed == 0:
+            continue  # nothing in the profile: the model decides (or asks)
+        if present >= needed:
+            handled.add(key)  # all entries are there; the button is done
+            continue
+        try:
+            browser.locate(page, field["id"]).click(timeout=10000)
+            sess.log(f"Clicked {_field_label(field)} ({what}: entry {present + 1} of {needed})")
+            page.wait_for_timeout(800)
+            return True
+        except Exception as exc:
+            sess.log(f"Could not click {_field_label(field)}: {_short(exc)}")
+            handled.add(key)
+    return False
+
+
 def _is_section_add(field: dict[str, Any]) -> bool:
     """An "Add" / "Add Another" button inside a repeating section (Work
     Experience, Education): a resume entry waiting to be entered. The section
@@ -2336,6 +2646,8 @@ def _is_section_add(field: dict[str, Any]) -> bool:
     text = (field.get("text") or field.get("label") or "").strip()
     if not SECTION_ADD_RE.match(text):
         return False
+    if re.match(r"^\s*add\s+(another|more)\s*$", text, re.IGNORECASE):
+        return True  # only repeating sections have one, wherever its title sits
     return (
         resolver.in_repeating_section(field)
         or bool(resolver.REPEATING_SECTION_RE.search(field.get("group") or ""))

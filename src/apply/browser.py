@@ -61,6 +61,10 @@ SNAPSHOT_JS = """
   window.__oeaDialogPending = sawDialog &&
     (root === document || !deepAll(root, 'input, textarea, select').length);
   let i = 0;
+  // Repeated entries (Languages 1 and 2, two jobs) carry the same label and
+  // section: number same-named fields in page order so each has its own
+  // identity. Without this the second entry looked "already handled".
+  const dupCounts = new Map();
   for (const el of deepAll(root, selector)) {
     const style = window.getComputedStyle(el);
     const rect = el.getBoundingClientRect();
@@ -142,7 +146,7 @@ SNAPSHOT_JS = """
     let section = '';
     {
       let box = el.parentElement;
-      for (let depth = 0; box && depth < 7 && !section; depth++, box = box.parentElement) {
+      for (let depth = 0; box && depth < 10 && !section; depth++, box = box.parentElement) {
         for (const h of box.querySelectorAll(
             'h1, h2, h3, h4, h5, h6, [role=heading], legend, ' +
             '[class*="heading" i], [class*="sectiontitle" i], [class*="section-title" i], ' +
@@ -168,6 +172,18 @@ SNAPSHOT_JS = """
         if (gl) group = gl.trim();
       }
     }
+    // Workday titles entries "Languages 1", "Languages 2": the number IS the
+    // position; otherwise count same-named fields under the same title.
+    const numbered = section.match(/(\d+)\s*$/);
+    const baseSection = section.replace(/\s*\d+\s*$/, '').slice(0, 80);
+    const dupKey = baseSection + '|' + (label || '').trim().slice(0, 200) + '|' + type;
+    let ordinal;
+    if (numbered) {
+      ordinal = Math.max(0, parseInt(numbered[1], 10) - 1);
+    } else {
+      ordinal = dupCounts.get(dupKey) || 0;
+      dupCounts.set(dupKey, ordinal + 1);
+    }
     const item = {
       id: i,
       tag: el.tagName.toLowerCase(),
@@ -177,6 +193,7 @@ SNAPSHOT_JS = """
       autocomplete: el.getAttribute('autocomplete') || '',
       path: path,
       section: section.slice(0, 80),
+      ordinal: ordinal,
       group: (group || '').trim().slice(0, 160),
       label: (label || '').trim().slice(0, 200),
       name: el.getAttribute('name') || '',
