@@ -589,12 +589,53 @@ window.addEventListener("focus", () => {
   document.title = baseTitle;
 });
 
+// Liveness: the server sends a ping event every few seconds. After a laptop
+// sleep or an hour in the background the stream can die silently (no error
+// event), leaving the chat armed to a question the page had outlived.
+let lastApplyEvent = 0;
+
+async function resyncApply(reason) {
+  if (!applySessionId) return;
+  try {
+    const state = await getJSON("/api/apply/status");
+    const dead = ["applied", "failed", "aborted", "closed", "idle"];
+    if (state.session_id !== applySessionId || dead.includes(state.status)) {
+      if (applySource) applySource.close();
+      applySource = null;
+      applySessionId = "";
+      applyJobId = "";
+      setChatEnabled(false);
+      appendLog($("applylog"), `--- the session is over (${reason}); Start apply begins a new one ---`);
+      loadJobs(currentStamp);
+      return;
+    }
+    // Alive: replay the transcript from the server so what is on screen is
+    // what the agent is actually waiting for.
+    setLog($("applylog"), `(reconnected: ${reason})`);
+    setChatEnabled(true);
+    streamApply(state.session_id);
+  } catch {}
+}
+
+setInterval(() => {
+  if (applySessionId && lastApplyEvent && Date.now() - lastApplyEvent > 45000) {
+    lastApplyEvent = Date.now();
+    resyncApply("no word from the server for 45s");
+  }
+}, 15000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && applySessionId) resyncApply("tab back in front");
+});
+
 function streamApply(sessionId) {
   if (applySource) applySource.close();
   applySessionId = sessionId;
+  lastApplyEvent = Date.now();
   applySource = new EventSource(`/api/apply/${sessionId}/events`);
   applySource.onmessage = (ev) => {
     const event = JSON.parse(ev.data);
+    lastApplyEvent = Date.now();
+    if (event.type === "ping") return;
     const prefix = {
       question: "AGENT ASKS: ",
       choice: "AGENT ASKS: ",
@@ -720,6 +761,8 @@ async function sendChoice(text) {
     await postJSON(`/api/apply/${applySessionId}/chat`, { text });
   } catch (err) {
     appendLog($("applylog"), `Could not send: ${err.message}`);
+    // "busy" after a long break usually means the screen is stale: resync.
+    if (/busy/i.test(err.message || "")) resyncApply("the agent's state had moved on");
   }
 }
 
@@ -759,6 +802,8 @@ async function sendChat() {
     await postJSON(`/api/apply/${applySessionId}/chat`, { text });
   } catch (err) {
     appendLog($("applylog"), `Could not send: ${err.message}`);
+    $("chat").value = text;  // keep what was typed
+    if (/busy/i.test(err.message || "")) resyncApply("the agent's state had moved on");
   }
 }
 

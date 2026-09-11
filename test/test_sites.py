@@ -73,3 +73,14 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(sites.detect("https://nvidia.wd5.myworkdayjobs.com/x"), "")
         self.assertEqual(sites.detect("https://notlinkedin.com.evil.example/x"), "")
         self.assertEqual(sites.detect(""), "")
+
+
+class NotCurrentlyAcceptingTests(unittest.TestCase):
+    def test_linkedins_newer_wording_is_closed(self) -> None:
+        from src.apply.sites import linkedin
+        from src.apply.worker import _looks_closed
+
+        text = "Fullstack - Software Engineer II. Pune Division. Not currently accepting applications"
+        self.assertTrue(linkedin.is_closed(text, "https://www.linkedin.com/jobs/view/123/"))
+        self.assertTrue(_looks_closed(text))
+        self.assertFalse(_looks_closed("Over 100 people clicked apply. Easy Apply"))

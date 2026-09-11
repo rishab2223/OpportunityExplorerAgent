@@ -331,7 +331,7 @@ def _apply_stream(session_id: str) -> Iterator[str]:
             if event is _STOP:
                 return
             if event is None:
-                yield ": ping\n\n"
+                yield _sse({"type": "ping"})  # a real event: the page tracks liveness by it
                 continue
             yield _sse(event)
             if event.get("type") == "done":
@@ -383,7 +383,7 @@ def _log_stream(stamp: str) -> Iterator[str]:
             if event is _STOP:
                 return
             if event is None:
-                yield ": ping\n\n"
+                yield _sse({"type": "ping"})  # a real event: the page tracks liveness by it
                 continue
             yield _sse(event)
             if event.get("type") == "done":

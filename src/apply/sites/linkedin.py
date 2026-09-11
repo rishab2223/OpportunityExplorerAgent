@@ -24,8 +24,8 @@ SIGN_IN_RE = re.compile(r"\b(sign in|join now)\b", re.IGNORECASE)
 # Logged-out LinkedIn bounces clicks to these; never try to drive them.
 LOGIN_URL_RE = re.compile(r"linkedin\.com/(authwall|uas/login|login|checkpoint)", re.IGNORECASE)
 CLOSED_RE = re.compile(
-    r"no longer accepting applications|this job is no longer available|"
-    r"job (is|has been) closed|position has been filled",
+    r"no longer accepting applications|not (currently |presently )?accepting applications|"
+    r"this job is no longer available|job (is|has been) closed|position has been filled",
     re.IGNORECASE,
 )
 
