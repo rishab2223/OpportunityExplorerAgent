@@ -326,6 +326,121 @@ class ProfileSectionEntryTests(ResolverTestCase):
         self.assertIsNone(resolver.resolve(field(label="Location", section="Work Experience 1", ordinal=0)))
 
 
+class EducationEntryTests(ResolverTestCase):
+    """The profile's education line answers the Education section, so the
+    model never has to guess "Computer Science" at a 345-option dropdown."""
+
+    EDUCATION = "NorthCap University - Bachelors, Computer and Information Science, 2015-2019"
+
+    def setUp(self) -> None:
+        super().setUp()
+        profile.PROFILE_PATH.write_text(
+            json.dumps({**DUMMY_PROFILE, "education": self.EDUCATION}), encoding="utf-8")
+
+    def test_the_line_is_split_into_its_parts(self) -> None:
+        entries = resolver.profile_education({"education": self.EDUCATION})
+        self.assertEqual(entries, [{
+            "school": "NorthCap University", "degree": "Bachelors",
+            "field": "Computer and Information Science", "start": "2015", "end": "2019",
+        }])
+        # Two entries, and a line with no years.
+        two = resolver.profile_education(
+            {"education": f"{self.EDUCATION}; Delhi Public School - Class XII, Science"})
+        self.assertEqual(len(two), 2)
+        self.assertEqual(two[1]["school"], "Delhi Public School")
+        self.assertEqual(two[1]["field"], "Science")
+        self.assertEqual(resolver.profile_education({}), [])
+
+    def test_an_education_entry_is_filled_from_the_profile(self) -> None:
+        for label, want in (("School or University*", "NorthCap University"),
+                            ("Degree*", "Bachelors"),
+                            ("Field of study*", "Computer and Information Science")):
+            got = resolver.resolve(field(label=label, section="Education :", ordinal=0))
+            self.assertEqual(got, (want, "profile"), label)
+        # A second entry the profile does not have is left to the model.
+        self.assertIsNone(resolver.resolve(field(label="Degree*", section="Education :", ordinal=1)))
+
+    def test_a_truncated_option_list_keeps_the_raw_value(self) -> None:
+        # The snapshot keeps 40 of 345 options, so the wanted one is not in
+        # the captured list; the worker searches the full list in the browser.
+        truncated = [f"Subject {n}" for n in range(40)]
+        got = resolver.resolve(field(tag="select", type="", label="Field of study*",
+                                     section="Education :", ordinal=0, options=truncated))
+        self.assertEqual(got, ("Computer and Information Science", "profile"))
+        # A short list really is the whole list: no match means no fill.
+        self.assertIsNone(resolver.resolve(field(tag="select", type="", label="Field of study*",
+                                                 section="Education :", ordinal=0,
+                                                 options=["Physics", "Chemistry"])))
+
+
+class ContactCheckTests(ResolverTestCase):
+    """A wrong e-mail means the employer cannot reply, so contact boxes are
+    watched after every step - an ATS parsing the resume replaced one."""
+
+    def test_which_boxes_hold_contact_details(self) -> None:
+        self.assertEqual(resolver.contact_topic(field(label="Email address*")), "email")
+        self.assertEqual(resolver.contact_topic(field(label="Enter Email address (Required)")), "email")
+        self.assertEqual(resolver.contact_topic(field(autocomplete="email", label="")), "email")
+        self.assertEqual(resolver.contact_topic(field(label="Phone number*", type="tel")), "phone")
+        self.assertEqual(resolver.contact_topic(field(label="Mobile")), "phone")
+        # Not the candidate's own contact details.
+        self.assertEqual(resolver.contact_topic(field(label="Phone Extension")), "")
+        self.assertEqual(resolver.contact_topic(field(label="Country Phone Code*")), "")
+        self.assertEqual(resolver.contact_topic(field(label="Manager email")), "")
+        self.assertEqual(resolver.contact_topic(field(label="City")), "")
+        self.assertEqual(resolver.contact_topic(field(tag="select", label="Email address*")), "")
+
+    def test_comparing_what_the_box_shows(self) -> None:
+        # The exact failure: an ATS parsed the resume and dropped the underscore.
+        self.assertFalse(resolver.same_contact(
+            "email", "acandidate@example.invalid", "a_candidate@example.invalid"))
+        self.assertTrue(resolver.same_contact(
+            "email", "A_Candidate@Example.invalid", "a_candidate@example.invalid"))
+        # Phone widgets reformat: spaces, a country code, a national zero.
+        for shown in ("9000000000", "+91 90000 00000", "09000000000", "(900) 000-0000"):
+            self.assertTrue(resolver.same_contact("phone", shown, "9000000000"), shown)
+        self.assertFalse(resolver.same_contact("phone", "9000000001", "9000000000"))
+        self.assertTrue(resolver.same_contact("email", "anything", ""))   # nothing to compare
+
+
+class MaterialWidgetTests(ResolverTestCase):
+    def test_mat_select_is_a_dropdown_that_takes_no_typing(self) -> None:
+        # ALTEN's Angular Material dropdown: not a <select>, no inner input.
+        mat = field(tag="mat-select", role="combobox", haspopup="true",
+                    label="Current Salary Currency", text="Select none")
+        self.assertTrue(resolver.is_listbox_button(mat))
+        self.assertTrue(resolver.is_blank(mat))
+        # A real input keeps its normal path, whatever role it carries.
+        self.assertFalse(resolver.is_listbox_button(
+            field(tag="input", role="combobox", haspopup="listbox", label="City")))
+        self.assertFalse(resolver.is_listbox_button(field(tag="select", label="Country")))
+        # A plain button without a listbox popup is not a dropdown.
+        self.assertFalse(resolver.is_listbox_button(field(tag="button", text="Next")))
+
+    def test_salary_currency_and_period_come_from_the_profile(self) -> None:
+        profile.PROFILE_PATH.write_text(
+            json.dumps({**DUMMY_PROFILE, "salary_currency": "INR", "salary_period": "Annual"}),
+            encoding="utf-8")
+        for label in ("Current Salary Currency", "Expected Salary Currency"):
+            got = resolver.resolve(field(tag="mat-select", role="combobox", label=label, text="Select none"))
+            self.assertEqual(got, ("INR", "profile"), label)
+        for label in ("Current Salary Period", "Expected Salary Period"):
+            got = resolver.resolve(field(tag="mat-select", role="combobox", label=label, text="Select none"))
+            self.assertEqual(got, ("Annual", "profile"), label)
+        # The amount box itself is not a currency or period field.
+        self.assertNotEqual(
+            resolver.resolve(field(label="Current Annual Salary", type="number")),
+            ("INR", "profile"))
+
+    def test_an_image_only_upload_is_not_the_resume_slot(self) -> None:
+        photo = field(tag="input", type="file", label="", accept=".png, .jpeg, .jpg")
+        self.assertFalse(resolver.wants_resume(photo))
+        self.assertTrue(resolver.wants_resume(
+            field(tag="input", type="file", label="", accept=".doc, .docx, .pdf, .rtf, .txt")))
+        # No accept attribute at all: the usual single-upload form.
+        self.assertTrue(resolver.wants_resume(field(tag="input", type="file", label="")))
+
+
 class PortfolioSectionTests(ResolverTestCase):
     def test_portfolio_websites_take_the_links(self) -> None:
         profile.PROFILE_PATH.write_text(json.dumps({**DUMMY_PROFILE, "github": "https://github.com/test"}), encoding="utf-8")

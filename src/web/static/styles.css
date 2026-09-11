@@ -140,6 +140,94 @@ input:disabled {
   white-space: pre-wrap;
 }
 
+/* The answer box: a drafted answer is a paragraph, so it needs room. It
+   grows with the text instead of scrolling sideways in a one-line input. */
+#chatbox { margin: 8px 0; }
+
+#chat {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 34px;
+  max-height: 260px;
+  padding: 8px;
+  border: 1px solid #bbb;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  resize: vertical;
+  overflow-y: auto;
+}
+#chat:focus {
+  outline: none;
+  border-color: #0b3d91;
+  box-shadow: 0 0 0 2px rgba(11, 61, 145, 0.12);
+}
+#chatrow {
+  margin-top: 6px;
+  align-items: center;
+}
+#chatrow .grow { flex: 1; }
+#chatcount { font-size: 11px; }
+
+/* The apply transcript: read while answering, so the eye needs to land on
+   the question. Routine fills recede; nothing is hidden. */
+#applylog { height: 300px; }
+
+.logline {
+  padding: 1px 0 1px 6px;
+  border-left: 3px solid transparent;
+}
+.logline.ask {
+  font-weight: 600;
+  color: #0b3d91;
+  background: #eef3fb;
+  border-left-color: #0b3d91;
+  margin-top: 4px;
+}
+.logline.asked { color: #4a6fa5; }
+.logline.you {
+  color: #0a5c2e;
+  background: #f0f7f2;
+  border-left-color: #0a5c2e;
+}
+.logline.bad {
+  color: #a3261c;
+  background: #fbf0ef;
+  border-left-color: #a3261c;
+}
+.logline.warn {
+  color: #8a5a00;
+  background: #fdf6e7;
+  border-left-color: #c08a1e;
+}
+.logline.fill { color: #3b3b3b; }
+.logline .tag {
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #5a5a5a;
+}
+.logline .verb {
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.logline.bad .tag,
+.logline.bad .verb { color: #a3261c; }
+.logline.warn .verb { color: #8a5a00; }
+.logline.quiet .verb {
+  font-weight: 600;
+  color: #8a8a8a;
+}
+.logline.quiet { color: #8a8a8a; }
+.logline.meta {
+  color: #777;
+  font-style: italic;
+  margin-top: 4px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

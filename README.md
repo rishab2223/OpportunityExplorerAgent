@@ -198,7 +198,19 @@ The UI never downloads files. Copy the path from the table and open the PDF wher
 
 Click **Start apply** on a row. This is deliberately supervised, one job at a time.
 
-Before the first run, fill in [`localData/apply_profile.json`](localData/) (created automatically, gitignored) with your name, email, phone, notice period, CTC expectations, and work authorization — every field filled there is a question the agent never has to ask.
+Before the first run, fill in [`localData/apply_profile.json`](localData/) (created automatically, gitignored) with your name, email, phone, notice period, CTC expectations, and work authorization — every field filled there is a question the agent never has to ask. Several more keys each remove a whole class of question:
+
+| Key | What it fills |
+| --- | --- |
+| `skills` | a comma-separated list, written into a skills box or picked one by one in a skills typeahead. **Order matters**: a form that says "add up to 10 skills" gets the first ten, so put the strongest first |
+| `languages` | `English - Intermediate; Hindi - Fluent` — the agent clicks *Add Language* once per entry and fills the level selects |
+| `education` | `NorthCap University - Bachelors, Computer and Information Science, 2015-2019` — school, degree, field of study and years, so a 345-entry "Field of study" dropdown is answered without the model guessing |
+| `linkedin`, `github`, `portfolio` | a box that names a site gets that link; a generic Websites/Portfolio section gets the remaining ones |
+| `phone_country_code`, `state`, `address_line1`, `current_company_location` | phone-code pickers, address blocks, and the location of your current employer's entries in a work-history section |
+| `salary_currency`, `salary_period` | the currency and period dropdowns that sit beside a salary amount (`INR`, `Annual`) |
+| `not_employment` | resume entries that are your own projects, not jobs (`Applied AI & LLM Agents`). They are never entered as a work experience, and an entry a site creates from your resume is removed again |
+
+**Your contact details are re-checked after every step.** A site that parses your uploaded resume can overwrite them with its own reading — one wrote `acandidate@example.invalid` for an address whose underscore the PDF text layer had swallowed. If a box the agent filled changes underneath it, the right value goes back in; if any contact box disagrees with your profile, whoever wrote it, the review prompt leads with `CHECK YOUR CONTACT DETAILS` and names both values. (Resumes compiled by this project carry `\usepackage[T1]{fontenc}` so the underscore survives extraction; add it to any hand-written `.tex`.)
 
 The form-filling model is `apply_provider` in `settings.yaml` (`claude` → `claude.apply_model`, default `claude-opus-5` at `apply_effort: low`; `openai` → `openai.apply_model`) — but most fields never reach it. A deterministic resolver fills everything the profile or the answer bank already covers (contact fields via their `autocomplete` attributes, links, notice period, CTC…), the script clicks Next/Continue/Review wizard buttons itself, and the model gets **one batched call per page** for only the fields that remain. A typical application costs 0-3 model calls; the session log ends with the exact tally (`Model calls this session: N`).
 
@@ -216,6 +228,37 @@ What happens:
 2. On a LinkedIn job the agent opens the apply flow itself: **Easy Apply** jobs get the in-page modal; **Apply on company website** jobs open the employer's form in a new tab, which the agent follows (the log shows `Switched to <url>`).
 3. The resolver fills what it can, the model plans the rest, and the agent stops and asks in the chat pane for anything unknown: OTPs, captchas, consent and legal questions. Answer, or handle it in the browser yourself and type `done`. Type `skip` to leave a field alone, paste a URL to send the agent there, `abort` to stop.
 4. **The agent never clicks submit — you do.** When everything is filled it says so and waits; you review the form, click Submit in the browser yourself, and type `done`. This is enforced in code (a submit click raises), not just prompted.
+
+### The chat pane
+
+The transcript is colour-coded so the eye lands on what needs you: what the agent asks (blue), what you replied (green), failures (red), warnings such as a contact detail that disagrees with your profile or an optional question left empty (amber), routine fills from the profile or answer bank (grey), and model chatter (faint). Long field labels and values are shortened to one line each — hover a shortened line to see it in full.
+
+**The answer box** is a text area, not a single line, so a drafted paragraph is readable and editable in place. It grows with the text up to a point and can be dragged taller. **Enter** sends; **Shift+Enter** starts a new line. Whenever the agent pre-fills a draft, three things appear beneath it: **Ask for changes** (puts `llm: ` in front, so you type only what to change), **Restore draft** (the model's original text back after you have edited it), and a character count for forms with limits.
+
+**Editing an answer the model drafted** — three cases:
+
+1. **The draft is still on screen.** Edit it and press Enter, or press *Ask for changes* and say what to change (`llm: shorter, and mention the payments work`). One model call; the question comes back with the new draft loaded, as often as you like. `skip` leaves the field empty.
+2. **You already sent it and the agent moved on.** Type `redo` at whatever it asks next, or at the "This step is filled in" prompt: your answer comes back in the box exactly as it went into the form. Edit and Enter, or `llm: <what to change>` to redraft, or `skip` to leave it. The agent then returns to the question it was asking. `redo` alone reopens the most recent text answer; name an older one by its words (`redo skill`, `redo salary`).
+3. **The form asked something the agent never raised.** Optional questions it left empty are listed at the review prompt. Reply `llm:` plus the question, or enough of it to identify it, and you get a draft to edit.
+
+Two limits: `redo` only reaches boxes still on the step in front of you (once you have clicked Continue, fix that one in the browser), and a redo changes the form but does not rewrite a previously saved entry in the answer bank.
+
+**Chat commands** (also listed under *Chat commands* in the UI):
+
+| Type | What happens |
+| --- | --- |
+| `next` / `auto next` | click the wizard's Next for you; `auto next` stops it asking for the rest of the session |
+| `done` | the page is ready, or you submitted it yourself (`applied`, `submitted`, `finished`, `ok`, `continue`, `ready`) |
+| `skip` | leave the current field empty (`leave it`, `leave blank`, `ignore`, `no answer`) |
+| `yes` / `no` | confirm or refuse a click, checkbox or radio the agent proposes — short replies only, so a sentence containing "yes" is guidance, never consent |
+| `llm: <instruction>` | draft or redraft the answer to the question being asked; at the review prompt, `llm: <question>` answers an optional question left empty |
+| `redo` / `redo <words>` | reopen an answer you already gave, pre-filled, to edit or redraft |
+| `attach resume` / `cover letter` | start either attachment flow by hand (same as the buttons) |
+| `dump` / `dump 10` | save the page as it is (DOM, fields, screenshot) under `outputs/dom/` and keep waiting; `dump 10` waits ten seconds first so you can open a widget |
+| a URL | open that page when the agent is stuck |
+| `retry` | try the model again after an outage (`try again`) |
+| `closed` | record that the posting no longer accepts applications and stop |
+| `abort` | end the session (`stop`, `cancel`) |
 
 OTPs and other secrets are held in memory for the session and never written to disk. The agent will not invent visa status, salary, or legal answers: anything that reads like a legal or eligibility declaration (consent, terms, work authorisation, citizenship, background checks, demographics) is gated — answered from your confirmed saved answer with a loud log line, or asked. For radio groups the gate acts only on the option that matches your answer, so a saved "No" can never tick the "Yes" box. A yes/no you type is parsed on whole words with negatives winning — "I don't agree" leaves the box unticked. There is no captcha solving and no unattended mass-apply.
 

@@ -31,9 +31,18 @@ RESUME_FIELD_RE = re.compile(
 )
 
 
+# What a document upload accepts. A slot that takes only images is a photo
+# box (ALTEN has one next to the resume drop zone), never the resume.
+_DOC_ACCEPT_RE = re.compile(r"pdf|\.docx?|msword|wordprocessing|officedocument|\.rtf|\.txt|\.odt",
+                            re.IGNORECASE)
+
+
 def wants_resume(field: dict[str, Any]) -> bool:
     """A file input that is for a resume/CV: named like one, or unlabelled
     (the common single-upload form). Portfolio/certificate uploads are not."""
+    accept = str(field.get("accept") or "").strip()
+    if accept and not _DOC_ACCEPT_RE.search(accept):
+        return False
     haystack = " ".join(
         str(field.get(k) or "") for k in ("label", "name", "elid", "group", "text")
     )
@@ -102,6 +111,15 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
     ("notice_period", (),
      re.compile(r"^notice([_ ]?period)?$"),
      re.compile(r"\bnotice period\b")),
+    # Salary boxes come in threes on some forms (ALTEN): currency, period,
+    # amount. These two must be read BEFORE the amount rules below, or
+    # "Expected Salary Currency" resolves to the expected pay itself.
+    ("salary_currency", (),
+     re.compile(r"^(currency|currencycode\d*|(current|expected)[_ ]?salary[_ ]?currency)$"),
+     re.compile(r"\b(salary )?currency\b")),
+    ("salary_period", (),
+     re.compile(r"^((current|expected)[_ ]?salary[_ ]?period|salary[_ ]?period|pay[_ ]?period)$"),
+     re.compile(r"\b(salary|pay) period\b|\bper (annum|month)\b")),
     ("current_ctc", (),
      re.compile(r"^(current[_ ]?(ctc|salary|compensation))$"),
      re.compile(r"\b(current|present) (ctc|salary|compensation|pay)\b")),
@@ -166,6 +184,45 @@ def profile_languages(data: dict[str, Any]) -> list[tuple[str, str]]:
     return out
 
 
+EDUCATION_SECTION_RE = re.compile(r"\beducation\b|\bacademics?\b", re.IGNORECASE)
+_SCHOOL_LABEL_RE = re.compile(r"\b(school|university|college|institut\w*)\b", re.IGNORECASE)
+_DEGREE_LABEL_RE = re.compile(r"\b(degree|qualification)\b", re.IGNORECASE)
+_STUDY_LABEL_RE = re.compile(
+    r"\b(field of study|major|discipline|stream|branch|speciali[sz]ation|course)\b", re.IGNORECASE)
+_FROM_LABEL_RE = re.compile(r"\b(from|start|joined)\b", re.IGNORECASE)
+_TO_LABEL_RE = re.compile(r"\b(to|end|graduat\w*|completion)\b", re.IGNORECASE)
+
+
+def profile_education(data: dict[str, Any]) -> list[dict[str, str]]:
+    """The profile's education line(s) split into their parts:
+    'NorthCap University - Bachelors, Computer and Information Science,
+    2015-2019' -> school, degree, field, start, end. Several entries are
+    separated by ';'."""
+    out: list[dict[str, str]] = []
+    for part in re.split(r"[;\n]+", str(data.get("education") or "")):
+        part = part.strip()
+        if not part:
+            continue
+        school, _, rest = part.partition(" - ")
+        entry: dict[str, str] = {"school": school.strip()}
+        words: list[str] = []
+        for bit in (b.strip() for b in rest.split(",")):
+            if not bit:
+                continue
+            years = re.findall(r"(?:19|20)\d{2}", bit)
+            if years and not re.search(r"[a-z]{3}", bit, re.IGNORECASE):
+                entry["start"] = years[0]
+                entry["end"] = years[-1]
+            else:
+                words.append(bit)
+        if words:
+            entry["degree"] = words[0]
+        if len(words) > 1:
+            entry["field"] = words[1]
+        out.append(entry)
+    return out
+
+
 def profile_links(data: dict[str, Any]) -> list[str]:
     return [str(data.get(k) or "").strip() for k in ("linkedin", "github", "portfolio") if str(data.get(k) or "").strip()]
 
@@ -186,6 +243,20 @@ def entry_value(field: dict[str, Any], data: dict[str, Any]) -> str | None:
             return name
         if _LEVEL_LABEL_RE.search(label):
             return level or None
+        return None
+    if EDUCATION_SECTION_RE.search(section):
+        # The profile knows the school, the degree and the exact field of
+        # study; the model guessed "Computer Science", which is not one of
+        # the 345 options, while "Computer and Information Science" is.
+        entries = profile_education(data)
+        if ordinal >= len(entries):
+            return None
+        entry = entries[ordinal]
+        for pattern, part in ((_SCHOOL_LABEL_RE, "school"), (_DEGREE_LABEL_RE, "degree"),
+                              (_STUDY_LABEL_RE, "field"), (_FROM_LABEL_RE, "start"),
+                              (_TO_LABEL_RE, "end")):
+            if pattern.search(label):
+                return entry.get(part) or None
         return None
     if WEBSITES_SECTION_RE.search(section) and generic_url_field(field):
         # A link the page already asks for by name (its own "LinkedIn URL"
@@ -213,9 +284,18 @@ _PLACEHOLDER_RE = re.compile(
 
 
 def is_listbox_button(field: dict[str, Any]) -> bool:
-    """A dropdown rendered as a BUTTON that opens a listbox (Workday). Its
-    shown choice is its text, not a value attribute."""
-    return field.get("tag") == "button" and (field.get("haspopup") or "").lower() == "listbox"
+    """A dropdown that is not a <select> and takes no typing: Workday's
+    BUTTON with a listbox popup, Angular Material's <mat-select>. It has to
+    be opened and its option clicked, and its shown choice is its text, not
+    a value attribute."""
+    tag = (field.get("tag") or "").lower()
+    if tag in ("input", "textarea", "select"):
+        return False
+    haspopup = (field.get("haspopup") or "").lower()
+    role = (field.get("role") or "").lower()
+    if tag == "button":
+        return haspopup == "listbox"
+    return role in ("combobox", "listbox") or haspopup in ("listbox", "true")
 
 
 def is_blank(field: dict[str, Any]) -> bool:
@@ -250,6 +330,75 @@ def _dial_code(data: dict[str, Any]) -> str:
     return f"+{match.group(1)}" if match else ""
 
 
+# Boxes that carry a contact word but are not the candidate's own address or
+# number: another person's, a part of the number, or a one-time code.
+_NOT_MY_CONTACT_RE = re.compile(
+    r"\b(manager|referee|reference|supervisor|recruiter|colleague|emergency|"
+    r"parent|guardian|employer|company|friend|spouse|next of kin)\b"
+    r"|\bext(ension)?\b|\bcountry\b|\bcode\b|\btype\b|\bconfirm\b|\bverify\b",
+    re.IGNORECASE,
+)
+_EMAIL_WORD_RE = re.compile(r"\be[\s_-]?mail\b", re.IGNORECASE)
+_PHONE_WORD_RE = re.compile(r"\b(phone|mobile|cell|telephone|contact number)\b", re.IGNORECASE)
+
+
+def contact_topic(field: dict[str, Any]) -> str:
+    """'email' or 'phone' for a box that holds the candidate's own contact
+    detail, else ''. These two are checked after every step: an ATS that
+    parses the uploaded resume overwrote the e-mail with a mis-read address,
+    and a wrong one means the employer cannot reply at all.
+
+    Looser than the fill rules on purpose - "Enter Email address (Required)"
+    is not a shape resolve() matches by label, but it is still the address
+    an employer would write to."""
+    if field.get("tag") not in ("input", "textarea"):
+        return ""
+    if (field.get("type") or "").lower() not in _FILLABLE_TYPES:
+        return ""
+    label = str(field.get("label") or "")
+    name = (field.get("name") or "").strip()
+    scope = f"{label} {name}"
+    if _NOT_MY_CONTACT_RE.search(scope) or profile.is_secret(scope):
+        return ""
+    autocomplete = (field.get("autocomplete") or "").strip().lower()
+    if autocomplete in ("email",) or _EMAIL_WORD_RE.search(scope):
+        return "email"
+    if autocomplete in ("tel", "tel-national") or _PHONE_WORD_RE.search(scope):
+        return "phone"
+    return ""
+
+
+def same_contact(topic: str, shown: str, wanted: str) -> bool:
+    """Does the box hold the candidate's detail? E-mail compares exactly
+    (case aside); a phone compares digits, tolerating a country code or the
+    national leading zero a widget adds."""
+    shown, wanted = (shown or "").strip(), (wanted or "").strip()
+    if not wanted:
+        return True
+    if topic == "email":
+        return shown.lower() == wanted.lower()
+    here, there = re.sub(r"\D", "", shown), re.sub(r"\D", "", wanted)
+    if not here or not there:
+        return not here and not there
+    tail = there[-10:]
+    return here.endswith(tail) or there.endswith(here[-10:])
+
+
+CAPTURED_OPTIONS = 40   # how many a snapshot keeps; more means the list is cut
+
+
+def _select_value(value: str, field: dict[str, Any]) -> str:
+    """The option to select. When the captured list is truncated (Esko's
+    Field of study has 345 options and the snapshot keeps 40) the raw value
+    is returned instead, and the worker searches the whole list in the
+    browser."""
+    options = field.get("options") or []
+    option = match_option(value, options)
+    if option:
+        return option
+    return value if len(options) >= CAPTURED_OPTIONS else ""
+
+
 def resolve(field: dict[str, Any], job: dict[str, Any] | None = None) -> tuple[str, str] | None:
     """(value, source) for a field the script can fill without the model, else None.
 
@@ -279,7 +428,7 @@ def resolve(field: dict[str, Any], job: dict[str, Any] | None = None) -> tuple[s
         if not value:
             return None
         if tag == "select":
-            option = match_option(value, field.get("options") or [])
+            option = _select_value(value, field)
             return (option, "profile") if option else None
         if listbox or tag in ("input", "textarea"):
             return value, "profile"
@@ -334,7 +483,7 @@ def resolve(field: dict[str, Any], job: dict[str, Any] | None = None) -> tuple[s
         if not matched:
             continue
         if tag == "select":
-            option = match_option(value, field.get("options") or [])
+            option = _select_value(value, field)
             if not option and key == "phone_country_code":
                 option = next((o for o in field.get("options") or [] if value in o), "")
             return (option, "profile") if option else None

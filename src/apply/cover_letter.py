@@ -62,6 +62,7 @@ _ESCAPES = {
 _ESCAPE_RE = re.compile("[" + re.escape("".join(_ESCAPES)) + "]")
 
 TEMPLATE = r"""\documentclass[11pt, letterpaper]{article}
+\usepackage[T1]{fontenc}
 \usepackage[margin=1in]{geometry}
 \usepackage{parskip}
 \begin{document}
@@ -181,10 +182,12 @@ def revise(invoke, text: str, instruction: str) -> str:
     return (invoke(REVISE_SYSTEM, user, CoverLetter).text or "").strip()
 
 
-def build_pdf(
+def render_tex(
     text: str, out_dir: Path, job: dict[str, Any], profile: dict[str, Any]
 ) -> tuple[Path | None, str]:
-    """Compile the accepted letter into a small one-page PDF."""
+    """Write the accepted letter's LaTeX source. Returns (path, error).
+    Separate from the compile so the wording can be checked without paying
+    for pdflatex."""
     paras = [p.strip() for p in re.split(r"\n\s*\n", (text or "").strip()) if p.strip()]
     if not paras:
         return None, "the cover letter is empty"
@@ -216,4 +219,14 @@ def build_pdf(
     out_dir.mkdir(parents=True, exist_ok=True)
     tex_path = out_dir / f"{stem}.tex"
     tex_path.write_text(source, encoding="utf-8")
+    return tex_path, ""
+
+
+def build_pdf(
+    text: str, out_dir: Path, job: dict[str, Any], profile: dict[str, Any]
+) -> tuple[Path | None, str]:
+    """Compile the accepted letter into a small one-page PDF."""
+    tex_path, error = render_tex(text, out_dir, job, profile)
+    if tex_path is None:
+        return None, error
     return compile_tex(tex_path)

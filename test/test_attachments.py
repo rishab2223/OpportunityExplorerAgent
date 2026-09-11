@@ -185,11 +185,26 @@ class ResumeChoiceTests(unittest.TestCase):
         self.assertEqual(self.tex.read_text(encoding="utf-8"), VALID_TEX)
 
 
+def stub_compile(test: unittest.TestCase) -> None:
+    """Write the PDF instead of running pdflatex. These tests are about the
+    letter flow - draft, edit, reuse, call counts - and a real compile costs
+    about a second each; test_cover_letter compiles for real once."""
+    def fake(tex_path, timeout=None):
+        pdf = Path(tex_path).with_suffix(".pdf")
+        pdf.write_bytes(b"%PDF-1.4 stub\n%%EOF\n")
+        return pdf, ""
+
+    patcher = mock.patch("src.apply.cover_letter.compile_tex", side_effect=fake)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+
+
 class CoverLetterFlowTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self._tmp.name)
         self.calls: list[str] = []
+        stub_compile(self)
         # frame() reads the profile for the sign-off name; never the real file.
         patcher = mock.patch(
             "src.apply.profile.load_profile", return_value={"full_name": "Test User"}
@@ -273,6 +288,7 @@ class LetterReuseTests(unittest.TestCase):
         self.dir = Path(self._tmp.name)
         self._original_db = history.DB_PATH
         history.DB_PATH = self.dir / "job_history.db"
+        stub_compile(self)
         patcher = mock.patch(
             "src.apply.profile.load_profile", return_value={"full_name": "Test User"}
         )

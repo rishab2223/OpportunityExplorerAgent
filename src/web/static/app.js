@@ -68,6 +68,72 @@ function appendLog(box, text) {
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
+// The apply transcript is read while answering, so its lines are rendered as
+// elements: what the agent asks stands out, routine fills recede, and errors
+// are obvious. A long line keeps its full text in the tooltip.
+const APPLY_LINE_KINDS = [
+  [/^AGENT ASKS: /, "ask"],
+  [/^AGENT ASKED: /, "asked"],
+  [/^YOU: /, "you"],
+  [/^(ERROR: |SESSION |Error: |Could not |Model error)/, "bad"],
+  [/^(--- |\(reconnected)/, "meta"],
+  [/^CHECK YOUR CONTACT DETAILS/, "warn"],
+  [/^Left empty \(optional\)/, "warn"],
+  [/^\[(profile|saved|resume|letter|estimate|again|corrected|llm|redo)\]/, "fill"],
+  [/^(Asking the model|Model returned|Model calls|Compiling|Drafting|Redrafting|Estimating)/, "quiet"],
+];
+
+function applyLineKind(text) {
+  for (const [pattern, kind] of APPLY_LINE_KINDS) {
+    if (pattern.test(text)) return kind;
+  }
+  return "step";
+}
+
+// What a line starts with is what you scan for, so it is set in capitals:
+// the source in brackets ([PROFILE], [SAVED]) and the action word (FILLED,
+// SELECTED). The text itself is untouched - the CSS does the shouting.
+const LINE_HEAD_RE =
+  /^(\[[a-z]+\]\s*)?((?:could not [a-z]+|filled|selected|checked|unchecked|uploaded|clicked|removed|switched|opened|left empty|drafting|redrafting|compiling|estimating|asking the model|model returned|model calls|recorded as applied|page dumped)\b)?/i;
+
+function appendApply(text) {
+  const box = $("applylog");
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  for (const piece of String(text).split("\n")) {
+    const line = document.createElement("div");
+    line.className = `logline ${applyLineKind(piece)}`;
+    const head = LINE_HEAD_RE.exec(piece);
+    const tag = (head && head[1]) || "";
+    const verb = (head && head[2]) || "";
+    if (tag || verb) {
+      if (tag) {
+        const el = document.createElement("span");
+        el.className = "tag";
+        el.textContent = tag;
+        line.appendChild(el);
+      }
+      if (verb) {
+        const el = document.createElement("span");
+        el.className = "verb";
+        el.textContent = verb;
+        line.appendChild(el);
+      }
+      line.appendChild(document.createTextNode(piece.slice(tag.length + verb.length)));
+    } else {
+      line.textContent = piece;
+    }
+    if (piece.length > 160) line.title = piece;
+    box.appendChild(line);
+  }
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function resetApply(text) {
+  const box = $("applylog");
+  box.textContent = "";
+  if (text) appendApply(text);
+}
+
 function setLog(box, text) {
   box.textContent = text;
   box.scrollTop = box.scrollHeight;
@@ -549,6 +615,37 @@ function setChatEnabled(enabled) {
   $("abort").disabled = !enabled;
   $("attachresume").disabled = !enabled;
   $("attachletter").disabled = !enabled;
+  if (!enabled) showDraftTools("");
+}
+
+// A drafted answer used to arrive in a one-line box: unreadable without
+// dragging the cursor to the end. The box grows to the text instead.
+const CHAT_MAX_HEIGHT = 260;
+let lastDraft = "";
+
+function growChat() {
+  const box = $("chat");
+  box.style.height = "auto";
+  box.style.height = `${Math.min(box.scrollHeight + 2, CHAT_MAX_HEIGHT)}px`;
+  const text = box.value;
+  $("chatcount").textContent = text.length > 80 ? `${text.length} characters` : "";
+}
+
+function showDraftTools(draft) {
+  lastDraft = draft || "";
+  for (const id of ["redraft", "restoredraft"]) {
+    $(id).hidden = !lastDraft;
+    $(id).disabled = !lastDraft;
+  }
+}
+
+function fillChat(text, draft) {
+  const box = $("chat");
+  box.value = text;
+  showDraftTools(draft === undefined ? lastDraft : draft);
+  growChat();
+  box.focus();
+  box.setSelectionRange(box.value.length, box.value.length);
 }
 
 // While applying, the user is usually in the OTHER window (the Playwright
@@ -605,13 +702,13 @@ async function resyncApply(reason) {
       applySessionId = "";
       applyJobId = "";
       setChatEnabled(false);
-      appendLog($("applylog"), `--- the session is over (${reason}); Start apply begins a new one ---`);
+      appendApply(`--- the session is over (${reason}); Start apply begins a new one ---`);
       loadJobs(currentStamp);
       return;
     }
     // Alive: replay the transcript from the server so what is on screen is
     // what the agent is actually waiting for.
-    setLog($("applylog"), `(reconnected: ${reason})`);
+    resetApply(`(reconnected: ${reason})`);
     setChatEnabled(true);
     streamApply(state.session_id);
   } catch {}
@@ -644,14 +741,19 @@ function streamApply(sessionId) {
       error: "ERROR: ",
       done: "SESSION ",
     }[event.type] || "";
-    appendLog($("applylog"), prefix + event.text);
+    appendApply(prefix + event.text);
     if (event.type === "question" || event.type === "choice") alertUser(event.text);
     if (event.type === "question") {
       // A model-drafted answer arrives pre-filled for editing; never clobber
       // something the user already started typing.
       if (event.suggestion && !$("chat").value.trim()) {
-        $("chat").value = event.suggestion;
-        appendLog($("applylog"), "(a suggested answer is pre-filled below - edit it or just press Send)");
+        fillChat(event.suggestion, event.suggestion);
+        appendApply(
+          "(the draft is in the box below - read it, edit it, press Enter to send; " +
+            "'Ask for changes' redrafts it)"
+        );
+      } else {
+        showDraftTools("");
       }
       $("chat").focus();
     }
@@ -663,9 +765,7 @@ function streamApply(sessionId) {
       applyJobId = "";
       closeAttachModal();
       setChatEnabled(false);
-      appendLog(
-        $("applylog"),
-        "--- session ended; the chat is closed. If you finished the application " +
+      appendApply("--- session ended; the chat is closed. If you finished the application " +
           "yourself, use Mark applied on the row. Start apply begins a new session. ---"
       );
       loadJobs(currentStamp);
@@ -691,7 +791,7 @@ function streamApply(sessionId) {
           applySessionId = "";
           applyJobId = "";
           setChatEnabled(false);
-          appendLog($("applylog"), "--- connection lost and the session is over; Start apply begins a new one ---");
+          appendApply("--- connection lost and the session is over; Start apply begins a new one ---");
           loadJobs(currentStamp);
         }
       } catch {}
@@ -760,7 +860,7 @@ async function sendChoice(text) {
   try {
     await postJSON(`/api/apply/${applySessionId}/chat`, { text });
   } catch (err) {
-    appendLog($("applylog"), `Could not send: ${err.message}`);
+    appendApply(`Could not send: ${err.message}`);
     // "busy" after a long break usually means the screen is stale: resync.
     if (/busy/i.test(err.message || "")) resyncApply("the agent's state had moved on");
   }
@@ -779,7 +879,7 @@ async function startApply(jobId) {
     } catch {}
   }
   selectJob(jobId);
-  setLog($("applylog"), "Starting apply session...");
+  resetApply("Starting apply session...");
   try {
     const sess = await postJSON("/api/apply/start", {
       stamp: currentStamp,
@@ -790,19 +890,19 @@ async function startApply(jobId) {
     streamApply(sess.session_id);
     await loadJobs(currentStamp);
   } catch (err) {
-    appendLog($("applylog"), `Could not start: ${err.message}`);
+    appendApply(`Could not start: ${err.message}`);
   }
 }
 
 async function sendChat() {
   const text = $("chat").value.trim();
   if (!text || !applySessionId) return;
-  $("chat").value = "";
+  fillChat("", "");
   try {
     await postJSON(`/api/apply/${applySessionId}/chat`, { text });
   } catch (err) {
-    appendLog($("applylog"), `Could not send: ${err.message}`);
-    $("chat").value = text;  // keep what was typed
+    appendApply(`Could not send: ${err.message}`);
+    fillChat(text);  // keep what was typed
     if (/busy/i.test(err.message || "")) resyncApply("the agent's state had moved on");
   }
 }
@@ -814,7 +914,7 @@ async function abortApply() {
   } catch (err) {
     // The session is probably already gone; unlock the UI regardless so the
     // user is never stuck unable to abort or start fresh.
-    appendLog($("applylog"), `Could not abort (${err.message}); resetting.`);
+    appendApply(`Could not abort (${err.message}); resetting.`);
     if (applySource) {
       applySource.close();
       applySource = null;
@@ -833,7 +933,7 @@ async function resumeActiveApply() {
   const dead = ["applied", "failed", "aborted", "closed", "idle"];
   if (state.session_id && !dead.includes(state.status)) {
     applyJobId = state.job_id || "";
-    setLog($("applylog"), "");
+    resetApply("");
     setChatEnabled(true);
     streamApply(state.session_id);
   }
@@ -884,7 +984,21 @@ $("refresh").addEventListener("click", () => loadStamps(currentStamp));
 $("send").addEventListener("click", sendChat);
 $("abort").addEventListener("click", abortApply);
 $("chat").addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter") sendChat();
+  // Enter sends; Shift+Enter starts a new line, so a paragraph answer can be
+  // written without the box swallowing it.
+  if (ev.key === "Enter" && !ev.shiftKey) {
+    ev.preventDefault();
+    sendChat();
+  }
 });
+$("chat").addEventListener("input", growChat);
+$("redraft").addEventListener("click", () => {
+  const box = $("chat");
+  if (!/^\s*(llm|ai)\s*:/i.test(box.value)) {
+    fillChat(`llm: ${box.value.trim() === lastDraft.trim() ? "" : box.value}`.trimEnd() + " ");
+  }
+  box.focus();
+});
+$("restoredraft").addEventListener("click", () => fillChat(lastDraft));
 
 loadStamps().then(resumeActiveRun).then(resumeActiveApply);

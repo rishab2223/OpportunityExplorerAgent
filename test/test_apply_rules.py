@@ -451,13 +451,23 @@ class SalaryEstimateTests(TempDbTestCase):
         self.assertEqual(attach.expected_salary(), 4_100_000)
         self.assertEqual(self.calls, 1)
         self.assertEqual(attach.calls, 1)
-        self.assertTrue(any("band 40 LPA-42 LPA -> quoting 41 LPA" in line for line in attach.logs), attach.logs)
+        # The log names the band, its midpoint, the model's basis and what is
+        # quoted, so the candidate can judge the number before it is sent.
+        joined = "\n".join(attach.logs)
+        self.assertIn("model band 40 LPA-42 LPA, midpoint 41 LPA", joined)
+        self.assertIn("mid-size adtech, senior band", joined)
+        self.assertIn("Quoting 41 LPA (the band's midpoint)", joined)
+        self.assertIn("Sr. Backend Engineer at X Co", joined)
 
     def test_never_below_current_pay(self) -> None:
         attach = self._attach(18, 22)
         # Band midpoint 20 < current 25: the saved expectation (30) is quoted.
         self.assertEqual(attach.expected_salary(), 3_000_000)
-        self.assertTrue(any("below the current 25 LPA" in line for line in attach.logs), attach.logs)
+        joined = "\n".join(attach.logs)
+        self.assertIn("model band 18 LPA-22 LPA, midpoint 20 LPA", joined)
+        self.assertIn("below your current 25 LPA", joined)
+        self.assertIn("Quoting 30 LPA", joined)
+        self.assertIn("your saved expected pay", joined)
 
     def test_failed_call_falls_back_silently(self) -> None:
         attach = self._attach(0, 0, fail=True)
@@ -969,7 +979,17 @@ class SkillsBoxTests(TempDbTestCase):
         self.assertTrue(worker._is_skills_box({"tag": "input", "type": "", "label": "Type to Add Skills", "section": "Skills (Optional)"}))
         self.assertTrue(worker._is_skills_box({"tag": "textarea", "type": "", "label": "Skills", "section": ""}))
         self.assertTrue(worker._is_skills_box({"tag": "input", "type": "text", "label": "Type to add", "section": "Skills"}))
+        self.assertTrue(worker._is_skills_box(
+            {"tag": "textarea", "type": "", "label": "Separate each skill with a comma.", "section": "Skills :"}))
+        self.assertTrue(worker._is_skills_box({"tag": "input", "type": "text", "label": "Key skills", "section": ""}))
         self.assertFalse(worker._is_skills_box({"tag": "input", "type": "text", "label": "Job Title*", "section": "Skills"}))
+        # An essay question that mentions the word got the comma-separated
+        # list of skills written into it (Xplor).
+        essay = ("What's a professional skill you've developed in the past year that wasn't on "
+                 "your radar before, and how did the opportunity to learn it arise?")
+        self.assertFalse(worker._is_skills_box({"tag": "textarea", "type": "", "label": essay, "section": ""}))
+        self.assertFalse(worker._is_skills_box(
+            {"tag": "textarea", "type": "", "label": "Describe your skills in detail", "section": ""}))
         self.assertFalse(worker._is_skills_box({"tag": "button", "type": "", "label": "Skills", "section": ""}))
         self.assertFalse(worker._is_skills_box({"tag": "input", "type": "file", "label": "Skills matrix", "section": ""}))
 
@@ -979,6 +999,17 @@ class SkillsBoxTests(TempDbTestCase):
         self.assertEqual(worker._profile_skills({"skills": "JavaScript, Node.js; Python\nC++, javascript"}),
                          ["JavaScript", "Node.js", "Python", "C++"])
         self.assertEqual(worker._profile_skills({}), [])
+
+    def test_a_stated_limit_is_respected(self) -> None:
+        from src.apply import worker
+
+        # Workday: "Add up to 10 skills that highlight your professional
+        # abilities." A longer profile list would fail past the tenth.
+        field = {"section": "Skills (Optional)", "label": "Type to Add Skills",
+                 "text": "", "group": "Add up to 10 skills that highlight your professional abilities."}
+        self.assertEqual(worker._skill_cap(field), 10)
+        self.assertEqual(worker._skill_cap({"section": "Skills", "group": "maximum of 5 skills"}), 5)
+        self.assertEqual(worker._skill_cap({"section": "Skills :", "label": "Separate each skill with a comma."}), 0)
 
 
 class AliasOptionTests(TempDbTestCase):
@@ -1015,6 +1046,378 @@ class ProposalTests(TempDbTestCase):
 
         self.assertEqual(salary.parse_annual_inr("30 lpa"), 3000000)
         self.assertIsNone(salary.parse_annual_inr("yes"))
+
+
+class GrownOptionTests(TempDbTestCase):
+    def test_one_word_matches_the_single_option_growing_out_of_it(self) -> None:
+        from src.apply import worker
+
+        # ALTEN's salary period: the profile says "Annual", the list says
+        # "Annually", and no word-boundary rule can join them.
+        self.assertEqual(worker._choose_option(["Monthly", "Annually", "Weekly"], "Annual"), 1)
+        self.assertEqual(worker._choose_option(["Contractual", "Permanent"], "Contract"), 0)
+        # Never when several options qualify, and never the other direction.
+        self.assertEqual(worker._choose_option(["Annually", "Annualized"], "Annual"), -1)
+        # A whole-word hit still wins over a grown one, as at every level.
+        self.assertEqual(worker._choose_option(["Annually", "Annual Bonus"], "Annual"), 1)
+        self.assertEqual(worker._choose_option(["Mobile"], "Mobile phone"), -1)
+        self.assertEqual(worker._choose_option(["Javascript Coding", "JavaScript"], "JavaScript"), 1)
+
+
+class DateBoxTests(TempDbTestCase):
+    """Esko/Phenom keeps a whole date in one box showing MM/YYYY."""
+
+    def test_which_boxes_are_dates(self) -> None:
+        from src.apply import worker
+
+        self.assertTrue(worker._is_date_box({"tag": "input", "type": "text", "label": "From*"}))
+        self.assertTrue(worker._is_date_box({"tag": "input", "type": "text", "label": "To*"}))
+        self.assertTrue(worker._is_date_box(
+            {"tag": "input", "type": "text", "label": "", "elid": "experienceData[0].fromTo.startDate"}))
+        self.assertFalse(worker._is_date_box({"tag": "input", "type": "text", "label": "Company*"}))
+        self.assertFalse(worker._is_date_box({"tag": "select", "type": "", "label": "From*"}))
+        # Names that merely contain the letters: a "candidate" box is not a date.
+        for name in ("candidate", "candidateName", "update", "validate_email"):
+            self.assertFalse(worker._is_date_box({"tag": "input", "type": "text", "label": "Name", "elid": name}), name)
+        for name in ("start_date", "startDate", "date", "dob", "experienceData[1].fromTo.endDate"):
+            self.assertTrue(worker._is_date_box({"tag": "input", "type": "text", "label": "", "elid": name}), name)
+
+    def test_parsing_what_the_model_writes(self) -> None:
+        from src.apply import worker
+
+        self.assertEqual(worker._parse_date("Jul 2020"), (7, None, 2020))
+        self.assertEqual(worker._parse_date("July 2020"), (7, None, 2020))
+        self.assertEqual(worker._parse_date("07/2020"), (7, None, 2020))
+        self.assertEqual(worker._parse_date("2020-07"), (7, None, 2020))
+        self.assertEqual(worker._parse_date("15 March 2019"), (3, 15, 2019))
+        self.assertEqual(worker._parse_date("03/15/2019"), (3, 15, 2019))
+        self.assertEqual(worker._parse_date("no date here"), (None, None, None))
+
+    def test_the_box_keeps_its_own_format(self) -> None:
+        from src.apply import worker
+
+        # Learnt from what the box already shows, else from its placeholder.
+        self.assertEqual(worker._date_mask({}, "07/2026"), "MM/YYYY")
+        self.assertEqual(worker._date_mask({}, "2019-07-15"), "YYYY-MM-DD")
+        self.assertEqual(worker._date_mask({"value": "03-2019"}, ""), "MM-YYYY")
+        self.assertEqual(worker._date_mask({}, "MM/DD/YYYY"), "MM/DD/YYYY")
+        self.assertEqual(worker._date_mask({}, ""), "")
+        self.assertEqual(worker._format_date(7, None, 2020, "MM/YYYY"), "07/2020")
+        self.assertEqual(worker._format_date(7, 15, 2019, "MM/DD/YYYY"), "07/15/2019")
+        self.assertEqual(worker._format_date(7, 15, 2019, "YYYY-MM-DD"), "2019-07-15")
+        # A date the mask cannot be filled from is refused, not half-written.
+        self.assertEqual(worker._format_date(7, None, None, "MM/YYYY"), "")
+        self.assertEqual(worker._format_date(7, None, 2020, "MM/DD/YYYY"), "")
+
+    def test_what_the_box_shows_is_compared_by_digits(self) -> None:
+        from src.apply import worker
+
+        self.assertTrue(worker._same_digits("07/2020", "07/2020"))
+        self.assertTrue(worker._same_digits("07-2020", "07/2020"))   # widget reformats
+        self.assertFalse(worker._same_digits("", "07/2020"))         # wiped on close
+        self.assertFalse(worker._same_digits("07/2026", "07/2020"))  # the year bug
+
+    def test_the_calendar_header_names_its_month(self) -> None:
+        from src.apply import worker
+
+        self.assertEqual(worker._header_month("July 2020"), 7)
+        self.assertEqual(worker._header_month("Jan 2026"), 1)
+        self.assertIsNone(worker._header_month("2026"))   # month/year picker: year only
+
+
+class RemoveExcludedEntryTests(TempDbTestCase):
+    """A site that parses the uploaded resume adds the flagged project as a
+    job; the agent takes that entry out again."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from unittest import mock
+
+        patcher = mock.patch("src.apply.profile.load_profile",
+                             return_value={"not_employment": "Applied AI & LLM Agents"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _entry(title: str, company: str, first_id: int) -> list[dict]:
+        section = "Work Experience :"
+        return [
+            {"id": first_id, "tag": "input", "type": "text", "label": "Job Title*",
+             "section": section, "value": title},
+            {"id": first_id + 1, "tag": "input", "type": "text", "label": "Company*",
+             "section": section, "value": company},
+            {"id": first_id + 2, "tag": "textarea", "label": "Role description",
+             "section": section, "value": ""},
+            {"id": first_id + 3, "tag": "button", "text": "Remove experience",
+             "label": "Remove experience", "section": section},
+        ]
+
+    def test_the_flagged_entry_is_the_one_removed(self) -> None:
+        from src.apply import worker
+
+        fields = (self._entry("Applied AI & LLM Agents", "", 10)
+                  + self._entry("Software Engineer", "Cadence Design Systems", 20))
+        removals = worker._excluded_entry_removals(fields)
+        self.assertEqual(len(removals), 1, removals)
+        project, button = removals[0]
+        self.assertEqual(project, "Applied AI & LLM Agents")
+        self.assertEqual(button["id"], 13)   # the flagged entry's own button
+
+    def test_the_project_named_in_the_company_box_counts(self) -> None:
+        from src.apply import worker
+
+        fields = self._entry("Founder", "Applied AI and LLM Agents", 10)
+        self.assertEqual(len(worker._excluded_entry_removals(fields)), 1)
+
+    def test_real_jobs_are_never_removed(self) -> None:
+        from src.apply import worker
+
+        fields = (self._entry("Software Engineer", "Cadence Design Systems", 10)
+                  + self._entry("Software Engineer Intern", "Cadence Design Systems", 20))
+        self.assertEqual(worker._excluded_entry_removals(fields), [])
+        # An entry with no remove button of its own is left alone.
+        lonely = self._entry("Applied AI & LLM Agents", "", 10)[:-1]
+        self.assertEqual(worker._excluded_entry_removals(lonely), [])
+
+    def test_remove_button_wording(self) -> None:
+        from src.apply.worker import REMOVE_ENTRY_RE
+
+        for text in ("Remove experience", "- Remove", "Delete entry", "Remove this position"):
+            self.assertTrue(REMOVE_ENTRY_RE.match(text), text)
+        for text in ("Remove language", "Remove education", "Removed"):
+            self.assertFalse(REMOVE_ENTRY_RE.match(text), text)
+
+
+class ShortYesTests(TempDbTestCase):
+    def test_a_sentence_is_never_a_yes(self) -> None:
+        from src.apply.worker import _is_short_yes
+
+        for reply in ("yes", "Yes please", "ok", "sure", "y", "yep"):
+            self.assertTrue(_is_short_yes(reply), reply)
+        # The exact reply that clicked Next: "on" (an affirmative, for
+        # checkbox values) sat inside "on your radar".
+        self.assertFalse(_is_short_yes(
+            "redo What's a professional skill you've developed in the past year "
+            "that wasn't on your radar before"))
+        self.assertFalse(_is_short_yes("yes but change the salary to 30 first"))
+        self.assertFalse(_is_short_yes("the location should be Pune on the second step"))
+        self.assertFalse(_is_short_yes("no"))
+        self.assertFalse(_is_short_yes(""))
+
+
+class OptionalQuestionTests(TempDbTestCase):
+    """An optional question the model skipped is retired quietly; the review
+    prompt must still name it, and "llm: <question>" must find its box."""
+
+    QUESTION = "Is there anything else you'd like us to know about you that is not captured in your application?"
+
+    def _fields(self) -> list[dict]:
+        return [
+            {"id": 1, "tag": "textarea", "type": "", "label": self.QUESTION, "value": "", "required": False},
+            {"id": 2, "tag": "textarea", "type": "", "label": "If yes, please list the names of the individual(s).",
+             "value": "", "required": False},
+            {"id": 3, "tag": "input", "type": "text", "label": "Middle name", "value": "", "required": False},
+            {"id": 4, "tag": "input", "type": "text", "label": "What is your current CTC? (In lakh rupees/INR)",
+             "value": "25", "required": True},
+        ]
+
+    def test_only_real_unanswered_questions_are_reported(self) -> None:
+        from src.apply import worker
+
+        spare = worker._unanswered_questions(self._fields())
+        self.assertEqual([f["id"] for f in spare], [1])
+
+    def test_the_quoted_question_finds_its_box(self) -> None:
+        from src.apply import worker
+
+        fields = self._fields()
+        self.assertEqual(worker._field_for_question(fields, self.QUESTION)["id"], 1)
+        # A paraphrase still lands on it.
+        self.assertEqual(
+            worker._field_for_question(fields, "anything else about you not captured")["id"], 1)
+        # Nothing empty to answer: no guess.
+        self.assertIsNone(worker._field_for_question([fields[3]], self.QUESTION))
+
+    def test_two_questions_need_the_words_to_choose(self) -> None:
+        from src.apply import worker
+
+        fields = self._fields() + [
+            {"id": 5, "tag": "textarea", "type": "", "required": False, "value": "",
+             "label": "Why do you want to work at this company, and what draws you to the role?"},
+        ]
+        self.assertEqual(worker._field_for_question(fields, "why do you want to work here")["id"], 5)
+        self.assertEqual(worker._field_for_question(fields, self.QUESTION)["id"], 1)
+        # An instruction that names neither is not guessed at.
+        self.assertIsNone(worker._field_for_question(fields, "make it shorter"))
+
+
+class RadioAnswerTests(TempDbTestCase):
+    """A yes/no answer selects the option that matches it. Applying "no" to
+    the Yes radio asked for an impossible uncheck and failed the form."""
+
+    @staticmethod
+    def _group() -> list[dict]:
+        question = "Have you applied to Xplor for another role in the past 12 months?"
+        return [
+            {"id": 1, "tag": "input", "type": "radio", "label": "Yes", "name": "applied_before",
+             "group": question, "section": "Questions", "checked": False},
+            {"id": 2, "tag": "input", "type": "radio", "label": "No", "name": "applied_before",
+             "group": question, "section": "Questions", "checked": False},
+        ]
+
+    def test_the_matching_option_is_found(self) -> None:
+        from src.apply import worker
+
+        yes, no = self._group()
+        self.assertEqual(worker._sibling_option([yes, no], yes, "no"), no)
+        self.assertEqual(worker._sibling_option([yes, no], no, "yes"), yes)
+        # An answer that names neither option leaves the choice to the model.
+        self.assertIsNone(worker._sibling_option([yes, no], yes, "maybe next year"))
+
+    def test_options_of_another_question_are_never_touched(self) -> None:
+        from src.apply import worker
+
+        yes, no = self._group()
+        other = {"id": 3, "tag": "input", "type": "radio", "label": "No", "name": "sponsorship",
+                 "group": "Do you need sponsorship?", "section": "Questions", "checked": False}
+        self.assertEqual(worker._sibling_option([yes, no, other], yes, "no"), no)
+        # Same section, different question: not a sibling.
+        self.assertIsNone(worker._sibling_option([yes, other], yes, "no"))
+
+    def test_an_agreeing_answer_stays_on_its_own_option(self) -> None:
+        from src.apply.worker import _option_agrees
+
+        yes, no = self._group()
+        self.assertTrue(_option_agrees(no, "no"))
+        self.assertFalse(_option_agrees(yes, "no"))
+        self.assertTrue(_option_agrees(yes, "yes"))
+
+
+class ContactGuardTests(TempDbTestCase):
+    def test_a_contact_box_changed_under_us_is_put_back(self) -> None:
+        from src.apply import worker
+
+        email = {"tag": "input", "type": "text", "label": "Email address*",
+                 "value": "acandidate@example.invalid"}
+        self.assertTrue(worker._contact_went_wrong(email, "a_candidate@example.invalid"))
+        self.assertFalse(worker._contact_went_wrong(
+            {**email, "value": "a_candidate@example.invalid"}, "a_candidate@example.invalid"))
+        # An empty box is the refill path's business, not this one.
+        self.assertFalse(worker._contact_went_wrong({**email, "value": ""}, "a_candidate@example.invalid"))
+        # Other fields may legitimately change (a widget reformats a date).
+        self.assertFalse(worker._contact_went_wrong(
+            {"tag": "input", "type": "text", "label": "From*", "value": "07/2020"}, "Jul 2020"))
+
+    def test_the_warning_names_the_box_and_both_values(self) -> None:
+        from unittest import mock
+
+        from src.apply import worker
+
+        fields = [
+            {"tag": "input", "type": "text", "label": "Email address*", "value": "acandidate@example.invalid"},
+            {"tag": "input", "type": "tel", "label": "Phone number*", "value": "+91 90000 00000"},
+            {"tag": "input", "type": "text", "label": "City", "value": "Mumbai"},
+        ]
+        data = {"email": "a_candidate@example.invalid", "phone": "9000000000", "location": "Gurgaon"}
+        with mock.patch("src.apply.profile.load_profile", return_value=data):
+            warnings = worker._contact_warnings(fields)
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("Email address*", warnings[0])
+        self.assertIn("acandidate@example.invalid", warnings[0])
+        self.assertIn("a_candidate@example.invalid", warnings[0])
+
+
+class NotEmploymentTests(TempDbTestCase):
+    """Self-directed AI project work belongs on the resume, never in a Work
+    Experience entry."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from unittest import mock
+
+        patcher = mock.patch("src.apply.profile.load_profile",
+                             return_value={"not_employment": "Applied AI & LLM Agents; Side Project X"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_flagged_entries_are_read_from_the_profile(self) -> None:
+        from src.apply import worker
+
+        self.assertEqual(worker.not_employment(), ["Applied AI & LLM Agents", "Side Project X"])
+        note = worker._not_employment_note()
+        self.assertIn("Applied AI & LLM Agents", note)
+        self.assertIn("never enter them as a work experience", note.lower())
+
+    def test_which_boxes_record_employment(self) -> None:
+        from src.apply import worker
+
+        self.assertTrue(worker._is_employment_field(
+            {"label": "Job Title*", "section": "Work Experience :", "group": ""}))
+        self.assertTrue(worker._is_employment_field(
+            {"label": "Company*", "section": "Employment History", "group": ""}))
+        self.assertTrue(worker._is_employment_field(
+            {"label": "Role description", "section": "", "elid": "experienceData[0].description"}))
+        # Education and the rest of the form are untouched by this rule.
+        self.assertFalse(worker._is_employment_field(
+            {"label": "School or University*", "section": "Education :", "group": ""}))
+        self.assertFalse(worker._is_employment_field(
+            {"label": "Job Title*", "section": "", "group": ""}))
+
+    def test_a_flagged_project_is_refused_in_an_employment_box(self) -> None:
+        from src.apply import worker
+
+        title = {"label": "Job Title*", "section": "Work Experience :", "group": ""}
+        self.assertEqual(worker._excluded_experience(title, "Applied AI & LLM Agents"),
+                         "Applied AI & LLM Agents")
+        # The same words in another order or case still count.
+        self.assertEqual(worker._excluded_experience(title, "applied ai and llm agents (self)"),
+                         "Applied AI & LLM Agents")
+        # A real employer passes, and so does the project name elsewhere on
+        # the form (a portfolio or a "tell us about a project" answer).
+        self.assertEqual(worker._excluded_experience(title, "Cadence Design Systems"), "")
+        self.assertEqual(worker._excluded_experience(
+            {"label": "Describe a project", "section": "Questions"}, "Applied AI & LLM Agents"), "")
+
+
+class SectionAddTextTests(TempDbTestCase):
+    def test_a_plus_prefixed_button_is_still_a_section_add(self) -> None:
+        from src.apply import worker
+
+        # Phenom renders "+ Add Language" and labels it "Add language"; the
+        # "+" kept the Languages section from ever being opened.
+        field = {"tag": "button", "text": "+ Add Language", "label": "Add language",
+                 "section": "Languages :", "group": "Languages :"}
+        self.assertTrue(worker._is_section_add(field))
+        self.assertTrue(worker._is_section_add(
+            {"tag": "button", "text": "+ Add Experience", "label": "Add experience",
+             "section": "Work Experience :", "group": ""}))
+        self.assertFalse(worker._is_section_add(
+            {"tag": "button", "text": "+ Add to favourites", "label": "", "section": "Languages :"}))
+
+
+class NearOptionTests(TempDbTestCase):
+    def test_the_refusal_names_options_worth_looking_at(self) -> None:
+        from src.apply import worker
+
+        options = ["Please Select", "Accounting", "Actuarial Science", "Advertising",
+                   "Computer Engineering", "Computer and Information Science", "Nursing"]
+        near = worker._near_options("Computer Science", options)
+        self.assertIn("Computer and Information Science", near)
+        self.assertIn("Computer Engineering", near)
+        self.assertNotIn("Accounting", near)
+        # Nothing shares a word: fall back to the first few.
+        self.assertEqual(worker._near_options("Zzz", options, limit=2), options[:2])
+
+
+class DropZoneTests(TempDbTestCase):
+    def test_drop_zone_wording(self) -> None:
+        from src.apply.worker import DROPZONE_RE
+
+        for text in ("Drag and Drop Your Resume OR Browse File",
+                     "Drop your file here", "drag & drop a file", "Browse File"):
+            self.assertTrue(DROPZONE_RE.search(text), text)
+        for text in ("Upload your resume", "Select files", "Attach a cover letter"):
+            self.assertFalse(DROPZONE_RE.search(text), text)
 
 
 class EntryLocationTests(TempDbTestCase):

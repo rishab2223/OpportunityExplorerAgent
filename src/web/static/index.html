@@ -60,12 +60,18 @@
 
     <h2>Apply</h2>
     <pre id="applylog" class="logbox">No apply session. Use Start apply on a row.</pre>
-    <div class="row">
-      <input id="chat" type="text" size="60" placeholder="Answer the agent's question, then press Send" disabled>
-      <button id="send" disabled>Send</button>
-      <button id="attachresume" disabled title="Prepare and attach a resume now, if the form's upload field was not detected">Attach resume</button>
-      <button id="attachletter" disabled title="Write a cover letter now, if the form's cover-letter field was not detected">Cover letter</button>
-      <button id="abort" disabled>Abort</button>
+    <div id="chatbox">
+      <textarea id="chat" rows="1" placeholder="Answer the agent's question, then press Enter (Shift+Enter for a new line)" disabled></textarea>
+      <div class="row" id="chatrow">
+        <button id="send" disabled>Send</button>
+        <span id="chatcount" class="muted"></span>
+        <button id="redraft" disabled title="Ask the model to change this draft (llm:)" hidden>Ask for changes</button>
+        <button id="restoredraft" disabled title="Put the model's draft back as it was" hidden>Restore draft</button>
+        <span class="grow"></span>
+        <button id="attachresume" disabled title="Prepare and attach a resume now, if the form's upload field was not detected">Attach resume</button>
+        <button id="attachletter" disabled title="Write a cover letter now, if the form's cover-letter field was not detected">Cover letter</button>
+        <button id="abort" disabled>Abort</button>
+      </div>
     </div>
     <details id="chathelp">
       <summary>Chat commands</summary>
@@ -80,6 +86,14 @@
         <tr><td><code>next</code></td>
             <td>at "This step is filled in": click the wizard's Next for you (or click it yourself);
                 <code>auto next</code> stops the agent asking for the rest of the session</td></tr>
+        <tr><td><code>llm: &lt;question&gt;</code></td>
+            <td>at "This step is filled in": draft an answer for an optional question the form
+                asked and the agent left empty (paste the question, or part of it); the draft comes
+                back for you to edit before it goes in</td></tr>
+        <tr><td><code>redo</code></td>
+            <td>go back to an answer you already gave: it reopens pre-filled so you can edit it
+                (<code>redo salary</code> or <code>redo the skill one</code> picks an earlier one by
+                its words; <code>llm: &lt;what to change&gt;</code> inside it redrafts)</td></tr>
         <tr><td><code>dump</code></td>
             <td>save the page as it is right now (DOM, fields, screenshot) under <code>outputs/dom/</code>
                 for inspection and keep waiting; <code>dump 10</code> waits ten seconds first so you can

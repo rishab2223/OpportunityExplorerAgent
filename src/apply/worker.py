@@ -142,15 +142,22 @@ Rules:
   is the profile's current_company_location when given), dates exactly as
   the resume gives them (a "Month" field under group "From" takes the start month),
   the "currently work here" box for the present job, a short role description from
-  the resume bullets. One entry per resume job or degree, most recent first; click
+  the resume bullets. Entries listed under NOT EMPLOYMENT are the candidate's own
+  projects or self-study: they are never a work-experience entry, whatever the
+  resume calls them. One entry per resume job or degree, most recent first; click
   "Add Another" (or "Add" again) for the next and stop when the resume has no more.
+  Some sites fill an entry's title, company and dates themselves from the uploaded
+  resume: finish those entries rather than skipping them - the role description in
+  particular is usually still empty and is yours to write from the resume.
   Do not ask the candidate for these, and never invent employers, degrees or dates.
   Languages and Websites entries are filled by the script from the profile (it
   clicks their Add buttons itself) - leave those sections alone. A Skills box is
   filled by the script from the profile's skills when the profile lists any; only
   when it is still unhandled do you add the resume's main skills, one at a time
   (one fill action per skill on the same field). Date parts are digits only: a
-  "Month" field takes "07", a "Year" field "2020". Education comes from the
+  "Month" field takes "07", a "Year" field "2020"; a single "From"/"To" box
+  takes the whole date ("07/2020"), which the script writes in that box's own
+  format - never pick a month from a date picker. Education comes from the
   profile's "education" entry when present, else the resume.
 - Use "goto" with the URL in value when the application form lives at another address.
 - NEVER click a submit button (Submit, Apply now, Submit application, Send). The
@@ -544,6 +551,11 @@ def run_session(
                 continue
 
             # 2) Deterministic pass: profile + answer bank, zero model calls.
+            if _remove_excluded_entries(page, fields, handled, sess):
+                errors_in_a_row = 0
+                noop_streak = 0
+                last_llm_sig = ""
+                continue
             if _open_profile_sections(page, fields, handled, sess):
                 errors_in_a_row = 0
                 noop_streak = 0
@@ -579,15 +591,31 @@ def run_session(
                         noop_streak += 1
                         continue
                     advance_label = _field_label(advance_field)
+                    # Contact details are checked on every step, whoever wrote
+                    # them: an ATS that parses the resume can replace them.
+                    contact_problems = _contact_warnings(fields)
+                    for problem in contact_problems:
+                        sess.log(f"CHECK YOUR CONTACT DETAILS: {problem}")
+                    # Optional questions the model chose not to answer are
+                    # retired quietly; name them here, or the candidate never
+                    # learns the form asked ("Is there anything else...?").
+                    spare = _unanswered_questions(fields)
+                    for question in spare:
+                        sess.log(f"Left empty (optional): {_brief(question['label'], 90)}")
                     if holder.get("confirm_advance", ASK_BEFORE_ADVANCE):
                         # The candidate reads the step before it moves on:
                         # prefilling and clicking Next straight away left no
                         # chance to check anything.
                         reply = _ask_watching(
                             sess, holder, context, page, handled, fields,
-                            f"This step is filled in. Review it in the browser, then type next "
+                            (("CHECK YOUR CONTACT DETAILS - " + "; ".join(contact_problems) + ". ")
+                             if contact_problems else "")
+                            + f"This step is filled in. Review it in the browser, then type next "
                             f"to click '{advance_label}' - or click it yourself, fix anything, "
-                            "or tell me what to change. (Type auto next to stop asking.)",
+                            "or tell me what to change. (Type auto next to stop asking.)"
+                            + (f" Left empty (optional): {'; '.join(_brief(q['label'], 70) for q in spare[:3])}"
+                               f" - reply 'llm: <the question>' and I will draft an answer."
+                               if spare else ""),
                         )
                         if reply is None:
                             attempts.pop(key, None)
@@ -599,10 +627,25 @@ def run_session(
                         if lowered in ("auto next", "autonext", "auto"):
                             holder["confirm_advance"] = False
                             sess.log("Moving through the steps without asking from now on.")
-                        elif lowered in CONTINUE_WORDS or _is_affirmative(reply):
-                            pass  # click it below
+                        # Commands first: "redo What's a professional skill ...
+                        # on your radar" was read as a yes (the stray "on")
+                        # and clicked Next instead of reopening the answer.
                         elif _manual_attachment(reply, attach, page, sess, notes):
                             attempts.pop(key, None)
+                            continue
+                        elif _redo_answer(page, fields, holder, job, attach, sess, reply):
+                            attempts.pop(key, None)
+                            continue
+                        elif lowered in CONTINUE_WORDS or _is_short_yes(reply):
+                            pass  # click it below
+                        elif _llm_instruction(reply) is not None:
+                            # "llm: <question>" at the review prompt: draft an
+                            # answer for the box that question belongs to.
+                            _answer_on_request(
+                                page, fields, handled, reply, job, attach, sess, notes, holder
+                            )
+                            attempts.pop(key, None)
+                            last_llm_sig = ""
                             continue
                         else:
                             notes.append(f"guidance from the candidate: {reply}")
@@ -701,8 +744,8 @@ def run_session(
                 noop_streak += 1
                 continue
             sess.log(
-                f"Asking the model about {len(unresolved) + len(pending_adds)} field(s) the "
-                "profile and saved answers do not cover... (the first call can take a minute)"
+                f"Asking the model about {len(unresolved) + len(pending_adds)} field(s)…"
+                + (" (the first call can take a minute)" if llm_calls == 0 else "")
             )
             prompt = _build_prompt(job, resume_text, fields, page, history, notes, handled)
             try:
@@ -914,23 +957,31 @@ class Attachments:
             self.sess.log("The model gave no salary band; using the saved answer instead.")
             return None
         band = f"{salary.canonical(int(estimate.low_lpa * salary.LAKH))}-{salary.canonical(int(estimate.high_lpa * salary.LAKH))}"
-        chosen = mid
+        # Always say where the number came from, so the candidate can judge it
+        # and type their own instead: the band, its midpoint and the model's
+        # reasoning, then what is actually being quoted and why.
+        basis = (estimate.basis or "").strip()
+        self.sess.log(
+            f"[estimate] {self.job.get('title', '')} at {self.job.get('company', '')}: "
+            f"model band {band}, midpoint {salary.canonical(mid)}."
+            + (f" {_brief(basis, 110)}" if basis else "")
+        )
+        chosen, reason = mid, "the band's midpoint"
         if current and mid < current:
             fallback = salary.parse_annual_inr(str(data.get("expected_ctc") or ""))
             if fallback is None:
                 banked = answers.lookup("expected_ctc")
                 fallback = salary.parse_annual_inr(banked["answer"]) if banked else None
             chosen = max(current, fallback or 0)
-            self.sess.log(
-                f"[estimate] Band {band} is below the current {salary.canonical(current)}; "
-                f"quoting {salary.canonical(chosen)} instead."
+            reason = (
+                f"midpoint {salary.canonical(mid)} is below your current "
+                f"{salary.canonical(current)}, so "
+                + ("your saved expected pay" if fallback and fallback >= current else "your current pay")
             )
-        else:
-            self.sess.log(
-                f"[estimate] Expected salary for {self.job.get('title', '')} at "
-                f"{self.job.get('company', '')}: band {band} -> quoting "
-                f"{salary.canonical(chosen)}. {estimate.basis.strip()}"
-            )
+        self.sess.log(
+            f"[estimate] Quoting {salary.canonical(chosen)} ({reason}). Change the box in "
+            "the form if you want another figure; I will not type over it."
+        )
         self._salary = chosen
         return chosen
 
@@ -1166,6 +1217,43 @@ def _is_picker_button(field: dict[str, Any]) -> bool:
     )
 
 
+# "Drag and Drop Your Resume OR Browse File" - a styled drop zone whose real
+# file input is hidden and whose "button" is not a button at all.
+DROPZONE_RE = re.compile(
+    r"drag\s*(?:and|'?n'?|&)?\s*drop|drop\s+(?:your|the|files?|resume|cv)\b|browse\s+file",
+    re.IGNORECASE,
+)
+# The page's only file input that takes documents (ALTEN also has a photo
+# input, which accepts images only). "Only one" keeps a cover-letter slot
+# from quietly receiving the resume.
+LONE_DOC_FILE_JS = """
+() => {
+  const takesDocs = (a) => !a || /pdf|\\.docx?|msword|wordprocessing|officedocument|\\.rtf|\\.txt|\\.odt/i.test(a);
+  const found = [];
+  const walk = (n) => {
+    for (const e of n.querySelectorAll('input[type=file]')) {
+      if (takesDocs(e.getAttribute('accept'))) found.push(e);
+    }
+    for (const h of n.querySelectorAll('*')) if (h.shadowRoot) walk(h.shadowRoot);
+  };
+  walk(document);
+  for (const old of document.querySelectorAll('[data-oea-file]')) old.removeAttribute('data-oea-file');
+  if (found.length !== 1) return 0;
+  found[0].setAttribute('data-oea-file', '1');
+  return 1;
+}
+"""
+
+
+def _lone_document_file_input(page):
+    try:
+        if not int(browser.target(page).evaluate(LONE_DOC_FILE_JS) or 0):
+            return None
+    except Exception:
+        return None
+    return browser.target(page).locator('[data-oea-file="1"]').first
+
+
 def _sole_hidden_file_input(page, tile: dict[str, Any] | None = None):
     """The file input a tile button fronts (Workday keeps the real input
     display:none next to "Select file"). Playwright can set files on a hidden
@@ -1173,7 +1261,7 @@ def _sole_hidden_file_input(page, tile: dict[str, Any] | None = None):
     wins; with several, the one sharing the tile's nearest container (an
     earlier step's input may linger in the DOM). None when still ambiguous."""
     try:
-        inputs = page.locator("input[type=file]")
+        inputs = browser.target(page).locator("input[type=file]")
         if inputs.count() == 1:
             return inputs.first
         if tile is not None and inputs.count() > 1:
@@ -1231,6 +1319,25 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
                 sess.log(f"Could not upload the resume to {label}: {_short(exc)}")
                 notes.append(f"uploading the resume to '{label}' failed: {_short(exc)}")
             return True
+
+    # 1b) A drop zone that fronts nothing clickable: ngx-file-drop (ALTEN)
+    #     hides its file input and shows only "Drag and Drop Your Resume OR
+    #     Browse File" text, so neither a field nor a tile button is ever
+    #     seen and the resume went unnoticed.
+    if not attach.resume_attached:
+        text = browser.page_text(page, 1500)
+        if DROPZONE_RE.search(text) and RESUME_FIELD_RE.search(text):
+            hidden = _lone_document_file_input(page)
+            if hidden is not None:
+                path = attach.resume_path or attach.resume()
+                if path:
+                    try:
+                        hidden.set_input_files(path, timeout=20000)
+                        attach.resume_attached = True
+                        sess.log(f"[resume] Uploaded {Path(path).name} to the resume drop zone")
+                        return True
+                    except Exception as exc:
+                        sess.log(f"Could not upload the resume to the drop zone: {_short(exc)}")
 
     # 2) Tile buttons that only open a (hidden) picker.
     page_text = ""
@@ -1434,10 +1541,19 @@ def _sweep(
                 taken_links = sorted(_links_on_page(fields))
             field["taken_links"] = taken_links
         if key in handled:
-            if not (written and key in written and resolver.is_blank(field)):
+            if written and key in written and resolver.is_blank(field):
+                # Wiped after we filled it: put it back (attempts still capped).
+                resolved = (written[key], "again")
+            elif written and key in written and _contact_went_wrong(field, written[key]):
+                # Changed under us: Esko's ATS parsed the uploaded resume and
+                # replaced the e-mail with its own mis-read of it.
+                sess.log(
+                    f"{label} now shows '{field.get('value')}' but was filled with "
+                    f"'{written[key]}' - putting it back."
+                )
+                resolved = (written[key], "corrected")
+            else:
                 continue
-            # Wiped after we filled it: put it back (attempts still capped).
-            resolved = (written[key], "again")
         else:
             resolved = None
         if attach is not None and not dry_run and _wants_salary_estimate(field):
@@ -1448,6 +1564,10 @@ def _sweep(
             # The profile's skills go in one by one (Workday's "Type to Add
             # Skills" is a chip typeahead); the model used to skip the box.
             skills = _profile_skills(profile.load_profile())
+            cap = _skill_cap(field, page if not dry_run else None)
+            if cap and len(skills) > cap:
+                sess.log(f"[profile] {label}: the form takes {cap} skills; adding the first {cap}.")
+                skills = skills[:cap]
             if skills:
                 if dry_run:
                     sess.log(f"WOULD add [profile] {label} = {', '.join(skills)}")
@@ -1458,7 +1578,7 @@ def _sweep(
                             _fill_skills(page, field, skills, sess)
                             filled += 1
                         except Exception as exc:
-                            sess.log(f"Could not fill {label}: {_short(exc)}")
+                            sess.log(f"Could not fill {_brief(label, LOG_LABEL)}: {_short(exc)}")
                 handled.add(key)
                 continue
         if resolved is None:
@@ -1494,7 +1614,7 @@ def _sweep(
                     and field.get("tag") in ("input", "textarea")):
                 written[key] = value
         except Exception as exc:
-            sess.log(f"Could not fill {label}: {_short(exc)}")
+            sess.log(f"Could not fill {_brief(label, LOG_LABEL)}: {_short(exc)}")
     return filled
 
 
@@ -1605,6 +1725,215 @@ def _ask_apply_choice(page, choices, pdf_path, sess, history, notes, handled, at
     return _guarded_execute(page, click, chosen, pdf_path, sess, history, notes)
 
 
+# "redo", "redo the skill one", "fix last": go back to an answer already
+# given, rather than answering the question now on screen.
+REDO_RE = re.compile(r"^\s*(redo|fix|edit|change)\b(?:\s+(?:the\s+)?(?:last|previous|that)\b)?\s*:?\s*(.*)$",
+                     re.IGNORECASE)
+
+
+def _remember_answered(holder, field: dict[str, Any], label: str, value: str) -> None:
+    """Keep what the candidate answered where, so 'redo' can reopen it. Only
+    boxes that hold text: a radio is redone by answering its question again."""
+    if holder is None or not value or field.get("tag") not in ("input", "textarea"):
+        return
+    if (field.get("type") or "").lower() in ("checkbox", "radio", "file"):
+        return
+    answered = holder.setdefault("answered", {})
+    answered.pop(_field_key(field, label), None)   # most recent goes last
+    answered[_field_key(field, label)] = {"label": label, "value": value}
+
+
+def _redo_answer(page, fields, holder, job, attach, sess, reply: str) -> bool:
+    """Handle a 'redo' reply: reopen an answer already given, pre-filled, and
+    write whatever comes back. True when the reply was a redo."""
+    answered = (holder or {}).get("answered") or {}
+    match = REDO_RE.match(reply or "")
+    if not match or not answered:
+        return False
+    words = (match.group(2) or "").strip()
+    key, entry = _redo_target(answered, fields, words)
+    if key is None:
+        sess.log("Nothing to redo: I have not written an answer to that one.")
+        return True
+    field = next((f for f in fields if _field_key(f, _field_label(f)) == key), None)
+    if field is None:
+        sess.log(f"'{entry['label'][:60]}' is not on this step any more; fix it in the browser.")
+        return True
+    label = entry["label"]
+    answer = _settle_draft(
+        sess, attach, job, label, entry["value"],
+        f"Editing '{_brief(label, LOG_LABEL)}'. Send the new text, 'llm: <what to change>' "
+        "to redraft, or skip to leave it as it is.",
+    )
+    if answer is None:
+        return True
+    try:
+        _apply_value(page, field, answer, "", sess, source="redo")
+        _remember_answered(holder, field, label, answer)
+    except Exception as exc:
+        sess.log(f"Could not change {_brief(label, LOG_LABEL)}: {_short(exc)}")
+    return True
+
+
+def _redo_target(answered: dict[str, Any], fields, words: str):
+    """Which earlier answer to reopen: the one the words name, else the most
+    recent."""
+    if words:
+        wanted = {w for w in re.findall(r"[a-z]{3,}", resolver.plain(words))}
+        best, score = None, 0
+        for key, entry in answered.items():
+            label_words = {w for w in re.findall(r"[a-z]{3,}", resolver.plain(entry["label"]))}
+            hits = len(wanted & label_words)
+            if hits > score:
+                best, score = key, hits
+        if best is not None:
+            return best, answered[best]
+    key = next(reversed(answered), None)
+    return (key, answered[key]) if key else (None, None)
+
+
+def _warn_if_meant_earlier(holder, instruction: str, sess) -> None:
+    """The candidate pasted an earlier ANSWER back with an llm: prefix - they
+    meant to edit that one, not the question now on screen."""
+    answered = (holder or {}).get("answered") or {}
+    typed = {w for w in re.findall(r"[a-z]{4,}", resolver.plain(instruction))}
+    if len(typed) < 8:
+        return
+    for entry in reversed(list(answered.values())):
+        words = {w for w in re.findall(r"[a-z]{4,}", resolver.plain(entry["value"]))}
+        if words and len(typed & words) >= max(6, int(0.5 * len(words))):
+            sess.log(
+                f"(That text looks like your answer to '{entry['label'][:60]}'. "
+                "Type redo to edit that one instead; this draft is for the question above.)"
+            )
+            return
+
+
+def _unanswered_questions(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Empty optional boxes that ask a real question ("Is there anything else
+    you'd like us to know?"), not spare name or extension boxes."""
+    out = []
+    for field in fields:
+        if field.get("tag") not in ("input", "textarea") or field.get("required"):
+            continue
+        if (field.get("type") or "").lower() not in ("", "text", "search", "url", "email", "tel"):
+            continue
+        if not resolver.is_blank(field):
+            continue
+        label = str(field.get("label") or "").strip()
+        if "?" not in label and len(label.split()) < 6:
+            continue   # "Middle name" is not a question worth reporting
+        if re.match(r"^\s*if (you )?(answered )?['\"]?yes", label, re.IGNORECASE):
+            continue   # conditional follow-ups belong to a "yes" we did not give
+        out.append(field)
+    return out
+
+
+def _answer_on_request(page, fields, handled, reply: str, job, attach, sess, notes,
+                       holder=None) -> None:
+    """'llm: <question>' at the review prompt: draft an answer for the box
+    that question names, show it for editing, then write it in."""
+    instruction = (_llm_instruction(reply) or "").strip()
+    field = _field_for_question(fields, instruction)
+    if field is None:
+        notes.append(f"guidance from the candidate: {reply}")
+        sess.log("I could not tell which box that question is; passing it to the model instead.")
+        return
+    label = _field_label(field)
+    if attach is None or attach.invoke is None:
+        sess.log("No model is available to draft an answer here.")
+        return
+    sess.log(f"Drafting an answer for '{_brief(label, LOG_LABEL)}'…")
+    try:
+        draft = _draft_answer(attach.invoke, job, attach.resume_text, label, "", instruction)
+        attach.calls += 1
+    except Exception as exc:
+        sess.log(f"Could not draft an answer: {_short(exc)}")
+        return
+    answer = _settle_draft(
+        sess, attach, job, label, draft,
+        f"Use this answer for '{_brief(label, LOG_LABEL)}'? Edit it, send it, "
+        "'llm: <what to change>' to redraft, or skip.",
+    )
+    if answer is None:
+        handled.add(_field_key(field, label))
+        return
+    try:
+        _apply_value(page, field, answer, "", sess, source="llm")
+        handled.add(_field_key(field, label))
+        _remember_answered(holder, field, label, answer)
+    except Exception as exc:
+        sess.log(f"Could not fill {_brief(label, LOG_LABEL)}: {_short(exc)}")
+
+
+def _settle_draft(sess, attach, job, label: str, draft: str, question: str) -> str | None:
+    """Show a draft until the candidate sends it. 'llm: <change>' redrafts
+    (an instruction is never written into the form, which is what happened
+    when this loop was missing); 'skip' returns None."""
+    while True:
+        answer = sess.ask(question, suggestion=draft)
+        if answer.strip().lower() in SKIP_WORDS:
+            return None
+        instruction = _llm_instruction(answer)
+        if instruction is None:
+            return answer.strip()
+        if attach is None or getattr(attach, "invoke", None) is None:
+            sess.log("No model is available to draft an answer here.")
+            continue
+        sess.log("Redrafting…")
+        try:
+            draft = _draft_answer(attach.invoke, job, attach.resume_text, label, draft, instruction)
+            attach.calls += 1
+        except Exception as exc:
+            sess.log(f"Could not draft an answer: {_short(exc)}")
+
+
+def _field_for_question(fields: list[dict[str, Any]], text: str):
+    """The empty box whose label the candidate just quoted. Word overlap, so
+    a paraphrase still finds it; the only empty question wins by default."""
+    candidates = _unanswered_questions(fields)
+    if not candidates:
+        return None
+    words = {w for w in re.findall(r"[a-z]{4,}", resolver.plain(text))}
+    if words:
+        scored = sorted(
+            candidates,
+            key=lambda f: -len(words & {w for w in re.findall(r"[a-z]{4,}", resolver.plain(str(f.get("label") or "")))}),
+        )
+        best = scored[0]
+        overlap = words & {w for w in re.findall(r"[a-z]{4,}", resolver.plain(str(best.get("label") or "")))}
+        if len(overlap) >= 2:
+            return best
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _contact_went_wrong(field: dict[str, Any], written: str) -> bool:
+    """A contact box that no longer holds what the script put there."""
+    topic = resolver.contact_topic(field)
+    if not topic:
+        return False
+    current = str(field.get("value") or "").strip()
+    return bool(current) and not resolver.same_contact(topic, current, written)
+
+
+def _contact_warnings(fields: list[dict[str, Any]]) -> list[str]:
+    """Contact boxes on the page that disagree with the profile, whoever put
+    the value there. Reported before the step is advanced: a wrong e-mail
+    address means the employer cannot reply at all."""
+    data = profile.load_profile()
+    out: list[str] = []
+    for field in fields:
+        topic = resolver.contact_topic(field)
+        if not topic:
+            continue
+        current = str(field.get("value") or "").strip()
+        wanted = str(data.get(topic) or "").strip()
+        if not current or not wanted or resolver.same_contact(topic, current, wanted):
+            continue
+        out.append(f"{_field_label(field)} shows '{current}', your profile says '{wanted}'")
+    return out
+
+
 def _wants_salary_estimate(field: dict[str, Any]) -> bool:
     """An empty, typeable 'expected salary' field. Dropdowns of pay bands are
     left to the option matcher; the estimate is a number, not a band label."""
@@ -1691,6 +2020,20 @@ def _run_action(
             "do not include it in the plan"
         )
         return "refused"
+    if action.action in ("fill", "select"):
+        # The candidate's own AI project work is on the resume but is not a
+        # job: it must never become a Work Experience entry.
+        project = _excluded_experience(field, action.value or "")
+        if project:
+            sess.log(f"Not entering '{project}' as employment: it is personal project work.")
+            notes.append(
+                f"'{project}' is the candidate's own project work, not a job: do not enter it "
+                f"in a work-experience entry (leave '{label}' out, and remove that entry if you "
+                "added one). Only real employers belong there."
+            )
+            if key:
+                handled.add(key)
+            return "refused"
     if key:
         attempts[key] = attempts.get(key, 0) + 1
         if attempts[key] > MAX_ATTEMPTS_PER_FIELD:
@@ -1758,12 +2101,17 @@ def _run_action(
                 # never type it into the field or cache it as one.
                 if attach is not None and _manual_attachment(answer, attach, page, sess, notes):
                     return "asked"
+                # "redo" goes back to an answer already given, instead of
+                # answering the question now on screen.
+                if _redo_answer(page, fields, holder, job, attach, sess, answer):
+                    continue
                 # "llm: <instruction>" talks to the model, never to the field:
                 # one call redrafts the suggestion and the question re-opens
                 # with the new draft pre-filled.
                 instruction = _llm_instruction(answer)
                 if instruction is None:
                     break
+                _warn_if_meant_earlier(holder, instruction, sess)
                 if attach is None or attach.invoke is None:
                     sess.log("No model is available to draft an answer here.")
                     continue
@@ -1790,9 +2138,10 @@ def _run_action(
                 session_answers[answer_key] = answer
             _maybe_remember(sess, label, group, answer, action, job, field)
         lowered = answer.lower()
-        if action.action == "click" and _is_affirmative(answer):
+        if action.action == "click" and _is_short_yes(answer):
             # "ok"/"yes" to "Should I click X?" means click it - checked before
             # the continue-words rule, which would read "ok" as "I did it".
+            # A whole sentence is guidance, even when it contains a "yes".
             return _guarded_execute(page, action, field, pdf_path, sess, history, notes)
         if lowered in CONTINUE_WORDS:
             notes.append(f"user handled '{label}' manually")
@@ -1805,19 +2154,35 @@ def _run_action(
             return "asked"
         if action.action == "click":
             # A yes/no on "should I click X?" - the model's own action, gated by you.
-            if _is_affirmative(answer):
+            if _is_short_yes(answer):
                 return _guarded_execute(page, action, field, pdf_path, sess, history, notes)
             notes.append(f"the candidate said not to click '{label}': {answer}")
             if key:
                 handled.add(key)
             return "asked"
-        if action.action in ("check", "uncheck") and (field.get("type") or "").lower() == "radio":
+        if (field.get("type") or "").lower() == "radio":
             # The answer is to the group's question ("No" to sponsorship), not
-            # "yes, tick this option" - act only on the option that matches it.
+            # "yes, tick this option" - act only on the option that matches it,
+            # whatever the model planned on this one.
             if _option_agrees(field, answer):
                 return _guarded_execute(
                     page, action, field, pdf_path, sess, history, notes, value="yes"
                 )
+            twin = _sibling_option(fields, field, answer)
+            if twin is not None:
+                # "no" against the Yes radio means: tick No. Applying it here
+                # asked for an impossible uncheck and failed the whole form.
+                sess.log(f"Your answer '{answer}' selects '{_field_label(twin)}'.")
+                pick = ApplyAction(action="check", field_id=twin["id"], value="yes",
+                                   confidence=action.confidence, reason=action.reason)
+                done = _guarded_execute(
+                    page, pick, twin, pdf_path, sess, history, notes, value="yes"
+                )
+                if done == "executed":
+                    if key:
+                        handled.add(key)
+                    handled.add(_field_key(twin, _field_label(twin)))
+                return done
             notes.append(
                 f"for '{group or label}' the candidate's answer is '{answer}'; "
                 "select the option that matches it"
@@ -1829,6 +2194,8 @@ def _run_action(
             )
             if done == "executed" and key and not from_bank:
                 handled.add(key)
+            if done == "executed":
+                _remember_answered(holder, field, label, answer)
             return done
         notes.append(f"about '{label or question}': {answer}")
         return "asked"
@@ -1992,6 +2359,56 @@ def _dry_run_report(page, context, job, pdf_path: str, sess: ApplySession) -> No
     sess.log(f"Dry run: {filled} resolvable, {len(unresolved)} for the model or you.")
 
 
+def not_employment(data: dict[str, Any] | None = None) -> list[str]:
+    """Resume entries that are the candidate's own projects, not jobs: they
+    belong in the resume but never in a Work Experience section."""
+    values = (data if data is not None else profile.load_profile()).get("not_employment") or ""
+    if isinstance(values, list):
+        parts = [str(v) for v in values]
+    else:
+        parts = re.split(r"[;\n]+", str(values))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _not_employment_note() -> str:
+    entries = not_employment()
+    if not entries:
+        return "NOT EMPLOYMENT: (nothing flagged)"
+    return (
+        "NOT EMPLOYMENT - these resume entries are the candidate's own projects "
+        "or self-study, NOT jobs at an organisation. Never enter them as a work "
+        "experience (no job title, company, dates or role description), and never "
+        "count them as employment history:\n"
+        + "\n".join(f"- {e}" for e in entries)
+    )
+
+
+def _is_employment_field(field: dict[str, Any]) -> bool:
+    """A box that records WHERE someone worked: the entry's title, employer or
+    description inside a work-experience section."""
+    label = str(field.get("label") or "")
+    if not re.search(r"\b(job ?title|title|company|employer|organi[sz]ation|role description|"
+                     r"description|position)\b", label, re.IGNORECASE):
+        return False
+    scope = f"{field.get('section') or ''} {field.get('group') or ''} {field.get('elid') or ''}"
+    return bool(re.search(r"\b(work|professional|employment)\s*(experience|history)\b|experiencedata",
+                          scope, re.IGNORECASE))
+
+
+def _excluded_experience(field: dict[str, Any], value: str) -> str:
+    """The flagged project this value would enter as a job, or ''."""
+    if not _is_employment_field(field):
+        return ""
+    flat = resolver.plain(value)
+    for entry in not_employment():
+        words = [w for w in re.findall(r"[a-z0-9+#]{3,}", resolver.plain(entry))]
+        if not words:
+            continue
+        if resolver.plain(entry) in flat or all(w in flat for w in words):
+            return entry
+    return ""
+
+
 def _build_prompt(
     job: dict[str, Any],
     resume_text: str,
@@ -2016,6 +2433,7 @@ def _build_prompt(
             f"CANDIDATE PROFILE:\n{profile.as_prompt_text()}",
             f"KNOWN ANSWERS (from earlier applications):\n{known_lines or '(none yet)'}",
             f"RESUME:\n{resume_text[:4000]}",
+            _not_employment_note(),
             f"PAGE URL: {_safe_url(page)}",
             f"PAGE TEXT:\n{browser.page_text(page)}",
             f"FORM FIELDS:\n{json.dumps(annotated, ensure_ascii=False)}",
@@ -2168,9 +2586,19 @@ def _apply_value(
         # and surface only a bare TimeoutError.
         options = [str(o) for o in (field.get("options") or [])]
         chosen = resolver.match_option(value, options)
+        if not chosen:
+            # The snapshot keeps only the first options; Esko's Field of study
+            # has 345, and "Computer and Information Science" sat well past
+            # the cut, so a present option looked missing.
+            everything = _all_select_options(locator)
+            if len(everything) > len(options):
+                options = everything
+                index = _choose_option(everything, value)
+                if index >= 0:
+                    chosen = everything[index]
         if chosen:
             locator.select_option(label=chosen, timeout=10000)
-            sess.log(f"{prefix}Selected '{chosen}' for {label}")
+            sess.log(f"{prefix}Selected '{_brief(chosen, LOG_VALUE)}' for {_brief(label, LOG_LABEL)}")
             return
         try:
             locator.select_option(label=value, timeout=3000)
@@ -2178,12 +2606,15 @@ def _apply_value(
             try:
                 locator.select_option(value, timeout=3000)
             except Exception:
-                shown = ", ".join(options[:12]) or "(no options captured)"
+                # Name the options that are ACTUALLY close to the value: on a
+                # 345-entry list the first twelve are alphabetical noise
+                # ("Accounting, Actuarial Science, Advertising...").
+                shown = ", ".join(_near_options(value, options)) or "(no options captured)"
                 raise ValueError(
-                    f"'{value}' matches none of the dropdown's options; "
+                    f"'{value}' matches none of the dropdown's {len(options)} options; "
                     f"pick one of: {shown}"
                 ) from None
-        sess.log(f"{prefix}Selected '{value}' for {label}")
+        sess.log(f"{prefix}Selected '{_brief(value, LOG_VALUE)}' for {_brief(label, LOG_LABEL)}")
         return
 
     if field_type in ("checkbox", "radio"):
@@ -2192,13 +2623,16 @@ def _apply_value(
             raise ValueError(
                 "a radio option cannot be unchecked; choose the option that should be selected"
             )
-        if on:
-            locator.check(timeout=10000)
-        else:
-            locator.uncheck(timeout=10000)
-        sess.log(f"{prefix}{'Checked' if on else 'Unchecked'} {label}")
+        _set_checked(page, locator, field, on)
+        sess.log(f"{prefix}{'Checked' if on else 'Unchecked'} {_brief(label, LOG_LABEL)}")
         return
 
+    # An instruction is not an answer: "llm: shorter, and mention AWS" reached
+    # a form once. Last line of defence, wherever the value came from.
+    if _llm_instruction(value) is not None:
+        raise ValueError(
+            f"'{_brief(value, 40)}' is an instruction to the model, not an answer for '{label}'"
+        )
     # Salary fields disagree on units ("in LPA" wants 25, a number input wants
     # 2500000): every writer - bank, profile, model, user - goes through here,
     # so this is the one place the amount is converted.
@@ -2222,6 +2656,9 @@ def _apply_value(
         return _commit_combobox(page, locator, value, label, prefix, sess, prefer)
     if DATE_PART_RE.match(label.strip()):
         _type_date_part(page, locator, value, label, prefix, sess)
+        return
+    if _is_date_box(field):
+        _type_date_box(page, locator, value, label, prefix, sess, field)
         return
     locator.fill(value, timeout=10000)
     # "Filled" must mean the field HOLDS the value: Workday showed empty
@@ -2267,10 +2704,256 @@ def _apply_value(
             f"typed '{value}' into '{label}' but the field did not keep it"
             f" (it shows '{_shown(locator)}')"
         )
-    sess.log(f"{prefix}Filled {label} = {value}")
+    sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {_brief(value, LOG_VALUE)}")
+
+
+def _all_select_options(locator) -> list[str]:
+    """Every option label of a <select>, not just the ones the snapshot kept."""
+    try:
+        return [str(t).strip() for t in (locator.evaluate(
+            "el => Array.from(el.options || []).map(o => o.label || o.text || o.value)") or [])]
+    except Exception:
+        return []
+
+
+def _near_options(value: str, options: list[str], limit: int = 12) -> list[str]:
+    """The options worth showing when nothing matched, best first: the ones
+    sharing the MOST words with the value. "Computer Science" against 345
+    subjects otherwise listed every "... Science" in the alphabet and never
+    reached "Computer and Information Science"."""
+    words = [w for w in re.findall(r"[a-z]{4,}", resolver.plain(value))]
+    scored: list[tuple[int, int, str]] = []
+    for index, option in enumerate(options):
+        if not option:
+            continue
+        flat = resolver.plain(option)
+        hits = sum(1 for w in words if w in flat)
+        if hits:
+            scored.append((-hits, index, option))
+    if not scored:
+        return [o for o in options if o][:limit]
+    return [o for _, _, o in sorted(scored)][:limit]
+
+
+def _set_checked(page, locator, field: dict[str, Any], on: bool) -> None:
+    """Tick (or untick) a box. Styled checkboxes hide the real input under a
+    label that swallows the click - ALTEN's Angular Material consent box
+    timed out with "label intercepts pointer events" - so a failed check()
+    falls back to the input's own click, then to its label."""
+    try:
+        if on:
+            locator.check(timeout=8000)
+        else:
+            locator.uncheck(timeout=8000)
+        return
+    except Exception as exc:
+        first = exc
+
+    def state() -> bool | None:
+        try:
+            return locator.is_checked(timeout=2000)
+        except Exception:
+            return None
+
+    for attempt in ("input", "label"):
+        if state() == on:
+            return
+        try:
+            if attempt == "input":
+                locator.evaluate("el => el.click()", timeout=3000)
+            else:
+                elid = str(field.get("elid") or "")
+                if not elid:
+                    continue
+                browser.target(page).locator(f'label[for="{elid}"]').first.click(timeout=5000)
+        except Exception:
+            continue
+        page.wait_for_timeout(200)
+    if state() != on:
+        raise first
+    return
 
 
 DATE_PART_RE = re.compile(r"^(month|year|day|mm|yyyy|dd)\s*\*?$", re.IGNORECASE)
+# One box for a whole date (Esko/Phenom's react-datepicker "From*" / "To*"):
+# it shows MM/YYYY and opens a month grid, so "Jul 2020" typed in picked the
+# month "Jul" out of the grid and left the year at the current one.
+DATE_BOX_LABEL_RE = re.compile(
+    r"^(from|to|start|end|start date|end date|date|date of birth|dob)\s*\*?$", re.IGNORECASE
+)
+# "startDate", "start_date", "date" - but never "candidate" or "update",
+# whose fill would otherwise be refused as "not a date".
+DATE_BOX_NAME_RE = re.compile(r"(?<![A-Za-z])date\b|[a-z]Date\b|\bdob\b")
+_MONTH_NAMES = ("january", "february", "march", "april", "may", "june", "july",
+                "august", "september", "october", "november", "december")
+
+
+def _is_date_box(field: dict[str, Any]) -> bool:
+    if field.get("tag") != "input" or (field.get("type") or "").lower() not in ("", "text"):
+        return False
+    if DATE_BOX_NAME_RE.search(f"{field.get('elid') or ''} {field.get('name') or ''}"):
+        return True
+    return bool(DATE_BOX_LABEL_RE.match(str(field.get("label") or "").strip()))
+
+
+def _parse_date(value: str) -> tuple[int | None, int | None, int | None]:
+    """(month, day, year) from 'Jul 2020', '07/2020', '2020-07-15', 'July 15, 2020'."""
+    text = (value or "").strip()
+    year = None
+    match = re.search(r"(?<!\d)(19|20)\d{2}(?!\d)", text)
+    if match:
+        year = int(match.group(0))
+        text = text[:match.start()] + " " + text[match.end():]
+    month = None
+    lowered = text.lower()
+    for index, name in enumerate(_MONTH_NAMES, start=1):
+        if re.search(rf"\b{name[:3]}[a-z]*\b", lowered):
+            month = index
+            break
+    numbers = [int(n) for n in re.findall(r"\d{1,2}", text)]
+    day = None
+    if month is None and numbers:
+        month = numbers.pop(0)
+    if numbers:
+        day = numbers.pop(0)
+    if month is not None and not 1 <= month <= 12:
+        month, day = (day, month) if day and 1 <= day <= 12 else (None, day)
+    return month, day, year
+
+
+def _date_mask(field: dict[str, Any], shown: str) -> str:
+    """The order and parts the box wants, learnt from what it already shows
+    (or its placeholder): 'MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'."""
+    for sample in (shown, str(field.get("value") or ""), str(field.get("label") or "")):
+        sample = (sample or "").strip()
+        if re.fullmatch(r"\d{1,2}([/-])\d{4}", sample):
+            return "MM" + sample[2 if len(sample) == 7 else 1] + "YYYY"
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", sample):
+            return "YYYY-MM-DD"
+        if re.fullmatch(r"\d{1,2}([/-])\d{1,2}\1\d{4}", sample):
+            return "MM" + sample[2] + "DD" + sample[2] + "YYYY"
+        if re.fullmatch(r"(?i)(mm|dd|yyyy)([/-])(mm|dd|yyyy)(\2(mm|dd|yyyy))?", sample):
+            return sample.upper()
+    return ""
+
+
+def _format_date(month: int | None, day: int | None, year: int | None, mask: str) -> str:
+    parts = {"MM": f"{month:02d}" if month else "", "DD": f"{day:02d}" if day else "",
+             "YYYY": str(year) if year else ""}
+    separator = next((c for c in mask if c in "/-"), "/")
+    wanted = [p for p in re.split(r"[/-]", mask) if p]
+    if not wanted:
+        wanted = ["MM", "YYYY"] if not day else ["MM", "DD", "YYYY"]
+    if any(not parts[p] for p in wanted):
+        return ""
+    return separator.join(parts[p] for p in wanted)
+
+
+def _type_date_box(page, locator, value: str, label: str, prefix: str, sess,
+                   field: dict[str, Any]) -> None:
+    """Write a whole date into one box, in the format the box itself uses.
+
+    Typed text is tried first and must SURVIVE the picker closing: Esko's
+    form only accepts a date its calendar produced, and react-datepicker
+    wipes the box when it closes with nothing selected. So a box that comes
+    back empty is filled from the calendar itself."""
+    month, day, year = _parse_date(value)
+    mask = _date_mask(field, _shown(locator)) or ("MM/YYYY" if day is None else "MM/DD/YYYY")
+    text = _format_date(month, day, year, mask)
+    if not text:
+        raise ValueError(f"'{value}' is not a date this box ({mask}) can take for '{label}'")
+    locator.focus(timeout=5000)
+    try:
+        locator.fill("", timeout=3000)
+    except Exception:
+        pass
+    locator.press_sequentially(text, delay=30, timeout=10000)
+    try:
+        page.keyboard.press("Escape")   # close the date picker without picking
+    except Exception:
+        pass
+    if _same_digits(_shown(locator), text):
+        sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {text}")
+        return
+    if year and _pick_in_calendar(page, locator, month, day, year):
+        shown = _shown(locator)
+        if _same_digits(shown, text) or (year and str(year) in shown):
+            sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {shown} (chosen in the date picker)")
+            return
+    raise ValueError(
+        f"typed '{text}' into '{label}' but it shows '{_shown(locator)}', and the "
+        "date picker would not take it either"
+    )
+
+
+def _same_digits(shown: str, text: str) -> bool:
+    return re.sub(r"\D", "", shown or "") == re.sub(r"\D", "", text or "")
+
+
+# react-datepicker's own class names (Esko's DOM dump carries them:
+# react-datepicker-wrapper > __input-container > input).
+# The whole calendar, never its inner month container: the navigation arrows
+# are siblings of that container, so scoping to it left the year at today's
+# and the picker chose July of the wrong year.
+CALENDAR = ".react-datepicker"
+CALENDAR_FALLBACK = "[class*='datepicker']:not([class*='wrapper']):not([class*='input'])"
+MONTH_CELL = ".react-datepicker__month-text, [class*='month-text']"
+DAY_CELL = ".react-datepicker__day:not(.react-datepicker__day--outside-month)"
+PREV_NAV = ".react-datepicker__navigation--previous, [class*='navigation--previous']"
+NEXT_NAV = ".react-datepicker__navigation--next, [class*='navigation--next']"
+MAX_NAV_CLICKS = 90
+
+
+def _pick_in_calendar(page, locator, month: int | None, day: int | None, year: int) -> bool:
+    """Choose the date in the picker the box opens. True when something was
+    clicked; the caller checks what the box ended up holding."""
+    try:
+        browser.click(locator, timeout=5000)
+        page.wait_for_timeout(300)
+        calendar = browser.target(page).locator(CALENDAR).last
+        if not calendar.count():
+            calendar = browser.target(page).locator(CALENDAR_FALLBACK).last
+        if not calendar.count():
+            return False
+        months = calendar.locator(MONTH_CELL)
+        by_month = months.count() > 0     # a month/year picker, not a day grid
+        # Walk the header to the wanted year (and month, on a day grid).
+        for _ in range(MAX_NAV_CLICKS):
+            header = calendar.inner_text()[:120]
+            found = re.search(r"(?:19|20)\d{2}", header)
+            if not found:
+                break
+            shown_year = int(found.group(0))
+            shown_month = _header_month(header) if not by_month else None
+            if shown_year == year and (by_month or shown_month in (None, month)):
+                break
+            back = shown_year > year or (shown_year == year and shown_month and month and shown_month > month)
+            nav = calendar.locator(PREV_NAV if back else NEXT_NAV)
+            if not nav.count():
+                break
+            browser.click(nav.first, timeout=3000)
+            page.wait_for_timeout(120)
+        if by_month and month:
+            browser.click(months.nth(month - 1), timeout=3000)
+        elif day:
+            cells = calendar.locator(DAY_CELL).filter(has_text=re.compile(rf"^{day}$"))
+            if not cells.count():
+                return False
+            browser.click(cells.first, timeout=3000)
+        else:
+            return False
+        page.wait_for_timeout(250)
+        return True
+    except Exception:
+        return False
+
+
+def _header_month(header: str) -> int | None:
+    lowered = header.lower()
+    for index, name in enumerate(_MONTH_NAMES, start=1):
+        if re.search(rf"\b{name[:3]}[a-z]*\b", lowered):
+            return index
+    return None
 
 
 def _shown(locator) -> str:
@@ -2308,7 +2991,7 @@ def _type_date_part(page, locator, value: str, label: str, prefix: str, sess) ->
         pass
     if not held:
         raise ValueError(f"typed '{digits}' into '{label}' but it shows '{shown}'")
-    sess.log(f"{prefix}Filled {label} = {digits}")
+    sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {digits}")
 
 
 def _same_number(shown: str, typed: str) -> bool:
@@ -2367,7 +3050,7 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
             added = [c for c in _chips(locator) if resolver.plain(c) not in before]
             chosen = _auto_pick(added, value, query)
             if chosen:
-                sess.log(f"{prefix}Selected '{chosen}' for {label} (typeahead, the search's only hit)")
+                sess.log(f"{prefix}Selected '{chosen}' for {_brief(label, LOG_LABEL)} (typeahead, the search's only hit)")
                 try:
                     page.keyboard.press("Escape")
                 except Exception:
@@ -2425,7 +3108,7 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
             multi = False
         browser.click(row, timeout=5000)
         chosen = texts[index]
-        sess.log(f"{prefix}Selected '{chosen}' for {label} (typeahead)")
+        sess.log(f"{prefix}Selected '{chosen}' for {_brief(label, LOG_LABEL)} (typeahead)")
         try:
             # Workday's multi-select (Skills) adds the chip on the click itself
             # and keeps the list open: Escape just closes it (the dentsu dump
@@ -2451,23 +3134,51 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
     return False
 
 
-SKILLS_BOX_RE = re.compile(r"\bskills?\b", re.IGNORECASE)
+# A box that wants the skills THEMSELVES: "Skills", "Type to Add Skills",
+# "Separate each skill with a comma." Never an essay that merely mentions the
+# word - "What's a professional skill you've developed in the past year...?"
+# was filled with the comma-separated list.
+SKILLS_BOX_RE = re.compile(
+    r"^\s*(?:your |my |key |core |technical |relevant |top |primary )?"
+    r"(?:type to add |add |enter |list |select )?skills?\b"
+    r"|\bseparate each skill\b|\badd(?: your)? skills\b|\bskills? \(.*\)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _is_skills_box(field: dict[str, Any]) -> bool:
-    """A "Type to Add Skills" typeahead (Workday) or a plain skills box: the
-    label names skills, or the box sits in a Skills section under a generic
-    "type / add / search" label."""
+    """A "Type to Add Skills" typeahead (Workday) or a plain skills list box:
+    the label ASKS for skills, or the box sits in a Skills section under a
+    generic "type / add / search" label."""
     if field.get("tag") not in ("input", "textarea"):
         return False
     if (field.get("type") or "").lower() not in ("", "text", "search"):
         return False
-    label = str(field.get("label") or "")
+    label = str(field.get("label") or "").strip()
     section = str(field.get("section") or "")
+    # An open question is never a skills list, however often it says "skill".
+    if "?" in label or len(label) > 80:
+        return False
     if SKILLS_BOX_RE.search(label):
         return True
     return bool(re.match(r"^\s*skills?\b", section, re.IGNORECASE)
+                and len(label) <= 60
                 and re.search(r"\b(add|type|search)\b", label, re.IGNORECASE))
+
+
+SKILL_CAP_RE = re.compile(r"\b(?:up to|maximum of|max(?:imum)?|at most)\s+(\d{1,2})\s+skills?\b",
+                          re.IGNORECASE)
+
+
+def _skill_cap(field: dict[str, Any], page=None) -> int:
+    """How many skills this form accepts, when it says so ("Add up to 10
+    skills that highlight your professional abilities" - Workday). 0 = no
+    stated limit."""
+    scope = " ".join(str(field.get(k) or "") for k in ("section", "group", "text", "label"))
+    match = SKILL_CAP_RE.search(scope)
+    if match is None and page is not None:
+        match = SKILL_CAP_RE.search(browser.page_text(page, 3000))
+    return int(match.group(1)) if match else 0
 
 
 def _profile_skills(data: dict[str, Any]) -> list[str]:
@@ -2482,19 +3193,31 @@ def _profile_skills(data: dict[str, Any]) -> list[str]:
 
 def _fill_skills(page, field: dict[str, Any], skills: list[str], sess: ApplySession) -> None:
     """Add each profile skill the widget does not hold yet, one suggestion
-    pick at a time; a plain text box (no suggestion list) takes the whole
-    list as text instead."""
+    pick at a time. A box that takes plain text (Esko's textarea, "Separate
+    each skill with a comma.") takes the whole list at once - searching it
+    skill by skill typed and cleared the box over and over and left it
+    empty."""
     locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
     label = _field_label(field)
+    if field.get("tag") == "textarea":
+        _apply_value(page, field, ", ".join(skills), "", sess, source="profile")
+        return
     have = {resolver.plain(c) for c in _chips(locator)}
     todo = [s for s in skills if resolver.plain(s) not in have]
     if not todo:
         sess.log(f"[profile] {label}: the skills are already in")
         return
-    for skill in todo:
+    for index, skill in enumerate(todo):
         try:
             found = _commit_typeahead(page, locator, skill, label, "[profile] ", sess)
         except ValueError as exc:
+            # The box showed a list but nothing matched. On the first skill
+            # that means it is not a skills catalogue at all (Esko's month
+            # grid was read as its suggestions): write the list as text.
+            if index == 0:
+                sess.log(f"'{label}' is not a skills picker ({_short(exc)}); writing the list as text.")
+                _apply_value(page, field, ", ".join(skills), "", sess, source="profile")
+                return
             sess.log(f"Could not add the skill '{skill}': {_short(exc)}")
             continue
         if not found:
@@ -2537,7 +3260,7 @@ def _typeahead_state(page, locator) -> str:
     except Exception:
         attached = False
     try:
-        on_page = page.locator("[role=option]:visible, [data-automation-id=promptOption]:visible").count()
+        on_page = browser.target(page).locator("[role=option]:visible, [data-automation-id=promptOption]:visible").count()
     except Exception:
         on_page = -1
     return f" (box attached: {'yes' if attached else 'no'}; option rows on page: {on_page})"
@@ -2597,9 +3320,10 @@ def _tie_breakers(field: dict[str, Any]) -> list[str]:
 
 
 def _is_listbox_button(field: dict[str, Any]) -> bool:
-    """A Workday-style dropdown: a BUTTON that opens a listbox. Not an input,
-    so fill() throws; it must be opened and its option clicked."""
-    return field.get("tag") == "button" and (field.get("haspopup") or "").lower() == "listbox"
+    """A dropdown that takes no typing (Workday's listbox button, Angular
+    Material's <mat-select>): fill() throws on it, so it must be opened and
+    its option clicked. One definition, shared with the resolver."""
+    return resolver.is_listbox_button(field)
 
 
 def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None) -> int:
@@ -2651,7 +3375,15 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
         if found >= 0:
             return found
         bounded = re.compile(rf"(?<![\w+]){re.escape(q)}(?![\w])")
-        return pick([i for i, t in enumerate(flat) if bounded.search(t)], True)
+        found = pick([i for i, t in enumerate(flat) if bounded.search(t)], True)
+        if found >= 0:
+            return found
+        # One word, one option growing out of it: "Annual" -> "Annually"
+        # (the salary period), "Contract" -> "Contractual". Only when a
+        # single option qualifies, so "Bachelor" never picks among four.
+        if len(q) >= 4 and " " not in q:
+            return pick([i for i, t in enumerate(flat) if t.startswith(q)], True)
+        return -1
 
     def satisfied(i: int) -> bool:
         # The first preference (the state) decides; the country alone matches
@@ -2701,10 +3433,10 @@ def _visible_options(page, locator):
         # The box was re-rendered under us (Workday swaps the search box
         # node when its list opens): scan the whole page, chips excluded.
         try:
-            count = int(page.evaluate(f"(id) => ({ROWS_JS})(null, id)", listbox) or 0)
+            count = int(browser.target(page).evaluate(f"(id) => ({ROWS_JS})(null, id)", listbox) or 0)
         except Exception:
             count = 0
-    options = page.locator("[data-oea-row='1']")
+    options = browser.target(page).locator("[data-oea-row='1']")
     if not count:
         return options, []
     try:
@@ -2765,7 +3497,9 @@ ROWS_JS = """
       const dist = Math.max(0, dy) + dx;
       if (dist < bestDist) { bestDist = dist; best = members; }
     }
-    chosen = best || [];
+    // A list far from the box belongs to something else: Esko's date-picker
+    // month grid, three sections away, was read as the skills suggestions.
+    chosen = (best && bestDist <= 320) ? best : [];
   }
   for (const r of chosen) r.setAttribute('data-oea-row', '1');
   return chosen.length;
@@ -2866,7 +3600,7 @@ def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess,
         shown = ", ".join(t for t in texts[:15] if t) or "(no options appeared)"
         raise ValueError(f"'{value}' matches none of the dropdown's options; pick one of: {shown}")
     browser.click(options.nth(index), timeout=5000)
-    sess.log(f"{prefix}Selected '{texts[index]}' for {label}")
+    sess.log(f"{prefix}Selected '{texts[index]}' for {_brief(label, LOG_LABEL)}")
 
 
 def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
@@ -2914,7 +3648,7 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
     if index >= 0:
         try:
             visible.nth(index).click(timeout=2500)
-            sess.log(f"{prefix}Selected '{shown[index]}' for {label} (dropdown)")
+            sess.log(f"{prefix}Selected '{shown[index]}' for {_brief(label, LOG_LABEL)} (dropdown)")
             return "picked"
         except Exception:
             pass
@@ -2925,8 +3659,16 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         )
     # One option or an invisible list: the widget highlights it; Enter takes it.
     locator.press("Enter")
-    sess.log(f"{prefix}Selected '{value}' for {label} (dropdown, keyboard)")
+    sess.log(f"{prefix}Selected '{value}' for {_brief(label, LOG_LABEL)} (dropdown, keyboard)")
     return "picked"
+
+
+def _is_short_yes(reply: str) -> bool:
+    """An explicit yes - never a sentence that merely contains one. "redo ...
+    on your radar" counted as agreement because "on" is an affirmative, and
+    the wizard's Next was clicked instead."""
+    words = _WORDS.findall((reply or "").lower().replace("'", "").replace("’", ""))
+    return len(words) <= 3 and _is_affirmative(reply)
 
 
 def _is_affirmative(value: str) -> bool:
@@ -2936,6 +3678,28 @@ def _is_affirmative(value: str) -> bool:
     if words & NEGATIVE_WORDS:
         return False
     return bool(words & AFFIRMATIVE_WORDS)
+
+
+def _sibling_option(fields: list[dict[str, Any]], field: dict[str, Any], answer: str):
+    """The radio in the SAME group whose label matches the answer: "no" to a
+    Yes/No question ticks that group's No."""
+    group = profile.fingerprint(str(field.get("group") or ""))
+    name = str(field.get("name") or "").strip().lower()
+    section = str(field.get("section") or "")
+    for other in fields:
+        if other is field or (other.get("type") or "").lower() != "radio":
+            continue
+        if other.get("id") == field.get("id"):
+            continue
+        same_group = (
+            (name and str(other.get("name") or "").strip().lower() == name)
+            or (group and profile.fingerprint(str(other.get("group") or "")) == group)
+        )
+        if not same_group or str(other.get("section") or "") != section:
+            continue
+        if _option_agrees(other, answer):
+            return other
+    return None
 
 
 def _option_agrees(field: dict[str, Any] | None, answer: str) -> bool:
@@ -2956,6 +3720,19 @@ def _option_agrees(field: dict[str, Any] | None, answer: str) -> bool:
     if label_words & AFFIRMATIVE_WORDS:
         return bool(answer_words & AFFIRMATIVE_WORDS) and not (answer_words & NEGATIVE_WORDS)
     return False
+
+
+# Log lines are read in a small box: a whole question and a whole answer on
+# one line pushed everything else off the screen.
+LOG_LABEL = 46
+LOG_VALUE = 60
+
+
+def _brief(text: str, limit: int) -> str:
+    """One line, shortened with an ellipsis. Newlines become spaces so a
+    pasted paragraph cannot take over the transcript."""
+    flat = " ".join(str(text or "").split())
+    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 
 def _short(exc: Exception) -> str:
@@ -3043,6 +3820,17 @@ def _dump_page(page, sess: ApplySession, delay: int = 0) -> None:
     out = DUMP_DIR / f"{sess.stamp}_{time.strftime('%Y%m%d-%H%M%S')}"
     out.mkdir(parents=True, exist_ok=True)
     (out / "page.html").write_text(page.evaluate(DUMP_HTML_JS), encoding="utf-8")
+    # Embedded forms (an iframe from another origin) get their own files.
+    try:
+        for index, frame in enumerate(page.frames):
+            if frame == page.main_frame:
+                continue
+            try:
+                (out / f"frame{index}.html").write_text(frame.evaluate(DUMP_HTML_JS), encoding="utf-8")
+            except Exception:
+                pass
+    except Exception:
+        pass
     (out / "fields.json").write_text(json.dumps(browser.snapshot(page), indent=1), encoding="utf-8")
     try:
         page.screenshot(path=str(out / "screenshot.png"))
@@ -3066,6 +3854,79 @@ def _links_on_page(fields: list[dict[str, Any]]) -> set[str]:
             if link and re.search(rf"\b{key}\b", label, re.IGNORECASE) and f.get("tag") in ("input", "textarea"):
                 taken.add(link)
     return taken
+
+
+# What starts an entry: its title box. Never "Role description", which would
+# split the entry in two and hide its own Remove button.
+ENTRY_TITLE_RE = re.compile(r"\b(job ?title|position title|designation)\b|^\s*(job )?title\s*\*?\s*$",
+                            re.IGNORECASE)
+ENTRY_EMPLOYER_RE = re.compile(r"\b(company|employer|organi[sz]ation)\b", re.IGNORECASE)
+REMOVE_ENTRY_RE = re.compile(
+    r"^\s*[-–—+•]?\s*(remove|delete)\b(\s+(this\s+)?(experience|entry|position|job|role|employment))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _excluded_entry_removals(fields: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
+    """(project, remove-button) for each Work Experience entry that holds a
+    flagged project. A site that parses the uploaded resume adds one by
+    itself - Esko put "Applied AI & LLM Agents" at the top of the list."""
+    if not not_employment():
+        return []
+    starts = [
+        index for index, field in enumerate(fields)
+        if _is_employment_field(field) and ENTRY_TITLE_RE.search(str(field.get("label") or ""))
+    ]
+    out: list[tuple[str, dict[str, Any]]] = []
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(fields)
+        entry = fields[start:end]
+        project = ""
+        for field in entry:
+            label = str(field.get("label") or "")
+            if ENTRY_TITLE_RE.search(label) or ENTRY_EMPLOYER_RE.search(label):
+                project = _excluded_experience(field, str(field.get("value") or ""))
+                if project:
+                    break
+        if not project:
+            continue
+        button = next(
+            (f for f in entry
+             if (f.get("tag") in ("button", "a") or f.get("role") == "button")
+             and any(REMOVE_ENTRY_RE.match(str(f.get(k) or "").strip()) for k in ("text", "label"))),
+            None,
+        )
+        if button is not None:
+            out.append((project, button))
+    return out
+
+
+def _remove_excluded_entries(page, fields, handled, sess) -> bool:
+    """Take out a Work Experience entry the site created for the candidate's
+    own project work. True when one was removed (re-snapshot)."""
+    for project, button in _excluded_entry_removals(fields):
+        key = _field_key(button, _field_label(button))
+        if key in handled:
+            continue
+        # A click that removes nothing (a confirm dialog, say) must not be
+        # repeated every round until the step budget runs out.
+        tries = sum(1 for k in handled if k.startswith(f"__removed__:{project}:"))
+        if tries >= MAX_ATTEMPTS_PER_FIELD:
+            continue
+        handled.add(f"__removed__:{project}:{tries}")
+        try:
+            browser.click(browser.locate(page, button["id"], str(button.get("elid") or "")), timeout=10000)
+        except Exception as exc:
+            sess.log(f"Could not remove the '{project}' work-experience entry: {_short(exc)}")
+            handled.add(key)
+            continue
+        sess.log(
+            f"Removed the '{project}' entry from Work Experience: it is your own project "
+            "work, not a job (the site added it when it read your resume)."
+        )
+        page.wait_for_timeout(600)
+        return True
+    return False
 
 
 def _open_profile_sections(page, fields, handled, sess) -> bool:
@@ -3126,8 +3987,12 @@ def _is_section_add(field: dict[str, Any]) -> bool:
     or the button's own words ("Add Work Experience")."""
     if field.get("tag") not in ("button", "a") and field.get("role") != "button":
         return False
-    text = (field.get("text") or field.get("label") or "").strip()
-    if not SECTION_ADD_RE.match(text):
+    # Both words: the button reads "+ Add Language" but is labelled "Add
+    # language" (Phenom), and the "+" alone kept the Languages section from
+    # ever being opened.
+    names = [re.sub(r"^[\s+•·*\-]+", "", str(field.get(k) or "")).strip() for k in ("text", "label")]
+    text = next((n for n in names if n and SECTION_ADD_RE.match(n)), "")
+    if not text:
         return False
     if re.match(r"^\s*add\s+(another|more)\s*$", text, re.IGNORECASE):
         return True  # only repeating sections have one, wherever its title sits

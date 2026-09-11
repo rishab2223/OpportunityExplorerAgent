@@ -119,9 +119,27 @@ def validate_body(body: str) -> list[str]:
     return problems
 
 
+_DOCUMENTCLASS = re.compile(r"^[^%\n]*\\documentclass[^\n]*\n", re.MULTILINE)
+
+
+def ensure_font_encoding(source: str) -> str:
+    """Add \\usepackage[T1]{fontenc} when the preamble has no encoding of its
+    own. Without it pdfTeX's default OT1 fonts carry no Unicode mapping for
+    the underscore, so an e-mail address extracts from the PDF as
+    "a candidate@example.invalid" - and an ATS that parses the resume fills its
+    form with that broken address."""
+    text = source or ""
+    if re.search(r"\\usepackage(\[[^\]]*\])?\{(fontenc|fontspec)\}", text):
+        return text
+    match = _DOCUMENTCLASS.search(text)
+    if match is None:
+        return text
+    return text[:match.end()] + "\\usepackage[T1]{fontenc}\n" + text[match.end():]
+
+
 def apply_section_edits(parsed: ParsedResume, accepted: dict[str, str]) -> str:
     """Reassemble the document, swapping bodies whose normalized heading is in accepted."""
-    parts = [parsed.prologue]
+    parts = [ensure_font_encoding(parsed.prologue)]
     for section in parsed.sections:
         parts.append(section.command)
         replacement = accepted.get(normalize_heading(section.heading))

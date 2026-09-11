@@ -82,12 +82,12 @@ class BuildPdfTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_empty_letter_rejected(self) -> None:
-        path, error = cover_letter.build_pdf("   ", self.dir, JOB, PROFILE)
+        path, error = cover_letter.render_tex("   ", self.dir, JOB, PROFILE)
         self.assertIsNone(path)
         self.assertIn("empty", error)
 
     def test_writes_tex_with_name_and_paragraphs(self) -> None:
-        cover_letter.build_pdf("First para.\n\nSecond para.", self.dir, JOB, PROFILE)
+        cover_letter.render_tex("First para.\n\nSecond para.", self.dir, JOB, PROFILE)
         tex = next(self.dir.glob("cover_*.tex")).read_text(encoding="utf-8")
         self.assertIn("Test User", tex)
         self.assertIn("First para.", tex)
@@ -96,25 +96,25 @@ class BuildPdfTests(unittest.TestCase):
         self.assertIn("Regards", tex)
 
     def test_letter_is_addressed_to_the_company(self) -> None:
-        cover_letter.build_pdf("Body.", self.dir, JOB, PROFILE)
+        cover_letter.render_tex("Body.", self.dir, JOB, PROFILE)
         tex = next(self.dir.glob("cover_*.tex")).read_text(encoding="utf-8")
         self.assertIn(f"Dear {JOB['company']} team,", tex)
 
     def test_salutation_without_a_company_name(self) -> None:
-        cover_letter.build_pdf("Body.", self.dir, {"company": "", "title": "X"}, PROFILE)
+        cover_letter.render_tex("Body.", self.dir, {"company": "", "title": "X"}, PROFILE)
         tex = next(self.dir.glob("cover_*.tex")).read_text(encoding="utf-8")
         self.assertIn("Dear Hiring Team,", tex)
 
     def test_user_typed_greeting_wins_over_the_template(self) -> None:
         # The user often addresses the company themselves in the modal; the
         # template must not add a second "Dear ..." on top.
-        cover_letter.build_pdf("Dear Autter folks,\n\nBody.", self.dir, JOB, PROFILE)
+        cover_letter.render_tex("Dear Autter folks,\n\nBody.", self.dir, JOB, PROFILE)
         tex = next(self.dir.glob("cover_*.tex")).read_text(encoding="utf-8")
         self.assertIn("Dear Autter folks,", tex)
         self.assertEqual(tex.lower().count("dear "), 1)
 
     def test_user_typed_signoff_wins_over_the_template(self) -> None:
-        cover_letter.build_pdf(
+        cover_letter.render_tex(
             "Body.\n\nSincerely,\nTest User", self.dir, JOB, PROFILE
         )
         tex = next(self.dir.glob("cover_*.tex")).read_text(encoding="utf-8")
@@ -122,7 +122,7 @@ class BuildPdfTests(unittest.TestCase):
         self.assertNotIn("Regards", tex)
 
     def test_special_characters_do_not_break_the_source(self) -> None:
-        cover_letter.build_pdf("I cut costs by 30% & improved a_b.", self.dir, JOB, PROFILE)
+        cover_letter.render_tex("I cut costs by 30% & improved a_b.", self.dir, JOB, PROFILE)
         tex = next(self.dir.glob("cover_*.tex")).read_text(encoding="utf-8")
         self.assertIn(r"30\%", tex)
         self.assertIn(r"\&", tex)
@@ -141,7 +141,7 @@ class BuildPdfTests(unittest.TestCase):
 
     def test_filename_is_sanitised(self) -> None:
         job = {"company": "A/B: Co", "title": "Eng?"}
-        cover_letter.build_pdf("Body.", self.dir, job, PROFILE)
+        cover_letter.render_tex("Body.", self.dir, job, PROFILE)
         name = next(self.dir.glob("cover_*.tex")).name
         for bad in '/\\:*?"<>|':
             self.assertNotIn(bad, name)

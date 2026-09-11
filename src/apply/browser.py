@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from src.config import ROOT
@@ -33,7 +34,13 @@ SNAPSHOT_JS = """
   for (const el of deepAll(document, '[data-oea-id]')) {
     el.removeAttribute('data-oea-id');
   }
-  const selector = 'input, textarea, select, button, [role=button], [role=checkbox], a[href]';
+  // [role=combobox] / aria-haspopup catch dropdowns that are not <select> at
+  // all: ALTEN's Angular Material <mat-select> (Salary Currency, Salary
+  // Period) was invisible to the scan, so those boxes were never filled.
+  // Not [role=listbox] itself: that is the option container (and Workday's
+  // list of chosen chips), which read as a phantom dropdown field.
+  const selector = 'input, textarea, select, button, [role=button], [role=checkbox], a[href],' +
+    ' [role=combobox], [aria-haspopup=listbox]';
   const actionable = /apply|easy apply|continue|next|start|submit|review|sign in|log in|upload|attach|resume|\bcv\b|cover letter/i;
   // An open modal (LinkedIn Easy Apply, ATS popups) owns the page: scope the
   // scan to it. Without this the background page's dozens of buttons filled
@@ -65,13 +72,18 @@ SNAPSHOT_JS = """
   // section: number same-named fields in page order so each has its own
   // identity. Without this the second entry looked "already handled".
   const dupCounts = new Map();
+  const FORM_TAGS = ['INPUT', 'TEXTAREA', 'SELECT'];
   for (const el of deepAll(root, selector)) {
     const style = window.getComputedStyle(el);
     const rect = el.getBoundingClientRect();
-    if (style.visibility === 'hidden' || style.display === 'none') continue;
-    if (rect.width === 0 || rect.height === 0) continue;
     const type = (el.getAttribute('type') || '').toLowerCase();
     if (type === 'hidden') continue;
+    if (style.visibility === 'hidden' || style.display === 'none') continue;
+    if (rect.width === 0 || rect.height === 0) continue;
+    // A custom dropdown that WRAPS a real control is not the field; the
+    // control inside it is (react-select puts role=combobox on its input).
+    if (!FORM_TAGS.includes(el.tagName) && el.tagName !== 'BUTTON' && el.tagName !== 'A' &&
+        el.querySelector('input:not([type=hidden]):not(.cdk-visually-hidden), textarea, select')) continue;
     if (el.tagName === 'A') {
       // Pages carry hundreds of links; only apply/continue-style ones matter,
       // and MAX_FIELDS would drown in the rest.
@@ -92,6 +104,21 @@ SNAPSHOT_JS = """
     if (!label) {
       const wrapper = el.closest('label');
       if (wrapper) label = wrapper.innerText;
+    }
+    if (!label) {
+      // Angular Material keeps the real label in <mat-label> inside the
+      // field wrapper; the input's placeholder is an EXAMPLE value, so the
+      // email box was labelled "daniel@gmail.com".
+      // The wrapper may be a whole row of fields (ALTEN's currency / period
+      // pair): take the last label BEFORE the control, not the row's first,
+      // or Salary Period is read as Salary Currency and State as Country.
+      const wrap = el.closest('mat-form-field, .mat-form-field, [class*="form-field"]');
+      let own = null;
+      for (const cand of (wrap ? wrap.querySelectorAll('mat-label, .mat-form-field-label') : [])) {
+        if (cand.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) own = cand;
+        else break;
+      }
+      if (own) label = own.innerText || '';
     }
     if (!label && el.getAttribute('aria-labelledby')) {
       const root = el.getRootNode();
@@ -217,8 +244,8 @@ SNAPSHOT_JS = """
     }
     // Workday titles entries "Languages 1", "Languages 2": the number IS the
     // position; otherwise count same-named fields under the same title.
-    const numbered = section.match(/(\d+)\s*$/);
-    const baseSection = section.replace(/\s*\d+\s*$/, '').slice(0, 80);
+    const numbered = section.match(/(\\d+)\\s*$/);
+    const baseSection = section.replace(/\\s*\\d+\\s*$/, '').slice(0, 80);
     const dupKey = baseSection + '|' + (label || '').trim().slice(0, 200) + '|' + type;
     let ordinal;
     if (numbered) {
@@ -239,7 +266,8 @@ SNAPSHOT_JS = """
       ordinal: ordinal,
       group: (group || '').trim().slice(0, 160),
       label: (label || '').trim().slice(0, 200),
-      name: el.getAttribute('name') || '',
+      name: el.getAttribute('name') || el.getAttribute('formcontrolname') || '',
+      accept: (el.getAttribute('accept') || '').slice(0, 120),
       elid: el.id || '',  // Greenhouse names its file inputs by id ("resume", "cover_letter")
       required: el.required === true || el.getAttribute('aria-required') === 'true',
       value: value.slice(0, 200),
@@ -355,11 +383,122 @@ def close(pw, context) -> None:
 
 _last_snapshot_error = ""
 
+# Visible form controls in a document - the measure of which frame holds
+# the application form.
+CONTROL_COUNT_JS = """
+() => Array.from(document.querySelectorAll('input:not([type=hidden]), textarea, select'))
+  .filter(e => e.getClientRects().length).length
+"""
+# Anything worth acting on: a wizard's last step ("Review your application")
+# has buttons and no fields, and the form's frame must not be dropped there.
+INTERACTIVE_COUNT_JS = """
+() => Array.from(document.querySelectorAll(
+  'input:not([type=hidden]), textarea, select, button, [role=button]'))
+  .filter(e => e.getClientRects().length).length
+"""
+_TARGET_CACHE: dict[int, Any] = {}
+# The page keeps the scan unless it has no form of its own and a child frame
+# clearly holds one. Both guards matter: a cookie-consent iframe's six
+# checkboxes (and even a 1x1 tracking iframe) otherwise stole the whole scan
+# from a form sitting in the page.
+PAGE_HAS_FORM = 3          # controls in the top document = the form is there
+FRAME_MARGIN = 3           # a frame must carry this many more to take over
+FRAME_MIN_WIDTH = 320      # ... and be a real panel, not a banner or a pixel
+FRAME_MIN_VIEWPORT_SHARE = 0.2
+# Frames that are never the application form, however many controls they show.
+NOT_A_FORM_RE = re.compile(
+    r"recaptcha|hcaptcha|captcha|onetrust|cookielaw|cookiebot|consent|trustarc"
+    r"|doubleclick|googletagmanager|google-analytics|facebook\.com/(tr|plugins)"
+    r"|hotjar|intercom|drift|zendesk|livechat|youtube\.com/embed|player\.vimeo",
+    re.IGNORECASE,
+)
+
+
+def _frame_is_a_panel(page, frame) -> bool:
+    """Is this frame a large, visible region of the page? The ALTEN form fills
+    its page; consent banners and tracking pixels do not."""
+    try:
+        element = frame.frame_element()
+        box = element.bounding_box()
+    except Exception:
+        return False
+    if not box or box["width"] < FRAME_MIN_WIDTH or box["height"] < 200:
+        return False
+    size = page.viewport_size or {"width": 1280, "height": 800}
+    area = max(1, int(size.get("width", 1280)) * int(size.get("height", 800)))
+    return (box["width"] * box["height"]) / area >= FRAME_MIN_VIEWPORT_SHARE
+
+
+def target(page, refresh: bool = False):
+    """The document to read and drive: the page itself, unless it holds no
+    form and a big child frame does - ALTEN's talentrecruit career page
+    embeds the whole application form as an iframe from another origin, so a
+    scan of the top document saw no fields at all.
+
+    The choice is remembered and only recomputed when a snapshot is taken
+    (refresh=True), so every lookup addresses the same document the snapshot
+    marked with data-oea-id."""
+    try:
+        frames = list(page.frames)
+    except Exception:
+        return page
+    if len(frames) <= 1:
+        _TARGET_CACHE.pop(id(page), None)
+        return page
+    if not refresh:
+        chosen = _TARGET_CACHE.get(id(page))
+        if chosen is not None:
+            try:
+                if chosen is page or not chosen.is_detached():
+                    return chosen
+            except Exception:
+                pass
+    def controls(doc) -> int:
+        try:
+            return int(doc.evaluate(CONTROL_COUNT_JS) or 0)
+        except Exception:
+            return 0
+
+    def usable(frame) -> bool:
+        """Still the form's frame: attached, big, and showing something to
+        act on (the review step has only buttons)."""
+        try:
+            if frame is page or frame.is_detached() or NOT_A_FORM_RE.search(frame.url or ""):
+                return False
+            if int(frame.evaluate(INTERACTIVE_COUNT_JS) or 0) < 1:
+                return False
+        except Exception:
+            return False
+        return _frame_is_a_panel(page, frame)
+
+    previous = _TARGET_CACHE.get(id(page))
+    best, main_count = page, controls(page)
+    if main_count < PAGE_HAS_FORM:
+        # An empty shell hands the form to any frame that has one; a page with
+        # a control or two of its own (a header search box) only to a frame
+        # that clearly carries the form.
+        needed = 1 if main_count == 0 else main_count + FRAME_MARGIN
+        best_count = 0
+        for frame in frames:
+            if frame == page.main_frame or NOT_A_FORM_RE.search(frame.url or ""):
+                continue
+            count = controls(frame)
+            if count < needed or not _frame_is_a_panel(page, frame):
+                continue
+            # The frame already in use wins ties, so a wizard step with one
+            # field does not hand the scan to some other frame mid-form.
+            if count > best_count or (frame is previous and count == best_count):
+                best, best_count = frame, count
+        if best is page and main_count == 0 and previous is not None and usable(previous):
+            best = previous   # a step with no fields is still that form's frame
+    _TARGET_CACHE[id(page)] = best
+    return best
+
 
 def snapshot(page) -> list[dict[str, Any]]:
     global _last_snapshot_error
     try:
-        fields = page.evaluate(SNAPSHOT_JS)
+        fields = target(page, refresh=True).evaluate(SNAPSHOT_JS)
         _last_snapshot_error = ""
     except Exception as exc:
         _last_snapshot_error = str(exc).splitlines()[0][:300]
@@ -375,7 +514,7 @@ def dialog_pending(page) -> bool:
     """True when the last snapshot saw an open modal that has no form
     controls yet (still loading), so its fields are not in the snapshot."""
     try:
-        return bool(page.evaluate("() => !!window.__oeaDialogPending"))
+        return bool(target(page).evaluate("() => !!window.__oeaDialogPending"))
     except Exception:
         return False
 
@@ -400,13 +539,22 @@ PAGE_TEXT_JS = """
 
 
 def page_text(page, limit: int = 2500) -> str:
-    try:
-        return (page.evaluate(PAGE_TEXT_JS) or "")[:limit]
-    except Exception:
+    """The visible text: the form's frame first (its "application submitted"
+    must fit in the limit), then the page around it."""
+    parts: list[str] = []
+    scope = target(page)
+    for doc in ([scope, page] if scope is not page else [page]):
         try:
-            return (page.inner_text("body") or "")[:limit]
+            parts.append(doc.evaluate(PAGE_TEXT_JS) or "")
         except Exception:
-            return ""
+            continue
+    text = "\n".join(p for p in parts if p)
+    if text:
+        return text[:limit]
+    try:
+        return (page.inner_text("body") or "")[:limit]
+    except Exception:
+        return ""
 
 
 ALERTS_JS = """
@@ -440,7 +588,7 @@ def alerts(page) -> str:
     """Visible validation messages on the page ("Error: Country is required"),
     for the model and the user when a Next click goes nowhere."""
     try:
-        return page.evaluate(ALERTS_JS) or ""
+        return target(page).evaluate(ALERTS_JS) or ""
     except Exception:
         return ""
 
@@ -473,4 +621,4 @@ def locate(page, field_id: int, elid: str = ""):
     selector = f'[data-oea-id="{field_id}"]'
     if elid:
         selector += f', [id="{elid.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34))}"]'
-    return page.locator(selector).first
+    return target(page).locator(selector).first
