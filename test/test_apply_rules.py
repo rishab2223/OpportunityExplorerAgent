@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from src import answers, history
@@ -1010,6 +1011,190 @@ class SkillsBoxTests(TempDbTestCase):
         self.assertEqual(worker._skill_cap(field), 10)
         self.assertEqual(worker._skill_cap({"section": "Skills", "group": "maximum of 5 skills"}), 5)
         self.assertEqual(worker._skill_cap({"section": "Skills :", "label": "Separate each skill with a comma."}), 0)
+
+    def test_the_widget_kind_is_read_from_the_wording_not_the_attributes(self) -> None:
+        from src.apply import worker
+
+        # Workday's chip typeahead reports NO dom hint at all (dump
+        # outputs/dom/..._20260910-225356/fields.json, field 43): role,
+        # aria-haspopup and aria-autocomplete are empty and autocomplete is
+        # "off". Anything keyed on those attributes would call it a plain text
+        # box and dump one nonsense comma chip into it.
+        workday = {"tag": "input", "type": "", "role": "", "haspopup": "",
+                   "autocomplete": "off", "label": "Type to Add Skills",
+                   "section": "Skills (Optional)"}
+        self.assertEqual(worker._skills_widget(workday), "typeahead")
+        # Esko says what it wants, so the whole list goes in at once.
+        esko = {"tag": "textarea", "type": "", "label": "Separate each skill with a comma.",
+                "section": "Skills :"}
+        self.assertEqual(worker._skills_widget(esko), "text")
+        # A single-line box that states its separator is text as well.
+        self.assertEqual(worker._skills_widget(
+            {"tag": "input", "type": "text", "label": "Skills", "section": "",
+             "group": "Comma-separated"}), "text")
+        self.assertEqual(worker._skills_widget(
+            {"tag": "select", "label": "Skills", "options": ["Python"]}), "select")
+        self.assertEqual(worker._skills_widget(
+            {"tag": "button", "haspopup": "listbox", "label": "Select skills"}), "select")
+
+    def test_a_skills_dropdown_is_recognised_at_all(self) -> None:
+        from src.apply import worker
+
+        # Neither shape reached _fill_skills before: the box had to be an
+        # input or a textarea, so a skills dropdown went to the model.
+        self.assertTrue(worker._is_skills_box(
+            {"tag": "select", "label": "Select skills", "section": "Skills",
+             "options": ["Python", "AWS"]}))
+        self.assertTrue(worker._is_skills_box(
+            {"tag": "button", "haspopup": "listbox", "label": "Add skills", "section": "Skills"}))
+        # A Skills section holds other controls too; the label still decides.
+        self.assertFalse(worker._is_skills_box(
+            {"tag": "select", "label": "Proficiency", "section": "Skills", "options": ["Expert"]}))
+        self.assertFalse(worker._is_skills_box(
+            {"tag": "select", "label": "Years of use", "section": "Skills", "options": ["1"]}))
+
+    def test_a_multi_select_takes_every_skill_it_offers(self) -> None:
+        from src.apply import worker
+
+        picked: list[list[str]] = []
+        logged: list[str] = []
+
+        class Locator:
+            def select_option(self, label=None, timeout=0):
+                picked.append(list(label))
+
+            def evaluate(self, js, timeout=0):
+                return ["Python", "Amazon Web Services (AWS)", "Cobol"]
+
+        class Sess:
+            def log(self, text):
+                logged.append(text)
+
+        field = {"id": 1, "tag": "select", "label": "Select skills", "section": "Skills",
+                 "multiple": True, "options": ["Python", "Amazon Web Services (AWS)", "Cobol"]}
+        worker._pick_skills(None, Locator(), field, ["Python", "AWS", "Haskell"],
+                            "Select skills", Sess())
+        self.assertEqual(picked, [["Python", "Amazon Web Services (AWS)"]])
+        # The skill the list does not carry is named, never guessed at.
+        self.assertTrue(any("Haskell" in line for line in logged), logged)
+
+    def test_a_single_choice_list_takes_only_the_first_that_fits(self) -> None:
+        from src.apply import worker
+
+        picked: list[list[str]] = []
+
+        class Locator:
+            def select_option(self, label=None, timeout=0):
+                picked.append(list(label))
+
+            def evaluate(self, js, timeout=0):
+                return ["Python", "AWS"]
+
+        class Sess:
+            def log(self, text):
+                pass
+
+        field = {"id": 1, "tag": "select", "label": "Primary skill", "section": "Skills",
+                 "options": ["Python", "AWS"]}
+        worker._pick_skills(None, Locator(), field, ["Python", "AWS"], "Primary skill", Sess())
+        self.assertEqual(picked, [["Python"]])
+
+    def test_a_list_holding_none_of_the_skills_is_an_error_not_a_guess(self) -> None:
+        from src.apply import worker
+
+        class Locator:
+            def select_option(self, label=None, timeout=0):
+                raise AssertionError("nothing should be selected")
+
+            def evaluate(self, js, timeout=0):
+                return ["Cobol", "Fortran"]
+
+        class Sess:
+            def log(self, text):
+                pass
+
+        field = {"id": 1, "tag": "select", "label": "Skills", "section": "Skills",
+                 "options": ["Cobol", "Fortran"]}
+        with self.assertRaises(ValueError):
+            worker._pick_skills(None, Locator(), field, ["Python", "AWS"], "Skills", Sess())
+
+
+class SettleTests(TempDbTestCase):
+    """A fixed sleep spent its whole budget however fast the page was."""
+
+    class Page:
+        """Counts controls; grows after `grows_at` polls and then holds."""
+
+        def __init__(self, start=3, grows_at=None, grows_to=6):
+            self.url = "https://example.invalid/form"
+            self.count = start
+            self.polls = 0
+            self.slept = 0
+            self.grows_at = grows_at
+            self.grows_to = grows_to
+
+        def wait_for_timeout(self, ms):
+            self.slept += ms
+            self.polls += 1
+            if self.polls == self.grows_at:   # grows once, then holds
+                self.count = self.grows_to
+
+    def _patched(self, page):
+        from src.apply import browser
+
+        class Frame:
+            def evaluate(self, js):
+                return f"{page.count}:0:0"
+
+        return unittest.mock.patch.object(browser, "target", lambda p: Frame())
+
+    def test_a_page_that_settles_early_is_not_waited_out(self) -> None:
+        from src.apply import browser
+
+        page = self.Page(grows_at=1)
+        with self._patched(page):
+            before = browser.page_shape(page)
+            self.assertTrue(browser.settle(page, before, 800))
+        # Changed on the first poll, then two quiet polls to be sure the
+        # framework had finished re-rendering: 300ms, not 800ms.
+        self.assertEqual(page.slept, 300)
+
+    def test_a_page_that_never_changes_waits_the_whole_budget(self) -> None:
+        from src.apply import browser
+
+        page = self.Page()
+        with self._patched(page):
+            before = browser.page_shape(page)
+            self.assertFalse(browser.settle(page, before, 800))
+        self.assertEqual(page.slept, 800)
+
+    def test_a_slow_render_is_still_waited_for(self) -> None:
+        from src.apply import browser
+
+        page = self.Page(grows_at=5)
+        with self._patched(page):
+            before = browser.page_shape(page)
+            self.assertTrue(browser.settle(page, before, 1500))
+        self.assertEqual(page.slept, 700)
+
+    def test_a_page_still_rendering_is_not_read_half_built(self) -> None:
+        from src.apply import browser
+
+        # Two renders in a row (a framework adding the entry, then filling
+        # it in): settle must not return between them.
+        page = self.Page(grows_at=1)
+        with self._patched(page):
+            before = browser.page_shape(page)
+            original = page.wait_for_timeout
+
+            def churn(ms):
+                original(ms)
+                if page.polls == 2:
+                    page.count += 1   # a second render
+
+            page.wait_for_timeout = churn
+            self.assertTrue(browser.settle(page, before, 900))
+        self.assertEqual(page.slept, 400)
 
 
 class AliasOptionTests(TempDbTestCase):

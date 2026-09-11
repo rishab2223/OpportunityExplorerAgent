@@ -275,6 +275,7 @@ SNAPSHOT_JS = """
     };
     if (el.tagName.toLowerCase() === 'select') {
       item.options = Array.from(el.options).map(o => o.label || o.value).slice(0, 40);
+      item.multiple = el.multiple === true;
     }
     if (type === 'checkbox' || type === 'radio') item.checked = el.checked === true;
     out.push(item);
@@ -536,6 +537,71 @@ PAGE_TEXT_JS = """
   return parts.join('\\n');
 }
 """
+
+
+# Just enough of the page to tell that something happened, without paying for
+# a full snapshot: the same control selector, the same shadow-DOM walk, but
+# only a count and a rough size. settle() runs this many times per click, so
+# building field dicts here cost more than the sleep it replaced.
+SHAPE_JS = """
+() => {
+  const deepAll = (start, sel) => {
+    const found = [];
+    const walk = (node) => {
+      for (const el of node.querySelectorAll('*')) {
+        if (el.matches(sel)) found.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      }
+    };
+    walk(start);
+    return found;
+  };
+  const selector = 'input, textarea, select, button, [role=button], [role=checkbox], a[href],' +
+    ' [role=combobox], [aria-haspopup=listbox]';
+  const controls = deepAll(document, selector);
+  let filled = 0;
+  for (const el of controls) {
+    if (el.value) filled += 1;
+    if (el.checked) filled += 1;
+  }
+  return controls.length + ':' + filled + ':' + (document.body ? document.body.innerText.length : 0);
+}
+"""
+
+
+def page_shape(page) -> str:
+    """A cheap fingerprint of what the page is showing: its url, how many
+    controls it has, how many of them hold something, and how much text is on
+    it. Enough to tell whether a click did anything."""
+    try:
+        return f"{page.url}|{target(page).evaluate(SHAPE_JS)}"
+    except Exception:
+        return ""
+
+
+def settle(page, before: str, timeout: int, step: int = 100, quiet: int = 2) -> bool:
+    """Wait until the page has changed from `before` AND then held still for
+    `quiet` polls, or until `timeout` ms have passed. True when it changed.
+
+    Replaces a fixed sleep, which spent its whole budget whether the page was
+    ready in a tenth of the time or never became ready at all. The quiet
+    polls matter: a framework often renders a new entry and then re-renders
+    it, and returning on the first sign of change would read a half-built
+    page.
+    """
+    waited = 0
+    still = 0
+    shape = before
+    while waited < timeout:
+        pause = min(step, timeout - waited)
+        page.wait_for_timeout(pause)
+        waited += pause
+        now = page_shape(page)
+        still = still + 1 if now == shape else 0
+        shape = now
+        if now != before and still >= quiet:
+            return True
+    return shape != before
 
 
 def page_text(page, limit: int = 2500) -> str:

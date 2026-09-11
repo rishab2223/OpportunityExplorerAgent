@@ -653,13 +653,14 @@ def run_session(
                             attempts.pop(key, None)
                             continue
                     sig_before, url_before = _page_sig(fields), _safe_url(page)
+                    shape_before = browser.page_shape(page)
                     try:
                         browser.click(browser.locate(page, advance_field["id"], str(advance_field.get("elid") or "")), timeout=15000)
                         sess.log(f"Clicked {advance_label}")
                         history.append(f"clicked {advance_label}")
                         errors_in_a_row = 0
                         noop_streak = 0
-                        page.wait_for_timeout(1500)
+                        browser.settle(page, shape_before, 1500)
                     except Exception as exc:
                         errors_in_a_row += 1
                         notes.append(f"clicking '{advance_label}' failed: {_short(exc)}")
@@ -864,6 +865,10 @@ def run_session(
                 noop_streak += 1
             if len(history) > HISTORY_LIMIT:
                 del history[: len(history) - HISTORY_LIMIT]
+            # Not dead time: a click's side effects have to land before the
+            # next read. Dropping this had the listing page's "Apply for this
+            # job" clicked twice, because the tab it opens had not appeared
+            # yet when the loop came round and asked the model again.
             page.wait_for_timeout(400)
         else:
             outcome, outcome_text = "failed", f"gave up after {MAX_STEPS} steps"
@@ -3039,8 +3044,8 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
         texts: list[str] = []
         options = None
         pressed_enter = False
-        for tick in range(14):
-            page.wait_for_timeout(400)
+        for tick in range(37):
+            page.wait_for_timeout(150)
             options, texts = _visible_options(page, locator)
             if _real_suggestions(texts):
                 break
@@ -3056,7 +3061,7 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
                 except Exception:
                     pass
                 return True
-            if tick == 2 and not pressed_enter:
+            if tick == 8 and not pressed_enter:   # ~1.2s in, as before
                 # Workday searches only on Enter: typing alone shows nothing
                 # (or the whole unfiltered list). Never inside a form that
                 # Enter would submit - a plain Skills box on a one-page form.
@@ -3147,12 +3152,14 @@ SKILLS_BOX_RE = re.compile(
 
 
 def _is_skills_box(field: dict[str, Any]) -> bool:
-    """A "Type to Add Skills" typeahead (Workday) or a plain skills list box:
-    the label ASKS for skills, or the box sits in a Skills section under a
-    generic "type / add / search" label."""
-    if field.get("tag") not in ("input", "textarea"):
+    """A "Type to Add Skills" typeahead (Workday), a comma-separated list box
+    (Esko) or a skills dropdown: the label ASKS for skills, or the control
+    sits in a Skills section under a generic "type / add / select" label."""
+    tag = (field.get("tag") or "").lower()
+    picker = tag == "select" or _is_listbox_button(field)
+    if not picker and tag not in ("input", "textarea"):
         return False
-    if (field.get("type") or "").lower() not in ("", "text", "search"):
+    if tag == "input" and (field.get("type") or "").lower() not in ("", "text", "search"):
         return False
     label = str(field.get("label") or "").strip()
     section = str(field.get("section") or "")
@@ -3161,9 +3168,41 @@ def _is_skills_box(field: dict[str, Any]) -> bool:
         return False
     if SKILLS_BOX_RE.search(label):
         return True
+    # A Skills section holds other controls too (a proficiency dropdown, a
+    # years-of-use box): the label still has to invite a list of skills.
     return bool(re.match(r"^\s*skills?\b", section, re.IGNORECASE)
                 and len(label) <= 60
-                and re.search(r"\b(add|type|search)\b", label, re.IGNORECASE))
+                and re.search(r"\b(add|type|search|select|choose)\b", label, re.IGNORECASE))
+
+
+# What the box says it wants. Workday's chip typeahead carries NO dom hint -
+# role, aria-haspopup and aria-autocomplete are all empty and autocomplete is
+# "off" - so the wording is the only thing that separates it from a box which
+# takes the whole list at once.
+_SKILLS_LIST_RE = re.compile(
+    r"\bseparate\s+(each|them|every|your)\b|\bcomma[- ]separated\b"
+    r"|\bseparated by\b|\bone per line\b|\buse commas\b",
+    re.IGNORECASE,
+)
+
+
+def _skills_widget(field: dict[str, Any]) -> str:
+    """How this skills control takes its values: "select" (choose from a fixed
+    list), "text" (write the whole list in one go) or "typeahead" (type each
+    skill and pick the suggestion)."""
+    tag = (field.get("tag") or "").lower()
+    if tag == "select" or _is_listbox_button(field):
+        return "select"
+    if tag == "textarea":
+        return "text"
+    scope = " ".join(str(field.get(k) or "") for k in ("label", "group", "section", "text"))
+    if _SKILLS_LIST_RE.search(scope):
+        return "text"
+    # A single-line box that says nothing about separators is treated as a
+    # picker. A comma list dumped into a chip widget becomes one nonsense
+    # chip, while a pick that finds no suggestions falls back to writing the
+    # list as text - so guessing this way round is the recoverable one.
+    return "typeahead"
 
 
 SKILL_CAP_RE = re.compile(r"\b(?:up to|maximum of|max(?:imum)?|at most)\s+(\d{1,2})\s+skills?\b",
@@ -3192,14 +3231,19 @@ def _profile_skills(data: dict[str, Any]) -> list[str]:
 
 
 def _fill_skills(page, field: dict[str, Any], skills: list[str], sess: ApplySession) -> None:
-    """Add each profile skill the widget does not hold yet, one suggestion
-    pick at a time. A box that takes plain text (Esko's textarea, "Separate
-    each skill with a comma.") takes the whole list at once - searching it
-    skill by skill typed and cleared the box over and over and left it
-    empty."""
+    """Add each profile skill the control does not hold yet, the way this kind
+    of control takes them. A dropdown is picked from; a box that states its
+    separator ("Separate each skill with a comma.") takes the whole list at
+    once; anything else is typed one skill at a time with its suggestion
+    picked - searching a plain box skill by skill typed and cleared it over
+    and over and left it empty, so that case falls back to the list as text."""
     locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
     label = _field_label(field)
-    if field.get("tag") == "textarea":
+    widget = _skills_widget(field)
+    if widget == "select":
+        _pick_skills(page, locator, field, skills, label, sess)
+        return
+    if widget == "text":
         _apply_value(page, field, ", ".join(skills), "", sess, source="profile")
         return
     have = {resolver.plain(c) for c in _chips(locator)}
@@ -3223,6 +3267,45 @@ def _fill_skills(page, field: dict[str, Any], skills: list[str], sess: ApplySess
         if not found:
             _apply_value(page, field, ", ".join(skills), "", sess, source="profile")
             return
+
+
+def _pick_skills(page, locator, field: dict[str, Any], skills: list[str],
+                 label: str, sess: ApplySession) -> None:
+    """A skills dropdown: choose every profile skill the list actually offers,
+    and name the ones it does not rather than guessing at them."""
+    if _is_listbox_button(field):
+        added: list[str] = []
+        for skill in skills:
+            try:
+                _pick_listbox(page, locator, skill, label, "[profile] ", sess)
+                added.append(skill)
+            except Exception as exc:
+                sess.log(f"No option for the skill '{skill}': {_short(exc)}")
+        if not added:
+            raise ValueError(f"none of your skills are in the '{label}' list")
+        return
+    options = [str(o) for o in (field.get("options") or [])]
+    everything = _all_select_options(locator)
+    if len(everything) > len(options):
+        options = everything  # the snapshot keeps only the first 40
+    chosen: list[str] = []
+    missing: list[str] = []
+    for skill in skills:
+        option = resolver.match_option(skill, options)
+        if not option:
+            missing.append(skill)
+        elif option not in chosen:
+            chosen.append(option)
+    if not chosen:
+        raise ValueError(f"none of your skills match the {len(options)} options of '{label}'")
+    if not field.get("multiple"):
+        chosen = chosen[:1]  # a single-choice list takes the first that fits
+    locator.select_option(label=chosen, timeout=10000)
+    sess.log(f"[profile] Selected {_brief(', '.join(chosen), LOG_VALUE)} "
+             f"for {_brief(label, LOG_LABEL)}")
+    if missing:
+        sess.log(f"Not in the '{_brief(label, LOG_LABEL)}' list: "
+                 f"{_brief(', '.join(missing), LOG_VALUE)}")
 
 
 def _auto_pick(added: list[str], value: str, query: str) -> str:
@@ -3413,6 +3496,20 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
     return best
 
 
+def _wait_for_options(page, locator, timeout: int = 600, step: int = 100):
+    """The dropdown's rows as soon as it shows them, or whatever is there
+    when `timeout` ms have passed. Same pair as _visible_options: a fixed
+    sleep here spent its whole budget on every single option list."""
+    visible, shown = _visible_options(page, locator)
+    waited = 0
+    while not _real_suggestions(shown) and waited < timeout:
+        pause = min(step, timeout - waited)
+        page.wait_for_timeout(pause)
+        waited += pause
+        visible, shown = _visible_options(page, locator)
+    return visible, shown
+
+
 def _visible_options(page, locator):
     """Visible option rows for an open dropdown (marked by ROWS_JS): scoped
     to the widget's own listbox (aria-controls/aria-owns) when it names one
@@ -3584,8 +3681,8 @@ def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess,
     browser.click(locator, timeout=5000)
     # Workday fills its lists lazily: "Select One" alone means not loaded yet.
     options, texts, index = None, [], -1
-    for _ in range(8):
-        page.wait_for_timeout(400)
+    for _ in range(21):
+        page.wait_for_timeout(150)
         options, texts = _visible_options(page, locator)
         index = _choose_option(texts, value, prefer)
         if index >= 0 or len([t for t in texts if t]) > 1:
@@ -3624,8 +3721,7 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
     except Exception:
         pass
     locator.fill(value, timeout=10000)
-    page.wait_for_timeout(600)  # let the option list filter
-    visible, shown = _visible_options(page, locator)
+    visible, shown = _wait_for_options(page, locator)  # let the option list filter
     index = _choose_option(shown, value, prefer)
     decisive = resolver.plain(prefer[0]) if prefer else ""
     if decisive and (index < 0 or decisive not in resolver.plain(shown[index])):
@@ -3633,8 +3729,7 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         # only appear under the city's other name: retype and look again.
         for alias in resolver.city_aliases(value):
             locator.fill(alias, timeout=10000)
-            page.wait_for_timeout(600)
-            alt_visible, alt_shown = _visible_options(page, locator)
+            alt_visible, alt_shown = _wait_for_options(page, locator)
             alt_index = _choose_option(alt_shown, alias, prefer)
             if alt_index >= 0 and decisive in resolver.plain(alt_shown[alt_index]):
                 visible, shown, index = alt_visible, alt_shown, alt_index
@@ -3642,8 +3737,7 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         else:
             if index >= 0:
                 locator.fill(value, timeout=10000)   # back to the first list
-                page.wait_for_timeout(600)
-                visible, shown = _visible_options(page, locator)
+                visible, shown = _wait_for_options(page, locator)
                 index = _choose_option(shown, value, prefer)
     if index >= 0:
         try:
@@ -3914,6 +4008,7 @@ def _remove_excluded_entries(page, fields, handled, sess) -> bool:
         if tries >= MAX_ATTEMPTS_PER_FIELD:
             continue
         handled.add(f"__removed__:{project}:{tries}")
+        shape = browser.page_shape(page)
         try:
             browser.click(browser.locate(page, button["id"], str(button.get("elid") or "")), timeout=10000)
         except Exception as exc:
@@ -3924,7 +4019,7 @@ def _remove_excluded_entries(page, fields, handled, sess) -> bool:
             f"Removed the '{project}' entry from Work Experience: it is your own project "
             "work, not a job (the site added it when it read your resume)."
         )
-        page.wait_for_timeout(600)
+        browser.settle(page, shape, 600)
         return True
     return False
 
@@ -3970,9 +4065,10 @@ def _open_profile_sections(page, fields, handled, sess) -> bool:
             handled.add(key)  # all entries are there; the button is done
             continue
         try:
+            shape = browser.page_shape(page)
             browser.click(browser.locate(page, field["id"], str(field.get("elid") or "")), timeout=10000)
             sess.log(f"Clicked {_field_label(field)} ({what}: entry {present + 1} of {needed})")
-            page.wait_for_timeout(800)
+            browser.settle(page, shape, 800)
             return True
         except Exception as exc:
             sess.log(f"Could not click {_field_label(field)}: {_short(exc)}")
