@@ -324,3 +324,25 @@ class ProfileSectionEntryTests(ResolverTestCase):
         self.assertIsNone(resolver.resolve(field(label="URL*", section="Websites", ordinal=2)))
         # Work Experience stays the model's.
         self.assertIsNone(resolver.resolve(field(label="Location", section="Work Experience 1", ordinal=0)))
+
+
+class PortfolioSectionTests(ResolverTestCase):
+    def test_portfolio_websites_take_the_links(self) -> None:
+        profile.PROFILE_PATH.write_text(json.dumps({**DUMMY_PROFILE, "github": "https://github.com/test"}), encoding="utf-8")
+        self.assertEqual(resolver.resolve(field(label="URL*", section="Portfolio (Optional) 1", ordinal=0)),
+                         ("https://linkedin.com/in/test", "profile"))
+        self.assertEqual(resolver.resolve(field(label="URL*", section="Portfolio (Optional)", ordinal=1)),
+                         ("https://github.com/test", "profile"))
+
+    def test_named_linkedin_box_under_social_urls_keeps_linkedin(self) -> None:
+        # Workday: "Social Network URLs" -> "Please enter your LinkedIn URL".
+        # The heading matches the Websites rule; the box still gets LinkedIn,
+        # and the Portfolio entry gets the remaining link (GitHub).
+        profile.PROFILE_PATH.write_text(json.dumps({**DUMMY_PROFILE, "github": "https://github.com/test"}), encoding="utf-8")
+        taken = ["https://linkedin.com/in/test"]
+        box = field(label="Please enter your LinkedIn URL", section="Social Network URLs", ordinal=0, taken_links=taken)
+        self.assertFalse(resolver.in_repeating_section(box))
+        self.assertIsNone(resolver.entry_value(box, profile.load_profile()))
+        self.assertEqual(resolver.resolve(box), ("https://linkedin.com/in/test", "profile"))
+        self.assertEqual(resolver.resolve(field(label="URL*", section="Portfolio (Optional) 1", ordinal=0, taken_links=taken)),
+                         ("https://github.com/test", "profile"))

@@ -371,3 +371,18 @@ class BareAddIsNotAPickerTests(unittest.TestCase):
         self.assertEqual(_upload_tile_kind(add, "Resume/CV Upload a file (5MB max)"), "")
         self.assertTrue(_is_picker_button({"tag": "button", "text": "Add files", "label": ""}))
         self.assertTrue(_is_picker_button({"tag": "button", "text": "Select files", "label": ""}))
+
+
+class SectionTitleDecidesTileTests(unittest.TestCase):
+    def test_resume_section_title_beats_the_boxs_small_print(self) -> None:
+        # dentsu Workday: the drop zone under "Resume/CV" says a cover letter
+        # or portfolio "can be included as well"; it is the resume box.
+        from src.apply.worker import _upload_tile_kind
+
+        tile = {"tag": "button", "text": "Select files", "label": "Select files", "group": "",
+                "section": "Resume/CV"}
+        blurb = ("If you haven't already, please upload your resume/CV. If you'd like to include "
+                 "a cover letter or portfolio document, you can do so here as well.")
+        self.assertEqual(_upload_tile_kind(tile, blurb), "resume")
+        self.assertEqual(_upload_tile_kind(dict(tile, section=""), blurb), "resume")
+        self.assertEqual(_upload_tile_kind(dict(tile, section="Cover Letter"), blurb), "letter")

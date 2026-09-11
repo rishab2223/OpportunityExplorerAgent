@@ -58,6 +58,7 @@ SUBMITTED_WORDS = ("applied", "submitted", "finished", "it went through")
 # The posting is gone - phrasing seen across career sites, not just LinkedIn.
 CLOSED_PAGE_RE = re.compile(
     r"position has been filled|no longer accepting applications"
+    r"|not (?:currently |presently )?accepting applications"
     r"|(?:job|position|posting|vacancy|opening)[^.\n]{0,40}?"
     r"(?:no longer available|has been closed|has closed|has expired|is closed)"
     r"|this job has expired",
@@ -145,8 +146,9 @@ Rules:
   "Add Another" (or "Add" again) for the next and stop when the resume has no more.
   Do not ask the candidate for these, and never invent employers, degrees or dates.
   Languages and Websites entries are filled by the script from the profile (it
-  clicks their Add buttons itself) - leave those sections alone. Skills typeaheads
-  take the resume's main skills, one at a time
+  clicks their Add buttons itself) - leave those sections alone. A Skills box is
+  filled by the script from the profile's skills when the profile lists any; only
+  when it is still unhandled do you add the resume's main skills, one at a time
   (one fill action per skill on the same field). Date parts are digits only: a
   "Month" field takes "07", a "Year" field "2020". Education comes from the
   profile's "education" entry when present, else the resume.
@@ -224,7 +226,7 @@ def _live_value(page, field: dict[str, Any]) -> str:
     if (field.get("type") or "").lower() in ("checkbox", "radio", "file", "button", "submit"):
         return ""
     try:
-        return (browser.locate(page, field["id"]).input_value(timeout=1500) or "").strip()
+        return (browser.locate(page, field["id"], str(field.get("elid") or "")).input_value(timeout=1500) or "").strip()
     except Exception:
         return ""
 
@@ -356,6 +358,7 @@ def run_session(
         written: dict[str, str] = {}   # what the sweep wrote where, for re-fills
         noop_streak = 0
         empty_snapshots = 0
+        fields: list[dict[str, Any]] = []
         closed_prompted: set[str] = set()
         last_llm_sig = ""
         outcome = ""
@@ -366,7 +369,9 @@ def run_session(
         # Keep Playwright's event loop pumped while a chat question is
         # pending: a file picker the user opens on a tile is only serviced
         # during a browser call, and the worker makes none while it waits.
-        holder: dict[str, Any] = {"page": page, "watch": None, "confirm_advance": ASK_BEFORE_ADVANCE}
+        holder: dict[str, Any] = {
+            "page": page, "watch": None, "confirm_advance": ASK_BEFORE_ADVANCE, "context": context,
+        }
 
         def idle_tick() -> None:
             holder["page"].wait_for_timeout(50)
@@ -381,6 +386,7 @@ def run_session(
                 raise session.PageChanged(reason)
 
         sess.idle_tick = idle_tick
+        sess.on_dump = lambda delay=0: _dump_page(holder["page"], sess, delay)
 
         if dry_run:
             _dry_run_report(page, context, job, "", sess)
@@ -408,11 +414,20 @@ def run_session(
 
             if noop_streak >= MAX_NOOP_STREAK:
                 noop_streak = 0
-                reply = sess.ask(
+                # Watched like every other prompt: the candidate filled the
+                # box by hand and clicked Next, then submitted, and neither
+                # the new step nor the "Application Submitted" popup was seen.
+                reply = _ask_watching(
+                    sess, holder, context, page, handled, fields,
                     "I am not making progress on this form. Tell me what to do next, "
                     "paste the form's URL to open it, type done if you already submitted "
-                    "the application yourself, or type abort to stop."
+                    "the application yourself, or type abort to stop.",
                 )
+                if reply is None:
+                    if holder.get("changed") == "submitted":
+                        outcome, outcome_text = "applied", "confirmed by the page"
+                        break
+                    continue
                 if reply.lower() in FINISHED_WORDS:
                     outcome, outcome_text = "applied", "confirmed by you"
                     break
@@ -596,7 +611,7 @@ def run_session(
                             continue
                     sig_before, url_before = _page_sig(fields), _safe_url(page)
                     try:
-                        browser.locate(page, advance_field["id"]).click(timeout=15000)
+                        browser.click(browser.locate(page, advance_field["id"], str(advance_field.get("elid") or "")), timeout=15000)
                         sess.log(f"Clicked {advance_label}")
                         history.append(f"clicked {advance_label}")
                         errors_in_a_row = 0
@@ -736,6 +751,10 @@ def run_session(
                 )
                 if result == "refused":
                     refused += 1
+                elif result == "submitted":
+                    outcome, outcome_text = "applied", "confirmed by the page"
+                    finished = True
+                    break
                 elif result == "executed":
                     executed += 1
                     errors_in_a_row = 0
@@ -1122,13 +1141,21 @@ def _upload_tile_kind(field: dict[str, Any], page_text: str = "") -> str:
         return "letter"
     if RESUME_FIELD_RE.search(scope):
         return "resume"
+    # The section title above the tile ("Resume/CV") is the next word on it.
+    section = str(field.get("section") or "")
+    if cover_letter.COVER_LETTER_RE.search(section):
+        return "letter"
+    if RESUME_FIELD_RE.search(section):
+        return "resume"
     if generic and page_text:
         # No heading of its own: the step's text decides ("Autofill with
-        # Resume", "Upload your resume"). Cover letter wins when named.
-        if cover_letter.COVER_LETTER_RE.search(page_text):
-            return "letter"
+        # Resume", "Upload your resume"). The resume wins when both are named
+        # - Workday's box says "upload your resume/CV ... a cover letter or
+        # portfolio document ... as well", and the resume is the required one.
         if RESUME_FIELD_RE.search(page_text):
             return "resume"
+        if cover_letter.COVER_LETTER_RE.search(page_text):
+            return "letter"
     return ""
 
 
@@ -1150,7 +1177,7 @@ def _sole_hidden_file_input(page, tile: dict[str, Any] | None = None):
         if inputs.count() == 1:
             return inputs.first
         if tile is not None and inputs.count() > 1:
-            near = browser.locate(page, tile["id"]).locator(
+            near = browser.locate(page, tile["id"], str(tile.get("elid") or "")).locator(
                 "xpath=ancestor::*[.//input[@type='file']][1]//input[@type='file']"
             )
             if near.count() == 1:
@@ -1396,11 +1423,16 @@ def _sweep(
             else:
                 field["ordinal"] = seen_labels.get(slot, 0)
                 seen_labels[slot] = field["ordinal"] + 1
+    taken_links = None
     for field in fields:
         label = _field_label(field)
         key = _field_key(field, label)
         if _is_submit(field):
             continue
+        if resolver.WEBSITES_SECTION_RE.search(str(field.get("section") or "")):
+            if taken_links is None:
+                taken_links = sorted(_links_on_page(fields))
+            field["taken_links"] = taken_links
         if key in handled:
             if not (written and key in written and resolver.is_blank(field)):
                 continue
@@ -1412,8 +1444,29 @@ def _sweep(
             estimate = attach.expected_salary()
             if estimate:
                 resolved = (salary.canonical(estimate), "estimate")
+        if resolved is None and _is_skills_box(field):
+            # The profile's skills go in one by one (Workday's "Type to Add
+            # Skills" is a chip typeahead); the model used to skip the box.
+            skills = _profile_skills(profile.load_profile())
+            if skills:
+                if dry_run:
+                    sess.log(f"WOULD add [profile] {label} = {', '.join(skills)}")
+                else:
+                    attempts[key] = attempts.get(key, 0) + 1
+                    if attempts[key] <= MAX_ATTEMPTS_PER_FIELD:
+                        try:
+                            _fill_skills(page, field, skills, sess)
+                            filled += 1
+                        except Exception as exc:
+                            sess.log(f"Could not fill {label}: {_short(exc)}")
+                handled.add(key)
+                continue
         if resolved is None:
             resolved = resolver.resolve(field, job)
+        if resolved is None and resolver.is_blank(field):
+            where = _entry_location(field, fields, profile.load_profile())
+            if where:
+                resolved = (where, "profile")
         if resolved is None:
             continue
         value, source = resolved
@@ -1437,7 +1490,7 @@ def _sweep(
             filled += 1
             # A typeahead pick empties its box on purpose (the choice shows as
             # a chip): never a candidate for the blank-again re-fill.
-            if (written is not None and source != "resume" and mode != "typeahead"
+            if (written is not None and source != "resume" and mode not in ("typeahead", "picked")
                     and field.get("tag") in ("input", "textarea")):
                 written[key] = value
         except Exception as exc:
@@ -1445,20 +1498,24 @@ def _sweep(
     return filled
 
 
-def _ask_watching(sess, holder, context, page, handled, fields, question: str) -> str | None:
+def _ask_watching(sess, holder, context, page, handled, fields, question: str,
+                  suggestion: str = "", fields_too: bool = True) -> str | None:
     """sess.ask(), but the page is watched meanwhile: when the user opens a
     form (an Easy Apply popup on the same page, an apply page in a new tab)
-    instead of typing, the wait ends and None comes back so the loop reads
-    the page again. The user decides what to click; the agent only notices."""
+    or submits instead of typing, the wait ends and None comes back so the
+    loop acts on the page. The user decides what to click; the agent only
+    notices. fields_too=False (a field question) ignores new empty fields
+    and reacts only to a new page, a new tab or a confirmation."""
     baseline = {_field_key(f, _field_label(f)) for f in _unresolved_fields(fields, handled)}
     holder["watch"] = {
         "keys": baseline, "handled": handled, "url": _safe_url(page), "ticks": 0,
+        "fields_too": fields_too,
         # A page that already read as submitted must not re-trigger.
         "submitted": _looks_submitted(browser.page_text(page)),
     }
     holder["changed"] = ""
     try:
-        return sess.ask(question)
+        return sess.ask(question, suggestion=suggestion)
     except session.PageChanged as exc:
         holder["changed"] = exc.reason
         if exc.reason == "submitted":
@@ -1482,6 +1539,8 @@ def _page_grew(context, page, watch: dict[str, Any]) -> str:
         return "url"
     if not watch.get("submitted") and _looks_submitted(browser.page_text(page)):
         return "submitted"
+    if not watch.get("fields_too", True):
+        return ""
     fields = browser.snapshot(page)
     keys = {_field_key(f, _field_label(f)) for f in _unresolved_fields(fields, watch["handled"])}
     return "fields" if keys - watch["keys"] else ""
@@ -1503,8 +1562,12 @@ def _apply_choices(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not clickable:
             continue
         text = (f.get("text") or f.get("label") or "").strip()
-        if text and APPLY_CHOICE_RE.search(text):
-            out.append(f)
+        if not text or not APPLY_CHOICE_RE.search(text):
+            continue
+        # "Please read our Privacy Notice before you apply" is a link, not a way to apply.
+        if len(text) > 40 or re.search(r"\b(privacy|notice|policy|terms)\b", text, re.IGNORECASE):
+            continue
+        out.append(f)
     return out
 
 
@@ -1679,7 +1742,18 @@ def _run_action(
             if not proposed and action.action not in ("click", "check", "uncheck"):
                 proposed = action.value.strip()
             while True:
-                answer = sess.ask(question, suggestion=proposed)
+                if holder is not None and holder.get("context") is not None:
+                    # Watched: the user may submit (or move to another page)
+                    # while a field question is open - after an hour away the
+                    # answer was a "check" to a question the page had outlived.
+                    answer = _ask_watching(
+                        sess, holder, holder["context"], page, handled, fields, question,
+                        suggestion=proposed, fields_too=False,
+                    )
+                    if answer is None:
+                        return "submitted" if holder.get("changed") == "submitted" else "stale"
+                else:
+                    answer = sess.ask(question, suggestion=proposed)
                 # An attachment command mid-question is a detour, not an answer -
                 # never type it into the field or cache it as one.
                 if attach is not None and _manual_attachment(answer, attach, page, sess, notes):
@@ -1703,9 +1777,15 @@ def _run_action(
                     sess.log(f"Could not draft an answer: {_short(exc)}")
             # "yes" to "should I set it to India (+91)?" means the proposed
             # value, not the word - it was typed into the phone-code box.
-            if (action.action in ("fill", "select") and action.value.strip()
+            if (action.action in ("fill", "select")
                     and answer.strip().lower() in ("yes", "y", "yes please", "ok", "okay", "sure", "go ahead")):
-                answer = action.value.strip()
+                # ... or the value the question itself proposed ("a plain
+                # number like 3000000 INR?"); with neither, ask for it, since
+                # "yes" typed into a salary box is what happened.
+                proposal = action.value.strip() or _proposal_in_question(question)
+                if not proposal:
+                    proposal = sess.ask(f"Type the exact value to enter for '{label}'.").strip()
+                answer = proposal
             if answer_key:
                 session_answers[answer_key] = answer
             _maybe_remember(sess, label, group, answer, action, job, field)
@@ -2022,7 +2102,7 @@ def _execute(
 ) -> None:
     if action.action == "click" and _is_submit(field):
         raise SubmitBlocked(_field_label(field))
-    locator = browser.locate(page, field["id"])
+    locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
     if locator.count() == 0:
         raise StaleField(_field_label(field))
     label = _field_label(field)
@@ -2032,8 +2112,8 @@ def _execute(
         pass
 
     if action.action == "click":
-        locator.click(timeout=15000)
-        sess.log(f"Clicked {label}")
+        how = browser.click(locator, timeout=15000)
+        sess.log(f"Clicked {label}" + (" (direct)" if "direct" in how else ""))
         return
     if action.action == "upload":
         if not pdf_path:
@@ -2064,7 +2144,7 @@ def _apply_value(
 ) -> str | None:
     """Set a value the right way for this control: file, select, checkbox or
     text. Returns "typeahead" when the value went in as a picked suggestion."""
-    locator = browser.locate(page, field["id"])
+    locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
     label = _field_label(field)
     tag = field.get("tag")
     field_type = (field.get("type") or "").lower()
@@ -2123,14 +2203,23 @@ def _apply_value(
     # 2500000): every writer - bank, profile, model, user - goes through here,
     # so this is the one place the amount is converted.
     value = salary.for_field(value, field)
+    if field_type == "number" and re.search(r"[^\d.\-]", value or ""):
+        # A number box takes digits only: "30 lpa" is 3000000; "yes" is
+        # nothing at all (it was typed in, and rejected, twice).
+        annual = salary.parse_annual_inr(value)
+        if annual is None:
+            raise ValueError(f"'{label}' is a number box; '{value}' is not a number")
+        value = str(annual)
+    prefer = _tie_breakers(field)
     if _is_listbox_button(field):
-        _pick_listbox(page, locator, value, label, prefix, sess)
-        return
+        _pick_listbox(page, locator, value, label, prefix, sess, prefer)
+        return "picked"
     if (field.get("role") or "").lower() == "combobox" or (
         field.get("haspopup") or ""
     ).lower() in ("listbox", "true"):
-        _commit_combobox(page, locator, value, label, prefix, sess)
-        return
+        # The pick empties the box (the choice shows beside it): the sweep's
+        # blank-again re-fill must not redo it every pass ("[again] Selected").
+        return _commit_combobox(page, locator, value, label, prefix, sess, prefer)
     if DATE_PART_RE.match(label.strip()):
         _type_date_part(page, locator, value, label, prefix, sess)
         return
@@ -2142,7 +2231,7 @@ def _apply_value(
     # re-render a later dropdown selection triggers.
     if not _holds(locator, value):
         try:
-            locator.click(timeout=3000)
+            locator.focus(timeout=3000)
             locator.press("Control+A")
             locator.press_sequentially(value, delay=15, timeout=15000)
         except Exception:
@@ -2152,6 +2241,15 @@ def _apply_value(
     except Exception:
         pass
     if not _holds(locator, value):
+        if field_type == "number":
+            raise ValueError(f"typed '{value}' into the number box '{label}' but it shows '{_shown(locator)}'")
+        # A chip-style prompt may already hold the choice as a pill (an
+        # earlier pass, or the candidate): nothing to search for.
+        chips = _chips(locator)
+        held = _choose_option(chips, value)
+        if held >= 0:
+            sess.log(f"{prefix}{label} already holds '{chips[held]}'")
+            return "typeahead"
         # A box that only takes a pick from the list it shows after typing
         # (Workday's Country Phone Code, Field of Study, Skills).
         # Workday's phone-code search matches "India", not "+91": offer the
@@ -2161,7 +2259,9 @@ def _apply_value(
             country = resolver._country(profile.load_profile())
             if country:
                 alternatives.append(country)
-        if _commit_typeahead(page, locator, value, label, prefix, sess, alternatives):
+        if prefer:  # a location box: the renamed-city spelling is another query
+            alternatives.extend(resolver.city_aliases(value))
+        if _commit_typeahead(page, locator, value, label, prefix, sess, alternatives, prefer):
             return "typeahead"
         raise ValueError(
             f"typed '{value}' into '{label}' but the field did not keep it"
@@ -2227,7 +2327,8 @@ def _real_suggestions(texts: list[str]) -> bool:
 
 
 def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
-                      alternatives: list[str] | None = None) -> bool:
+                      alternatives: list[str] | None = None,
+                      prefer: list[str] | None = None) -> bool:
     """Type, wait for the suggestion list, click the matching entry. False
     when no list appears for any query (then it was just a text box that
     lost the value); a list with no match is an error naming the
@@ -2236,10 +2337,17 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
     for the same value ("India" for "+91"); "No Items." rows shown while
     Workday searches are waited out, never taken as suggestions."""
     queries = [value] + [a for a in (alternatives or []) if a and a != value]
+    if len(queries) > 1 and resolver._DIAL_CODE_RE.fullmatch(value.strip()):
+        # Workday's phone-code search knows "India", not "+91" (which shows
+        # the whole catalogue, scrolled through in vain): the name goes first.
+        queries = queries[1:] + queries[:1]
     tried: list[str] = []
+    no_match: list[str] = []
     for query in queries:
+        before = {resolver.plain(c) for c in _chips(locator)}
         try:
-            locator.click(timeout=3000)
+            page.keyboard.press("Escape")   # close a results popup left open by the last pick
+            locator.focus(timeout=3000)     # a click would be blocked by that popup
             locator.fill("")
             locator.press_sequentially(query, delay=25, timeout=15000)
         except Exception as exc:
@@ -2253,28 +2361,44 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
             options, texts = _visible_options(page, locator)
             if _real_suggestions(texts):
                 break
+            # Workday takes a search with exactly one hit as the choice: the
+            # list never shows, the pill just appears ("LinkedIn corporate
+            # page" for "Linkedin"; "Computer and Information Science").
+            added = [c for c in _chips(locator) if resolver.plain(c) not in before]
+            chosen = _auto_pick(added, value, query)
+            if chosen:
+                sess.log(f"{prefix}Selected '{chosen}' for {label} (typeahead, the search's only hit)")
+                try:
+                    page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                return True
             if tick == 2 and not pressed_enter:
                 # Workday searches only on Enter: typing alone shows nothing
-                # (or the whole unfiltered list).
+                # (or the whole unfiltered list). Never inside a form that
+                # Enter would submit - a plain Skills box on a one-page form.
+                pressed_enter = True
+                if _enter_may_submit(locator):
+                    break
                 try:
                     locator.press("Enter")
                 except Exception:
                     pass
-                pressed_enter = True
         if not _real_suggestions(texts):
-            tried.append(f"'{query}' -> rows: {', '.join(t for t in texts[:4] if t) or 'none'}")
+            tried.append(f"'{query}' -> rows: {', '.join(t for t in texts[:4] if t) or 'none'}"
+                         + _typeahead_state(page, locator))
             continue
-        options, texts, index = _scroll_for_match(page, locator, value, options, texts)
+        options, texts, index = _scroll_for_match(page, locator, value, options, texts, prefer)
         if index < 0 and query != value:
-            index = _choose_option(texts, query)
-        if index < 0 and not pressed_enter:
+            index = _choose_option(texts, query, prefer)
+        if index < 0 and not pressed_enter and not _enter_may_submit(locator):
             # The list may be the unfiltered catalogue; ask for the search.
             try:
                 locator.press("Enter")
                 for _ in range(8):
                     page.wait_for_timeout(400)
                     options, texts = _visible_options(page, locator)
-                    index = _choose_option(texts, value)
+                    index = _choose_option(texts, value, prefer)
                     if index >= 0 or (_real_suggestions(texts) and len(texts) < 40):
                         break
             except Exception:
@@ -2289,17 +2413,35 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
             for t in texts:
                 if t and not _PLACEHOLDER_ROW_RE.match(t) and t not in seen:
                     seen.append(t)
-            raise ValueError(
+            no_match.append(
                 f"'{value}' matches none of the suggestions for '{label}'; pick one of: "
                 + ", ".join(seen[:12])
             )
-        options.nth(index).click(timeout=5000)
-        sess.log(f"{prefix}Selected '{texts[index]}' for {label} (typeahead)")
+            continue   # another query for the same value may find it
+        row = options.nth(index)
         try:
-            page.keyboard.press("Escape")  # a multi-select keeps its list open
+            multi = row.locator("input[type=checkbox], [role=checkbox]").count() > 0
+        except Exception:
+            multi = False
+        browser.click(row, timeout=5000)
+        chosen = texts[index]
+        sess.log(f"{prefix}Selected '{chosen}' for {label} (typeahead)")
+        try:
+            # Workday's multi-select (Skills) adds the chip on the click itself
+            # and keeps the list open: Escape just closes it (the dentsu dump
+            # shows the chip beside the open list). A list that only ticks
+            # rows commits them on Enter. A single pick just needs its list
+            # closed.
+            if multi and not any(resolver.plain(c) == resolver.plain(chosen) for c in _chips(locator)):
+                locator.press("Enter")
+            else:
+                page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
         except Exception:
             pass
         return True
+    if no_match:
+        raise ValueError(no_match[0])
     if tried:
         sess.log(f"Typeahead '{label}': no suggestions after Enter for " + "; ".join(tried))
     try:
@@ -2307,6 +2449,121 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
     except Exception:
         pass
     return False
+
+
+SKILLS_BOX_RE = re.compile(r"\bskills?\b", re.IGNORECASE)
+
+
+def _is_skills_box(field: dict[str, Any]) -> bool:
+    """A "Type to Add Skills" typeahead (Workday) or a plain skills box: the
+    label names skills, or the box sits in a Skills section under a generic
+    "type / add / search" label."""
+    if field.get("tag") not in ("input", "textarea"):
+        return False
+    if (field.get("type") or "").lower() not in ("", "text", "search"):
+        return False
+    label = str(field.get("label") or "")
+    section = str(field.get("section") or "")
+    if SKILLS_BOX_RE.search(label):
+        return True
+    return bool(re.match(r"^\s*skills?\b", section, re.IGNORECASE)
+                and re.search(r"\b(add|type|search)\b", label, re.IGNORECASE))
+
+
+def _profile_skills(data: dict[str, Any]) -> list[str]:
+    """'JavaScript, Node.js; Python' -> ['JavaScript', 'Node.js', 'Python']."""
+    out: list[str] = []
+    for part in re.split(r"[,;\n]+", str(data.get("skills") or "")):
+        part = part.strip()
+        if part and part.lower() not in {o.lower() for o in out}:
+            out.append(part)
+    return out
+
+
+def _fill_skills(page, field: dict[str, Any], skills: list[str], sess: ApplySession) -> None:
+    """Add each profile skill the widget does not hold yet, one suggestion
+    pick at a time; a plain text box (no suggestion list) takes the whole
+    list as text instead."""
+    locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
+    label = _field_label(field)
+    have = {resolver.plain(c) for c in _chips(locator)}
+    todo = [s for s in skills if resolver.plain(s) not in have]
+    if not todo:
+        sess.log(f"[profile] {label}: the skills are already in")
+        return
+    for skill in todo:
+        try:
+            found = _commit_typeahead(page, locator, skill, label, "[profile] ", sess)
+        except ValueError as exc:
+            sess.log(f"Could not add the skill '{skill}': {_short(exc)}")
+            continue
+        if not found:
+            _apply_value(page, field, ", ".join(skills), "", sess, source="profile")
+            return
+
+
+def _auto_pick(added: list[str], value: str, query: str) -> str:
+    """The pill a search added by itself, when it is a match for the value
+    (or the alternative query that found it); '' otherwise."""
+    if not added:
+        return ""
+    for want in (value, query):
+        index = _choose_option(added, want)
+        if index >= 0:
+            return added[index]
+    return ""
+
+
+_PROPOSAL_RE = re.compile(
+    r"\b(?:like|such as|e\.g\.|for example|say|maybe|perhaps|set it to|use|should it be)\s+"
+    r"(?:a plain number like\s+)?['\"]?((?:[^'\"?;\n()]|\([^()]*\))+?)['\"]?\)?\s*(?:[?;\n,]|$)",
+    re.IGNORECASE,
+)
+
+
+def _proposal_in_question(question: str) -> str:
+    """The value a question proposes in its own words ("... a plain number
+    like 3000000 INR?" -> "3000000 INR"), for a "yes" that would otherwise
+    be typed into the box. '' when the question proposes nothing."""
+    match = _PROPOSAL_RE.search(question or "")
+    return match.group(1).strip() if match else ""
+
+
+def _typeahead_state(page, locator) -> str:
+    """Diagnostics for a typeahead that showed no rows: is the box still
+    there, and are there option rows anywhere on the page?"""
+    try:
+        attached = locator.count() > 0
+    except Exception:
+        attached = False
+    try:
+        on_page = page.locator("[role=option]:visible, [data-automation-id=promptOption]:visible").count()
+    except Exception:
+        on_page = -1
+    return f" (box attached: {'yes' if attached else 'no'}; option rows on page: {on_page})"
+
+
+def _entry_location(field: dict[str, Any], fields: list[dict[str, Any]], data: dict[str, Any]) -> str | None:
+    """A blank Location inside a work-history entry whose Company is the
+    profile's current employer: that job's location is the profile's
+    current_company_location (the model left the second Cadence entry's
+    Location empty)."""
+    if not re.match(r"^\s*(job\s+)?location\b", str(field.get("label") or ""), re.IGNORECASE):
+        return None
+    section = str(field.get("section") or "")
+    if not re.search(r"\b(work|professional|employment)\s+(experience|history)\b", section, re.IGNORECASE):
+        return None
+    where = str(data.get("current_company_location") or "").strip()
+    employer = resolver.plain(str(data.get("current_company") or ""))
+    if not where or not employer:
+        return None
+    for other in fields:
+        if str(other.get("section") or "") != section:
+            continue
+        if re.match(r"^\s*(company|employer|organi[sz]ation)\b", str(other.get("label") or ""), re.IGNORECASE) \
+                and resolver.plain(str(other.get("value") or "")) == employer:
+            return where
+    return None
 
 
 def _holds(locator, value: str) -> bool:
@@ -2327,41 +2584,109 @@ def _holds(locator, value: str) -> bool:
     return len(typed) >= 6 and shown in (typed, "0" + typed) and typed == re.sub(r"\D", "", value)
 
 
+def _tie_breakers(field: dict[str, Any]) -> list[str]:
+    """Words that pick between several options starting the same way. For a
+    location box, the profile's state and country: "Gurgaon" alone chose
+    "Gurgaon, Bihar, India" over "Gurgaon, Haryana, India"."""
+    label = str(field.get("label") or "")
+    if not re.search(r"\b(location|city|town|address)\b", label, re.IGNORECASE):
+        return []
+    data = profile.load_profile()
+    words = [str(data.get("state") or "").strip(), resolver._country(data)]
+    return [w for w in words if w]
+
+
 def _is_listbox_button(field: dict[str, Any]) -> bool:
     """A Workday-style dropdown: a BUTTON that opens a listbox. Not an input,
     so fill() throws; it must be opened and its option clicked."""
     return field.get("tag") == "button" and (field.get("haspopup") or "").lower() == "listbox"
 
 
-def _choose_option(texts: list[str], value: str) -> int:
+def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None) -> int:
     """Index of the option for `value`: exact, then case-insensitive, then
     the option that STARTS with it ("India" -> "India (+91)", never "British
     Indian Ocean Territory"), then the single option containing it as a
-    whole token ("+91" -> "India (+91)"). -1 when nothing fits."""
+    whole token ("+91" -> "India (+91)"). Several candidates at one level are
+    told apart by `prefer` words (the profile's state: "Gurgaon, Haryana"
+    over "Gurgaon, Bihar"); otherwise the first wins, or none for the
+    containment level. -1 when nothing fits."""
     wanted = (value or "").strip()
     if not wanted:
         return -1
     lowered = resolver.plain(wanted)   # case- and accent-insensitive ("Haryāna")
     flat = [resolver.plain(t) for t in texts]
-    for i, t in enumerate(texts):
-        if t.strip() == wanted:
-            return i
-    for i, t in enumerate(flat):
-        if t == lowered:
-            return i
-    starts = re.compile(rf"^\s*{re.escape(lowered)}\b")
-    for i, t in enumerate(flat):
-        if starts.match(t):
-            return i
-    bounded = re.compile(rf"(?<![\w+]){re.escape(lowered)}(?![\w])")
-    hits = [i for i, t in enumerate(flat) if bounded.search(t)]
-    return hits[0] if len(hits) == 1 else -1
+    wants = [resolver.plain(p) for p in (prefer or []) if p]
+
+    def pick(cands: list[int], strict: bool) -> int:
+        if not cands:
+            return -1
+        if len(cands) > 1 and wants:
+            for w in wants:
+                narrowed = [i for i in cands if w in flat[i]]
+                if narrowed:
+                    return narrowed[0]
+        # Several rows with one text are one choice (a row and its inner
+        # text node both read as options on Workday): ambiguity needs
+        # different texts.
+        if strict and len({flat[i] for i in cands}) > 1:
+            return -1
+        return cands[0]
+
+    def match(query: str) -> int:
+        for i, t in enumerate(texts):
+            if t.strip() == query:
+                return i
+        q = resolver.plain(query)
+        exact = [i for i, t in enumerate(flat) if t == q]
+        if exact:
+            return pick(exact, False)
+        # "(AWS)" in "Amazon Web Services (AWS)": an option's own alias for
+        # the value beats "AWS VPN", which merely starts with it.
+        alias = re.compile(rf"\(\s*{re.escape(q)}\s*\)")
+        found = pick([i for i, t in enumerate(flat) if alias.search(t)], False)
+        if found >= 0:
+            return found
+        starts = re.compile(rf"^\s*{re.escape(q)}\b")
+        found = pick([i for i, t in enumerate(flat) if starts.match(t)], False)
+        if found >= 0:
+            return found
+        bounded = re.compile(rf"(?<![\w+]){re.escape(q)}(?![\w])")
+        return pick([i for i, t in enumerate(flat) if bounded.search(t)], True)
+
+    def satisfied(i: int) -> bool:
+        # The first preference (the state) decides; the country alone matches
+        # every Indian city and would have settled for Gurgaon, Bihar.
+        return not wants or wants[0] in flat[i]
+
+    best = match(wanted)
+    if best >= 0 and satisfied(best):
+        return best
+    if best < 0 and re.match(r"^(bachelor|master|doctor|associate|diploma|graduate|undergraduate|postgraduate)", lowered):
+        # "Bachelor's Degree" against a list of "Bachelors" / "Bachelor of
+        # Technology": the stem of the degree word finds the family. Kept to
+        # degree words: "Mobile phone" must not loosely pick "Mobile".
+        stem = re.sub(r"('s|s)$", "", lowered.split()[0]) if lowered.split() else ""
+        if len(stem) >= 5:
+            starts = re.compile(rf"^\s*{re.escape(stem)}")
+            best = pick([i for i, t in enumerate(flat) if starts.match(t)], False)
+            if best >= 0 and satisfied(best):
+                return best
+            best = -1
+    # The other spelling of a renamed city may be the one in the right state:
+    # "Gurgaon" -> "Gurgaon, Bihar" but "Gurugram, Haryana" is the candidate's.
+    for alias in resolver.city_aliases(wanted):
+        other = match(alias)
+        if other >= 0 and satisfied(other):
+            return other
+    return best
 
 
 def _visible_options(page, locator):
-    """Visible options for an open dropdown, scoped to the widget's own
-    listbox (aria-controls/aria-owns) when it names one - pages keep hidden
-    option lists around (Greenhouse renders every country twice)."""
+    """Visible option rows for an open dropdown (marked by ROWS_JS): scoped
+    to the widget's own listbox (aria-controls/aria-owns) when it names one
+    - pages keep hidden option lists around (Greenhouse renders every
+    country twice) - else to the list nearest the widget. Never the chips of
+    values already chosen, never a row's inner text node as a second row."""
     listbox = ""
     for attr in ("aria-controls", "aria-owns"):
         try:
@@ -2370,22 +2695,18 @@ def _visible_options(page, locator):
             listbox = ""
         if listbox:
             break
-    if listbox:
-        scope = page.locator(f'[id="{listbox}"]')
-    else:
-        # No aria link: several popups can be open at once (a Skills list left
-        # open next to Field of Study), so take the list NEAREST the widget -
-        # the one whose top sits closest below (or beside) the input.
-        marked = False
+    try:
+        count = int(locator.evaluate(ROWS_JS, listbox) or 0)
+    except Exception:
+        # The box was re-rendered under us (Workday swaps the search box
+        # node when its list opens): scan the whole page, chips excluded.
         try:
-            marked = bool(locator.evaluate(NEAREST_LIST_JS))
+            count = int(page.evaluate(f"(id) => ({ROWS_JS})(null, id)", listbox) or 0)
         except Exception:
-            marked = False
-        scope = page.locator("[data-oea-list='1']") if marked else page
-    options = scope.locator(
-        "[role=option]:visible, [role=listbox]:visible li, "
-        "[data-automation-id=promptOption]:visible"   # Workday's suggestion rows
-    )
+            count = 0
+    options = page.locator("[data-oea-row='1']")
+    if not count:
+        return options, []
     try:
         texts = [t.strip() for t in options.all_inner_texts()]
     except Exception:
@@ -2393,46 +2714,113 @@ def _visible_options(page, locator):
     return options, texts
 
 
-# Marks the option list nearest to the widget with data-oea-list="1" (and
-# clears the mark elsewhere). Returns true when one was found.
-NEAREST_LIST_JS = """
-(el) => {
-  for (const old of document.querySelectorAll('[data-oea-list]')) old.removeAttribute('data-oea-list');
+# Marks the suggestion rows the widget `el` can pick with data-oea-row="1"
+# (clearing older marks) and returns how many. From the dentsu Workday dump:
+# a result row is div[role=option] > promptLeafNode > (checkbox) +
+# div[data-automation-id=promptOption], so a plain scan saw every row twice
+# and the "+91" containment match refused "India (+91)" as ambiguous; a
+# chosen skill becomes a chip (selectedItem, role=option, inner promptOption)
+# in a listbox INSIDE the widget, which then read as the nearest list.
+ROWS_JS = """
+(el, listboxId) => {
+  const ROW = '[role=option], [data-automation-id=promptOption], [role=listbox] li';
+  const CHIP = '[data-automation-id=selectedItemList], [data-automation-id=selectedItem], '
+             + '[aria-label*="items selected" i], [aria-label*="press delete" i]';
+  const clear = (n) => {
+    for (const old of n.querySelectorAll('[data-oea-row]')) old.removeAttribute('data-oea-row');
+    for (const h of n.querySelectorAll('*')) if (h.shadowRoot) clear(h.shadowRoot);
+  };
+  clear(document);
   const rows = [];
   const walk = (n) => {
-    for (const e of n.querySelectorAll('[role=option], [data-automation-id=promptOption], [role=listbox] li')) {
-      if (e.getClientRects().length) rows.push(e);
+    for (const e of n.querySelectorAll(ROW)) {
+      if (!e.getClientRects().length || getComputedStyle(e).visibility === 'hidden') continue;
+      if (e.closest(CHIP)) continue;                                   // already chosen, not a choice
+      if (e.parentElement && e.parentElement.closest(ROW)) continue;   // the inner node of a row
+      rows.push(e);
     }
     for (const h of n.querySelectorAll('*')) if (h.shadowRoot) walk(h.shadowRoot);
   };
   walk(document);
-  if (!rows.length) return false;
-  // group rows by their list container
-  const lists = new Map();
-  for (const r of rows) {
-    const box = r.closest('[role=listbox]') || r.parentElement;
-    if (!lists.has(box)) lists.set(box, r.getBoundingClientRect());
+  let chosen = rows;
+  if (listboxId) {
+    const sel = '[id="' + listboxId.replace(/"/g, '\\\\"') + '"]';
+    chosen = rows.filter(r => r.closest(sel));
+  } else if (rows.length && el) {
+    // No aria link: several popups can be open at once (a Skills list left
+    // open next to Field of Study), so take the list NEAREST the widget -
+    // the one whose top sits closest below (or beside) the input.
+    const lists = new Map();
+    for (const r of rows) {
+      const box = r.closest('[role=listbox]') || r.parentElement;
+      if (!lists.has(box)) lists.set(box, []);
+      lists.get(box).push(r);
+    }
+    const me = el.getBoundingClientRect();
+    let best = null, bestDist = Infinity;
+    for (const members of lists.values()) {
+      const rect = members[0].getBoundingClientRect();
+      const dy = rect.top >= me.top ? rect.top - me.bottom : me.top - rect.bottom;
+      const dx = Math.max(0, rect.left - me.right, me.left - rect.right);
+      const dist = Math.max(0, dy) + dx;
+      if (dist < bestDist) { bestDist = dist; best = members; }
+    }
+    chosen = best || [];
   }
-  const me = el.getBoundingClientRect();
-  let best = null, bestDist = Infinity;
-  for (const [box, rect] of lists) {
-    const dy = rect.top >= me.top ? rect.top - me.bottom : me.top - rect.bottom;
-    const dx = Math.max(0, rect.left - me.right, me.left - rect.right);
-    const dist = Math.max(0, dy) + dx;
-    if (dist < bestDist) { bestDist = dist; best = box; }
+  for (const r of chosen) r.setAttribute('data-oea-row', '1');
+  return chosen.length;
+}
+"""
+
+# The values a chip-style widget already holds (Workday's selectedItem
+# pills next to the search box), read from the widget around the input.
+CHIPS_JS = """
+(el) => {
+  const CHIP = '[data-automation-id=selectedItem], [data-automation-id=selectedItemList] [role=option], '
+             + '[aria-label*="items selected" i] [role=option], [role=option][aria-label*="press delete" i]';
+  let n = el.parentElement;
+  for (let i = 0; i < 5 && n; i++, n = n.parentElement) {
+    if (n.querySelectorAll('input, select, textarea').length > 1) break;   // beyond this widget
+    const chips = Array.from(n.querySelectorAll(CHIP));
+    if (chips.length) return chips.map(c => (c.textContent || '').trim());
   }
-  if (!best) return false;
-  best.setAttribute('data-oea-list', '1');
-  return true;
+  return [];
 }
 """
 
 
-def _scroll_for_match(page, locator, value: str, options, texts: list[str]):
+# Would Enter in this box submit its form? (Implicit submission: a form with
+# a submit button, or with a single text field.) Workday has no <form>.
+ENTER_MAY_SUBMIT_JS = """
+(el) => {
+  const f = el.form;
+  if (!f) return false;
+  if (f.querySelector('button:not([type=button]):not([type=reset]), input[type=submit], input[type=image]')) return true;
+  return f.querySelectorAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio]):not([type=file])').length === 1;
+}
+"""
+
+
+def _enter_may_submit(locator) -> bool:
+    try:
+        return bool(locator.evaluate(ENTER_MAY_SUBMIT_JS))
+    except Exception:
+        return True   # unknown: do not risk a submission
+
+
+def _chips(locator) -> list[str]:
+    try:
+        return [str(t).strip() for t in (locator.evaluate(CHIPS_JS) or [])]
+    except Exception:
+        return []
+
+
+def _scroll_for_match(page, locator, value: str, options, texts: list[str],
+                      prefer: list[str] | None = None):
     """Virtual lists (Workday's Search Results) render a window of rows:
     scroll through them looking for the value. Returns (options, texts,
     index) with index -1 when nothing turned up."""
-    index = _choose_option(texts, value)
+    index = _choose_option(texts, value, prefer)
     seen_last = ""
     for _ in range(6):
         if index >= 0 or not texts:
@@ -2443,14 +2831,15 @@ def _scroll_for_match(page, locator, value: str, options, texts: list[str]):
         except Exception:
             break
         options, texts = _visible_options(page, locator)
-        if texts and texts[-1] == seen_last:
-            break  # the end of the list
+        index = _choose_option(texts, value, prefer)   # on THESE rows, before any early exit
+        if index >= 0 or (texts and texts[-1] == seen_last):
+            break  # found, or the end of the list
         seen_last = texts[-1] if texts else ""
-        index = _choose_option(texts, value)
     return options, texts, index
 
 
-def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess) -> None:
+def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess,
+                  prefer: list[str] | None = None) -> None:
     """Open a dropdown BUTTON and click the option for `value`. No match:
     close it and say which options there are, so the model or the user can
     pick one; nothing is chosen by guesswork."""
@@ -2458,15 +2847,17 @@ def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess) -> N
         page.keyboard.press("Escape")  # close any popup left open by an earlier field
     except Exception:
         pass
-    locator.click(timeout=5000)
+    browser.click(locator, timeout=5000)
     # Workday fills its lists lazily: "Select One" alone means not loaded yet.
     options, texts, index = None, [], -1
     for _ in range(8):
         page.wait_for_timeout(400)
         options, texts = _visible_options(page, locator)
-        index = _choose_option(texts, value)
+        index = _choose_option(texts, value, prefer)
         if index >= 0 or len([t for t in texts if t]) > 1:
             break
+    if index < 0 and options is not None:
+        options, texts, index = _scroll_for_match(page, locator, value, options, texts, prefer)
     if index < 0:
         try:
             page.keyboard.press("Escape")
@@ -2474,11 +2865,12 @@ def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess) -> N
             pass
         shown = ", ".join(t for t in texts[:15] if t) or "(no options appeared)"
         raise ValueError(f"'{value}' matches none of the dropdown's options; pick one of: {shown}")
-    options.nth(index).click(timeout=5000)
+    browser.click(options.nth(index), timeout=5000)
     sess.log(f"{prefix}Selected '{texts[index]}' for {label}")
 
 
-def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess) -> None:
+def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
+                     prefer: list[str] | None = None) -> str:
     """Pick `value` in a custom dropdown (react-select on Greenhouse, the
     SuccessFactors widgets): typed text alone leaves the field UNSELECTED and
     red on validation; the option itself must be committed.
@@ -2500,12 +2892,30 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess) -
     locator.fill(value, timeout=10000)
     page.wait_for_timeout(600)  # let the option list filter
     visible, shown = _visible_options(page, locator)
-    index = _choose_option(shown, value)
+    index = _choose_option(shown, value, prefer)
+    decisive = resolver.plain(prefer[0]) if prefer else ""
+    if decisive and (index < 0 or decisive not in resolver.plain(shown[index])):
+        # The list filters on what was typed, so the right-state entry may
+        # only appear under the city's other name: retype and look again.
+        for alias in resolver.city_aliases(value):
+            locator.fill(alias, timeout=10000)
+            page.wait_for_timeout(600)
+            alt_visible, alt_shown = _visible_options(page, locator)
+            alt_index = _choose_option(alt_shown, alias, prefer)
+            if alt_index >= 0 and decisive in resolver.plain(alt_shown[alt_index]):
+                visible, shown, index = alt_visible, alt_shown, alt_index
+                break
+        else:
+            if index >= 0:
+                locator.fill(value, timeout=10000)   # back to the first list
+                page.wait_for_timeout(600)
+                visible, shown = _visible_options(page, locator)
+                index = _choose_option(shown, value, prefer)
     if index >= 0:
         try:
             visible.nth(index).click(timeout=2500)
             sess.log(f"{prefix}Selected '{shown[index]}' for {label} (dropdown)")
-            return
+            return "picked"
         except Exception:
             pass
     if len(shown) > 1:
@@ -2516,6 +2926,7 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess) -
     # One option or an invisible list: the widget highlights it; Enter takes it.
     locator.press("Enter")
     sess.log(f"{prefix}Selected '{value}' for {label} (dropdown, keyboard)")
+    return "picked"
 
 
 def _is_affirmative(value: str) -> bool:
@@ -2548,7 +2959,11 @@ def _option_agrees(field: dict[str, Any] | None, answer: str) -> bool:
 
 
 def _short(exc: Exception) -> str:
-    return str(exc).splitlines()[0][:200]
+    lines = str(exc).splitlines()
+    head = lines[0][:200] if lines else ""
+    # Playwright's call log names what sat on top of the target.
+    blocker = next((ln.strip() for ln in lines if "intercepts pointer events" in ln), "")
+    return f"{head} [{blocker[:120]}]" if blocker else head
 
 
 def _needs_user(action: ApplyAction, field: dict[str, Any] | None, label: str) -> bool:
@@ -2587,6 +3002,72 @@ SECTION_ADD_RE = re.compile(
 )
 
 
+DUMP_DIR = Path(__file__).resolve().parents[2] / "outputs" / "dom"
+# Serialises the page including open shadow roots (as declarative
+# <template shadowrootmode>), live input values, and which element has focus.
+DUMP_HTML_JS = """() => {
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const attr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  const active = (() => {
+    let el = document.activeElement;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+    return el;
+  })();
+  const ser = (node) => {
+    if (node.nodeType === 3) return esc(node.textContent);
+    if (node.nodeType !== 1) return '';
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'script' || tag === 'noscript') return '';
+    let s = '<' + tag;
+    for (const a of node.attributes) s += ' ' + a.name + '="' + attr(a.value) + '"';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') s += ' data-live-value="' + attr(node.value == null ? '' : node.value) + '"';
+    if (tag === 'input' && (node.type === 'checkbox' || node.type === 'radio')) s += ' data-live-checked="' + node.checked + '"';
+    if (node === active) s += ' data-live-focused="1"';
+    s += '>';
+    if (node.shadowRoot) s += '<template shadowrootmode="open">' + Array.from(node.shadowRoot.childNodes).map(ser).join('') + '</template>';
+    if (tag !== 'style' && tag !== 'svg') s += Array.from(node.childNodes).map(ser).join('');
+    return s + '</' + tag + '>';
+  };
+  return '<!-- ' + location.href + ' -->\\n' + ser(document.documentElement);
+}"""
+
+
+def _dump_page(page, sess: ApplySession, delay: int = 0) -> None:
+    """The 'dump [N]' chat command: after N seconds (time to switch back to
+    the form and open the widget), save the page as it is right now - DOM
+    with shadow roots and live values, the field snapshot, a screenshot -
+    under outputs/dom/ so a misbehaving widget can be inspected offline."""
+    if delay > 0:
+        sess.log(f"Dumping the page in {delay}s - switch back to the form and open the widget.")
+        page.wait_for_timeout(min(delay, 60) * 1000)
+    out = DUMP_DIR / f"{sess.stamp}_{time.strftime('%Y%m%d-%H%M%S')}"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "page.html").write_text(page.evaluate(DUMP_HTML_JS), encoding="utf-8")
+    (out / "fields.json").write_text(json.dumps(browser.snapshot(page), indent=1), encoding="utf-8")
+    try:
+        page.screenshot(path=str(out / "screenshot.png"))
+    except Exception:
+        pass
+    sess.log(f"Page dumped to {out} (page.html, fields.json, screenshot.png). Still waiting for your answer.")
+
+
+def _links_on_page(fields: list[dict[str, Any]]) -> set[str]:
+    """Profile links the page already holds or asks for by name (a "LinkedIn
+    URL" box), so the Websites/Portfolio entries take the remaining ones."""
+    data = profile.load_profile()
+    taken: set[str] = set()
+    for f in fields:
+        label = str(f.get("label") or "")
+        value = str(f.get("value") or "").strip().lower().rstrip("/")
+        if value:
+            taken.add(value)
+        for key in ("linkedin", "github", "portfolio"):
+            link = str(data.get(key) or "").strip().lower().rstrip("/")
+            if link and re.search(rf"\b{key}\b", label, re.IGNORECASE) and f.get("tag") in ("input", "textarea"):
+                taken.add(link)
+    return taken
+
+
 def _open_profile_sections(page, fields, handled, sess) -> bool:
     """Languages and Websites entries come from the profile, so the script
     itself clicks Add / Add Another until the page holds one entry per
@@ -2610,11 +3091,13 @@ def _open_profile_sections(page, fields, handled, sess) -> bool:
             )
             what = "Languages"
         elif resolver.WEBSITES_SECTION_RE.search(scope):
-            needed = len(resolver.profile_links(data))
+            taken = _links_on_page(fields)
+            needed = len([l for l in resolver.profile_links(data)
+                          if l.strip().lower().rstrip("/") not in taken])
             present = sum(
                 1 for f in fields
                 if resolver.WEBSITES_SECTION_RE.search(str(f.get("section") or ""))
-                and resolver._URL_LABEL_RE.search(str(f.get("label") or ""))
+                and resolver.generic_url_field(f)
                 and f.get("tag") in ("input", "textarea")
             )
             what = "Websites"
@@ -2626,7 +3109,7 @@ def _open_profile_sections(page, fields, handled, sess) -> bool:
             handled.add(key)  # all entries are there; the button is done
             continue
         try:
-            browser.locate(page, field["id"]).click(timeout=10000)
+            browser.click(browser.locate(page, field["id"], str(field.get("elid") or "")), timeout=10000)
             sess.log(f"Clicked {_field_label(field)} ({what}: entry {present + 1} of {needed})")
             page.wait_for_timeout(800)
             return True

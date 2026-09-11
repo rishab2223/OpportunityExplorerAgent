@@ -120,7 +120,8 @@ _FILLABLE_TYPES = ("", "text", "email", "tel", "url", "number", "search")
 REPEATING_SECTION_RE = re.compile(
     r"\b(work|professional|employment)\s+(experience|history)\b|\beducation\b"
     r"|\blanguages?\b|\bcertifications?\b|\bprevious employment\b"
-    r"|\bwebsites?\b|\bsocial (network|media) (urls?|links?)\b|\bonline profiles?\b",
+    r"|\bwebsites?\b|\bsocial (network|media) (urls?|links?)\b|\bonline profiles?\b"
+    r"|\bportfolio\b|\bweb ?links?\b",
     re.IGNORECASE,
 )
 # Sections the PROFILE can fill entry by entry, no model needed: the k-th
@@ -128,13 +129,26 @@ REPEATING_SECTION_RE = re.compile(
 # link. (Work Experience and Education come from the resume via the model.)
 LANGUAGES_SECTION_RE = re.compile(r"\blanguages?\b", re.IGNORECASE)
 WEBSITES_SECTION_RE = re.compile(
-    r"\bwebsites?\b|\bsocial (network|media) (urls?|links?)\b|\bonline profiles?\b", re.IGNORECASE
+    r"\bwebsites?\b|\bsocial (network|media) (urls?|links?)\b|\bonline profiles?\b"
+    r"|\bportfolio\b|\bweb ?links?\b",   # Workday: "Portfolio (Optional) - Add any relevant websites"
+    re.IGNORECASE,
 )
 _LEVEL_LABEL_RE = re.compile(r"\b(overall|proficiency|level|fluency|reading|writing|speaking)\b", re.IGNORECASE)
 _URL_LABEL_RE = re.compile(r"\b(url|website|link|address)\b", re.IGNORECASE)
+_NAMED_SITE_RE = re.compile(r"\b(linkedin|github|twitter|x\.com|facebook|instagram|stack ?overflow)\b", re.IGNORECASE)
+
+
+def named_link_field(field: dict[str, Any]) -> bool:
+    """A box that names the site it wants ("Please enter your LinkedIn URL").
+    Workday shows it under "Social Network URLs", a heading the Websites rule
+    matches - but it is that site's box, not the k-th entry of a list."""
+    label = str(field.get("label") or "")
+    return bool(_URL_LABEL_RE.search(label) and _NAMED_SITE_RE.search(label))
 
 
 def in_repeating_section(field: dict[str, Any]) -> bool:
+    if named_link_field(field):
+        return False
     return bool(REPEATING_SECTION_RE.search(str(field.get("section") or "")))
 
 
@@ -173,10 +187,22 @@ def entry_value(field: dict[str, Any], data: dict[str, Any]) -> str | None:
         if _LEVEL_LABEL_RE.search(label):
             return level or None
         return None
-    if WEBSITES_SECTION_RE.search(section) and _URL_LABEL_RE.search(label):
-        links = profile_links(data)
+    if WEBSITES_SECTION_RE.search(section) and generic_url_field(field):
+        # A link the page already asks for by name (its own "LinkedIn URL"
+        # box) is not repeated under Websites/Portfolio: GitHub goes there.
+        taken = {t.strip().lower().rstrip("/") for t in (field.get("taken_links") or [])}
+        links = [l for l in profile_links(data) if l.strip().lower().rstrip("/") not in taken]
         return links[ordinal] if ordinal < len(links) else None
     return None
+
+
+def generic_url_field(field: dict[str, Any]) -> bool:
+    """A Websites/Portfolio entry's URL box - not a box that names one site
+    ("Please enter your LinkedIn URL")."""
+    label = str(field.get("label") or "")
+    return bool(_URL_LABEL_RE.search(label)) and not named_link_field(field)
+
+
 _DIAL_CODE_RE = re.compile(r"\+\d{1,3}\b")
 # A dropdown showing "Select an option" holds nothing; treating that as a
 # value left LinkedIn's Country select untouched.
@@ -334,6 +360,31 @@ def resolve(field: dict[str, Any], job: dict[str, Any] | None = None) -> tuple[s
             return None
         return value, "saved"
     return None
+
+
+# Renamed cities: a form's list may carry either name, and searching one
+# never shows the other ("Gurgaon" found only Gurgaon in Bihar; the Haryana
+# city is listed as Gurugram).
+_CITY_ALIASES = {
+    "gurgaon": "gurugram", "bangalore": "bengaluru", "bombay": "mumbai", "madras": "chennai",
+    "calcutta": "kolkata", "poona": "pune", "trivandrum": "thiruvananthapuram",
+    "cochin": "kochi", "mysore": "mysuru", "baroda": "vadodara", "allahabad": "prayagraj",
+    "belgaum": "belagavi", "mangalore": "mangaluru", "simla": "shimla", "cawnpore": "kanpur",
+}
+_CITY_ALIASES.update({v: k for k, v in list(_CITY_ALIASES.items())})
+
+
+def city_aliases(value: str) -> list[str]:
+    """Other spellings of the city that starts `value` ("Gurgaon, India" ->
+    ["Gurugram, India"]); empty for anything not in the table."""
+    text = (value or "").strip()
+    if not text:
+        return []
+    head = re.split(r"[,\s]", text, 1)[0]
+    alias = _CITY_ALIASES.get(head.lower())
+    if not alias:
+        return []
+    return [alias.title() + text[len(head):]]
 
 
 def plain(text: str) -> str:

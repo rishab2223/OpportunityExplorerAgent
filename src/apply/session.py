@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import re
 import threading
 import uuid
 from queue import Empty, Queue
 from typing import Any
 
 TERMINAL_STATUSES = ("applied", "failed", "aborted", "closed")
+# "dump" / "dump 10": save the page for offline inspection and keep waiting.
+# Not an answer, so it never reaches a field or the answer bank.
+DUMP_COMMAND_RE = re.compile(r"^(?:dump|dump page|dump dom|inspect)(?:\s+(\d{1,2}))?$", re.IGNORECASE)
 
 
 class SessionBusy(Exception):
@@ -48,6 +52,9 @@ class ApplySession:
         self.on_outcome = None
         # Called roughly once a second while waiting for the user (see _wait).
         self.idle_tick = None
+        # Called with a delay in seconds when the user types "dump [N]" at a
+        # prompt; the worker saves the live page under outputs/dom/.
+        self.on_dump = None
 
     def emit(self, event_type: str, text: str, **extra: Any) -> None:
         # extra may itself carry a "kind" key (choice events), so the event
@@ -102,6 +109,14 @@ class ApplySession:
                     except Exception:
                         pass
                 continue
+            dump = DUMP_COMMAND_RE.match(answer.strip())
+            if dump and self.on_dump is not None:
+                self.emit("answer", answer.strip())
+                try:
+                    self.on_dump(int(dump.group(1) or 0))
+                except Exception as exc:
+                    self.log(f"Page dump failed: {str(exc).splitlines()[0][:200]}")
+                continue  # the prompt is still open
             break
         self.pending_question = ""
         self.status = "running"

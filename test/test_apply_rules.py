@@ -636,7 +636,7 @@ class AccentOptionTests(unittest.TestCase):
         from src.apply.worker import _choose_option
 
         self.assertEqual(_choose_option(["Select One", "Bihār", "Haryāna"], "Haryana"), 2)
-        self.assertEqual(_choose_option(["Bachelors", "Masters"], "Bachelor's Degree"), -1)
+        self.assertEqual(_choose_option(["Bachelors", "Masters"], "Bachelor's Degree"), 0)   # degree family
 
 
 class SectionAddFallbackTests(TempDbTestCase):
@@ -797,3 +797,239 @@ class NumberedEntryTests(unittest.TestCase):
 
         self.assertTrue(_is_section_add({"tag": "button", "text": "Add Another", "section": "", "group": "Role Description"}))
         self.assertFalse(_is_section_add({"tag": "button", "text": "Add", "section": "", "group": ""}))
+
+
+class TieBreakerTests(unittest.TestCase):
+    def test_profile_state_picks_between_same_start_options(self) -> None:
+        from src.apply.worker import _choose_option
+
+        opts = ["Gurgaon, Bihar, India", "Gurgaon, Haryana, India", "Gurugram, Haryana, India"]
+        self.assertEqual(_choose_option(opts, "Gurgaon"), 0)                       # no context: first
+        self.assertEqual(_choose_option(opts, "Gurgaon", ["Haryana", "India"]), 1)
+        self.assertEqual(_choose_option(opts, "Gurgaon", ["Kerala"]), 0)          # nothing to prefer: first
+        # Containment with several hits stays ambiguous unless a preference decides.
+        self.assertEqual(_choose_option(["A Haryana B", "C Haryana D"], "Haryana"), -1)
+        self.assertEqual(_choose_option(["A Haryana B", "C Haryana D"], "Haryana", ["C"]), 1)
+
+
+class PickedNotRefilledTests(TempDbTestCase):
+    def test_dropdown_picks_stay_out_of_the_refill_map(self) -> None:
+        from unittest import mock
+
+        from src.apply import worker
+
+        combo = {"id": 1, "tag": "input", "type": "text", "role": "combobox", "label": "Country*",
+                 "value": "", "group": "", "name": ""}
+        written, handled = {}, set()
+
+        class Sess:
+            def log(self, t):
+                pass
+
+        with mock.patch.object(worker, "_apply_value", return_value="picked"), \
+                mock.patch("src.apply.resolver.resolve", return_value=("India", "profile")):
+            worker._sweep(None, [combo], handled, {}, {}, "", Sess(), written=written)
+        self.assertEqual(written, {})   # the box is empty after a pick by design
+
+
+class CityAliasTests(unittest.TestCase):
+    def test_renamed_city_in_the_right_state_wins(self) -> None:
+        from src.apply import resolver
+        from src.apply.worker import _choose_option
+
+        self.assertEqual(resolver.city_aliases("Gurgaon, India"), ["Gurugram, India"])
+        self.assertEqual(resolver.city_aliases("Bengaluru"), ["Bangalore"])
+        self.assertEqual(resolver.city_aliases("Pune, India"), ["Poona, India"])
+        self.assertEqual(resolver.city_aliases("Noida"), [])
+        opts = ["Gurgaon, Bihar, India", "Gurugram, Haryana, India"]
+        self.assertEqual(_choose_option(opts, "Gurgaon", ["Haryana", "India"]), 1)
+        self.assertEqual(_choose_option(opts, "Gurgaon"), 0)   # no state to go by: as typed
+        self.assertEqual(_choose_option(["Gurugram, Haryana, India"], "Gurgaon", ["Haryana"]), 0)
+
+
+class ApplyChoiceNoiseTests(unittest.TestCase):
+    def test_privacy_notice_link_is_not_an_apply_option(self) -> None:
+        from src.apply.worker import _apply_choices
+
+        fields = [
+            {"id": 1, "tag": "a", "text": "Apply"},
+            {"id": 2, "tag": "a", "text": "Please read our Privacy Notice before you apply."},
+        ]
+        self.assertEqual([c["id"] for c in _apply_choices(fields)], [1])
+
+
+class ClickHelperTests(unittest.TestCase):
+    def test_blocked_click_falls_back_to_a_direct_one(self) -> None:
+        from src.apply import browser
+
+        class Loc:
+            def __init__(self):
+                self.direct = False
+
+            def click(self, timeout=0):
+                raise Exception("Locator.click: Timeout 5000ms exceeded.\n  - <div class=\"overlay\"> intercepts pointer events")
+
+            def evaluate(self, js, timeout=0):
+                self.direct = True
+
+        loc = Loc()
+        self.assertEqual(browser.click(loc), "clicked (direct)")
+        self.assertTrue(loc.direct)
+
+        class Missing(Loc):
+            def click(self, timeout=0):
+                raise Exception("Locator.click: Element is not attached to the DOM")
+
+        with self.assertRaises(Exception):
+            browser.click(Missing())
+
+
+class DegreeStemTests(unittest.TestCase):
+    def test_bachelors_degree_finds_the_bachelor_family(self) -> None:
+        from src.apply.worker import _choose_option
+
+        opts = ["Select One", "High School", "Bachelors", "Masters"]
+        self.assertEqual(_choose_option(opts, "Bachelor's Degree"), 2)
+        opts2 = ["Select One", "Bachelor of Technology", "Master of Science"]
+        self.assertEqual(_choose_option(opts2, "Bachelors"), 1)
+        self.assertEqual(_choose_option(["Select One", "Masters"], "Bachelor's Degree"), -1)
+
+
+class LinksOnPageTests(TempDbTestCase):
+    def test_named_link_boxes_take_their_link_out_of_the_pool(self) -> None:
+        from unittest import mock
+
+        from src.apply import resolver, worker
+
+        data = {"linkedin": "https://linkedin.com/in/test", "github": "https://github.com/test"}
+        fields = [
+            {"tag": "input", "type": "text", "label": "Please enter your LinkedIn URL", "value": "", "section": "Social Network URLs"},
+            {"tag": "input", "type": "text", "label": "URL*", "value": "", "section": "Portfolio (Optional) 1", "ordinal": 0},
+        ]
+        with mock.patch("src.apply.profile.load_profile", return_value=data):
+            taken = worker._links_on_page(fields)
+            self.assertIn("https://linkedin.com/in/test", taken)
+            fields[0]["taken_links"] = fields[1]["taken_links"] = sorted(taken)
+            self.assertEqual(resolver.entry_value(fields[1], data), "https://github.com/test")
+            # The named box is not entry 0 of the list: it never gets GitHub.
+            self.assertIsNone(resolver.entry_value(fields[0], data))
+        self.assertTrue(resolver.generic_url_field({"label": "URL*"}))
+        self.assertFalse(resolver.generic_url_field({"label": "Please enter your LinkedIn URL"}))
+
+
+class DumpCommandTests(TempDbTestCase):
+    def test_dump_saves_the_page_and_keeps_waiting(self) -> None:
+        import threading
+
+        from src.apply.session import ApplySession
+
+        sess = ApplySession("stamp", "job", "label")
+        dumps: list[int] = []
+        sess.on_dump = dumps.append
+        sess.answer("dump")
+        sess.answer("dump 10")
+        sess.answer("Bengaluru")
+        result: list[str] = []
+        worker = threading.Thread(target=lambda: result.append(sess.ask("City?")))
+        worker.start()
+        worker.join(timeout=5)
+        self.assertEqual(result, ["Bengaluru"])   # the dumps were not answers
+        self.assertEqual(dumps, [0, 10])
+
+    def test_dump_is_plain_text_when_nothing_handles_it(self) -> None:
+        import threading
+
+        from src.apply.session import ApplySession
+
+        sess = ApplySession("stamp", "job", "label")
+        sess.answer("dump")
+        result: list[str] = []
+        worker = threading.Thread(target=lambda: result.append(sess.ask("City?")))
+        worker.start()
+        worker.join(timeout=5)
+        self.assertEqual(result, ["dump"])
+
+
+class DuplicateRowTests(TempDbTestCase):
+    def test_a_row_read_twice_is_one_choice(self) -> None:
+        # Workday: the row and its inner text node both read as options, so
+        # "+91" saw two "India (+91)" candidates and refused as ambiguous.
+        from src.apply import worker
+
+        self.assertEqual(worker._choose_option(["India (+91)", "India (+91)"], "+91"), 0)
+        self.assertEqual(worker._choose_option(["Afghanistan (+93)", "Afghanistan (+93)", "India (+91)", "India (+91)"], "+91"), 2)
+        # Two DIFFERENT rows containing the value stay ambiguous.
+        self.assertEqual(worker._choose_option(["Gurgaon, Bihar", "Gurgaon, Haryana"], "Gurgaon,"), -1)
+
+
+class SkillsBoxTests(TempDbTestCase):
+    def test_skills_box_detection(self) -> None:
+        from src.apply import worker
+
+        self.assertTrue(worker._is_skills_box({"tag": "input", "type": "", "label": "Type to Add Skills", "section": "Skills (Optional)"}))
+        self.assertTrue(worker._is_skills_box({"tag": "textarea", "type": "", "label": "Skills", "section": ""}))
+        self.assertTrue(worker._is_skills_box({"tag": "input", "type": "text", "label": "Type to add", "section": "Skills"}))
+        self.assertFalse(worker._is_skills_box({"tag": "input", "type": "text", "label": "Job Title*", "section": "Skills"}))
+        self.assertFalse(worker._is_skills_box({"tag": "button", "type": "", "label": "Skills", "section": ""}))
+        self.assertFalse(worker._is_skills_box({"tag": "input", "type": "file", "label": "Skills matrix", "section": ""}))
+
+    def test_profile_skills_split(self) -> None:
+        from src.apply import worker
+
+        self.assertEqual(worker._profile_skills({"skills": "JavaScript, Node.js; Python\nC++, javascript"}),
+                         ["JavaScript", "Node.js", "Python", "C++"])
+        self.assertEqual(worker._profile_skills({}), [])
+
+
+class AliasOptionTests(TempDbTestCase):
+    def test_an_options_own_alias_beats_a_prefix_match(self) -> None:
+        from src.apply import worker
+
+        rows = ["AWS VPN", "Amazon Web Services (AWS)", "AWS Cloud9", "AWS SDK"]
+        self.assertEqual(worker._choose_option(rows, "AWS"), 1)
+        self.assertEqual(worker._choose_option(rows, "AWS SDK"), 3)       # exact still first
+        self.assertEqual(worker._choose_option(rows, "AWS Cloud9"), 2)
+        self.assertEqual(worker._choose_option(["India (+91)", "Indonesia (+62)"], "India"), 0)
+
+
+class ProposalTests(TempDbTestCase):
+    def test_the_value_a_question_proposes(self) -> None:
+        from src.apply import worker
+
+        q = ("What desired annual salary should I enter here (the field rejected '30 lpa' "
+             "- should it be a plain number like 3000000 INR)?")
+        self.assertEqual(worker._proposal_in_question(q), "3000000 INR")
+        self.assertEqual(worker._proposal_in_question("Should I set it to India (+91)?"), "India (+91)")
+        self.assertEqual(worker._proposal_in_question("What should I enter for 'City'?"), "")
+
+    def test_auto_pick_matches_the_new_pill(self) -> None:
+        from src.apply import worker
+
+        self.assertEqual(worker._auto_pick(["LinkedIn corporate page"], "Linkedin", "Linkedin"), "LinkedIn corporate page")
+        self.assertEqual(worker._auto_pick(["India (+91)"], "+91", "India"), "India (+91)")
+        self.assertEqual(worker._auto_pick(["Job Fair"], "Linkedin", "Linkedin"), "")
+        self.assertEqual(worker._auto_pick([], "Linkedin", "Linkedin"), "")
+
+    def test_number_box_takes_a_salary_as_digits(self) -> None:
+        from src.apply import salary
+
+        self.assertEqual(salary.parse_annual_inr("30 lpa"), 3000000)
+        self.assertIsNone(salary.parse_annual_inr("yes"))
+
+
+class EntryLocationTests(TempDbTestCase):
+    def test_current_employers_entries_get_the_profile_location(self) -> None:
+        from src.apply import worker
+
+        data = {"current_company": "Cadence Design Systems", "current_company_location": "Noida"}
+        fields = [
+            {"label": "Company*", "section": "Work History (Optional) 2", "value": "Cadence Design Systems"},
+            {"label": "Location", "section": "Work History (Optional) 2", "value": ""},
+            {"label": "Company*", "section": "Work History (Optional) 1", "value": "Other Corp"},
+            {"label": "Location", "section": "Work History (Optional) 1", "value": ""},
+            {"label": "Location", "section": "Education 1", "value": ""},
+        ]
+        self.assertEqual(worker._entry_location(fields[1], fields, data), "Noida")
+        self.assertIsNone(worker._entry_location(fields[3], fields, data))   # another employer
+        self.assertIsNone(worker._entry_location(fields[4], fields, data))   # not a job entry
+        self.assertIsNone(worker._entry_location(fields[1], fields, {"current_company": "Cadence Design Systems"}))

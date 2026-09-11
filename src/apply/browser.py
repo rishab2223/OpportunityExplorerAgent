@@ -93,8 +93,51 @@ SNAPSHOT_JS = """
       const wrapper = el.closest('label');
       if (wrapper) label = wrapper.innerText;
     }
+    if (!label && el.getAttribute('aria-labelledby')) {
+      const root = el.getRootNode();
+      label = el.getAttribute('aria-labelledby').split(/\\s+/).map(id => {
+        const n = root.getElementById ? root.getElementById(id) : document.getElementById(id);
+        return n ? (n.innerText || '') : '';
+      }).join(' ').trim();
+    }
     if (!label) {
       label = el.getAttribute('placeholder') || el.getAttribute('name') || el.innerText || '';
+    }
+    const typeable = el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' ||
+      (el.tagName === 'INPUT' && !/^(checkbox|radio|file|submit|button|image|reset)$/.test(type));
+    if (!label && typeable) {
+      // Workday questionnaires: the question is a plain text block above
+      // the box, tied to it by nothing - the nearest short text before the
+      // control within its enclosing blocks names it (it was "#11"). Boxes
+      // only: a bare checkbox (the SMS opt-in) would take the heading of
+      // the box above it.
+      let box = el.parentElement;
+      for (let depth = 0; box && depth < 5 && !label; depth++, box = box.parentElement) {
+        let best = '';
+        for (const h of box.querySelectorAll('label, legend, p, span, div, h1, h2, h3, h4, h5, h6')) {
+          if (h === el || h.contains(el)) continue;
+          if (h.querySelector('input, select, textarea, button')) continue;
+          if (!(h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+          const t = (h.innerText || '').trim();
+          if (t.length >= 3 && t.length <= 200) best = t;
+        }
+        label = best;
+      }
+    }
+    // A chip-style prompt (Workday's phone code, skills, "how did you hear")
+    // keeps its choice as pills beside an EMPTY search box: the pills are
+    // the value, or every pass would fill the box again.
+    let value = (el.value || '').toString();
+    if (!value && el.tagName === 'INPUT') {
+      let n = el.parentElement;
+      for (let d = 0; n && d < 5; d++, n = n.parentElement) {
+        if (n.querySelectorAll('input, select, textarea').length > 1) break;   // beyond this widget
+        const chips = n.querySelectorAll('[data-automation-id=selectedItem], [data-automation-id=selectedItemList] [role=option]');
+        if (chips.length) {
+          value = Array.from(chips).map(c => (c.innerText || '').trim()).filter(Boolean).join('; ');
+          break;
+        }
+      }
     }
     // Stable identity across snapshots: ids are renumbered as the DOM changes,
     // so key unlabelled controls on a short ancestor path instead.
@@ -199,7 +242,7 @@ SNAPSHOT_JS = """
       name: el.getAttribute('name') || '',
       elid: el.id || '',  // Greenhouse names its file inputs by id ("resume", "cover_letter")
       required: el.required === true || el.getAttribute('aria-required') === 'true',
-      value: (el.value || '').toString().slice(0, 200),
+      value: value.slice(0, 200),
       text: (el.innerText || '').trim().slice(0, 80),
     };
     if (el.tagName.toLowerCase() === 'select') {
@@ -402,5 +445,32 @@ def alerts(page) -> str:
         return ""
 
 
-def locate(page, field_id: int):
-    return page.locator(f'[data-oea-id="{field_id}"]').first
+def click(locator, timeout: int = 10000) -> str:
+    """Click, and when the real click cannot land (an overlay or a stale
+    popup intercepts pointer events - one dentsu Workday page blocked Accept
+    Cookies, Prefix, the phone code and the skills box alike), dispatch the
+    click on the element itself. Returns 'clicked' or 'clicked (direct)'."""
+    try:
+        locator.click(timeout=timeout)
+        return "clicked"
+    except Exception as exc:
+        message = str(exc)
+        blocked = "intercepts pointer events" in message or "Timeout" in message
+        if not blocked:
+            raise
+        try:
+            locator.evaluate("el => el.click()", timeout=3000)
+        except Exception:
+            raise exc
+        return "clicked (direct)"
+
+
+def locate(page, field_id: int, elid: str = ""):
+    """The field's element. Workday re-renders a widget's input when its
+    list opens or closes (the search box is a fresh node), which drops the
+    snapshot's marker - the element's own id, when it has one, finds the
+    replacement."""
+    selector = f'[data-oea-id="{field_id}"]'
+    if elid:
+        selector += f', [id="{elid.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34))}"]'
+    return page.locator(selector).first
