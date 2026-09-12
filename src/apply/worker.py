@@ -598,6 +598,13 @@ def run_session(
                         noop_streak += 1
                         continue
                     advance_label = _field_label(advance_field)
+                    # Before telling the candidate the step is ready, check on
+                    # the LIVE page that what was written is still there. A
+                    # form still hydrating accepts a value, passes its
+                    # read-back, and then renders itself empty again.
+                    if _repair_written(page, fields, written, sess):
+                        last_llm_sig = ""
+                        continue
                     # Contact details are checked on every step, whoever wrote
                     # them: an ATS that parses the resume can replace them.
                     contact_problems = _contact_warnings(fields)
@@ -1654,6 +1661,61 @@ def _sweep(
         except Exception as exc:
             sess.log(f"Could not fill {_brief(label, LOG_LABEL)}: {_short(exc)}")
     return filled
+
+
+def _retype(page, field: dict[str, Any], value: str) -> bool:
+    """Put a value back with real keystrokes, and say whether it stayed.
+
+    fill() sets the value and fires one input event, which a framework can
+    accept and then discard. Typing produces a keydown, keypress and input
+    per character, which is what a controlled component is listening for.
+    """
+    try:
+        locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
+        locator.focus(timeout=3000)
+        locator.press("Control+A")
+        locator.press_sequentially(value, delay=15, timeout=15000)
+        try:
+            locator.press("Tab", timeout=2000)
+        except Exception:
+            pass
+        page.wait_for_timeout(120)
+        return _holds(locator, value)
+    except Exception:
+        return False
+
+
+def _repair_written(page, fields, written, sess) -> int:
+    """Put back anything the sweep wrote that the page has since emptied.
+
+    A Next.js form that was still hydrating when the sweep filled it renders
+    again from its own empty state and wipes what was typed. The value passed
+    its read-back at the time, so the transcript said "Filled" for three boxes
+    that the candidate then saw empty in the browser. Checked here, on the
+    live page, immediately before the step is declared ready.
+    """
+    if not written:
+        return 0
+    fixed = 0
+    for field in fields:
+        key = _field_key(field, _field_label(field))
+        value = written.get(key)
+        if not value or field.get("tag") not in ("input", "textarea"):
+            continue
+        if (field.get("type") or "").lower() in ("checkbox", "radio", "file"):
+            continue
+        if _live_value(page, field):
+            continue                      # still holding it
+        label = _field_label(field)
+        if _retype(page, field, value):
+            sess.log(f"[again] {_brief(label, LOG_LABEL)} had been emptied by the page; put it back.")
+            fixed += 1
+        else:
+            sess.log(
+                f"CHECK {_brief(label, LOG_LABEL)}: the page keeps clearing it. "
+                f"Please type {_brief(value, LOG_VALUE)} in yourself."
+            )
+    return fixed
 
 
 def _ask_watching(sess, holder, context, page, handled, fields, question: str,

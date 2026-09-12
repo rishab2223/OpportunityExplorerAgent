@@ -614,6 +614,64 @@ class ListboxButtonTests(unittest.TestCase):
         self.assertEqual([f["label"] for f in _unresolved_fields(fields, set())], ["Country*"])
 
 
+class RepairWrittenTests(TempDbTestCase):
+    """A form still hydrating accepts a value, passes its read-back, and then
+    renders itself empty again. Three boxes were logged as filled that the
+    candidate saw blank in the browser."""
+
+    FIELDS = [
+        {"id": 1, "tag": "input", "type": "", "label": "First Name*", "value": "", "elid": "fn"},
+        {"id": 2, "tag": "input", "type": "", "label": "Last Name*", "value": "", "elid": "ln"},
+        {"id": 3, "tag": "button", "label": "Next", "value": ""},
+    ]
+
+    def _run(self, live, typed):
+        from src.apply import worker
+
+        logs = []
+        sess = type("S", (), {"log": lambda self, t: logs.append(t)})()
+        written = {worker._field_key(self.FIELDS[0], "First Name*"): "Rishab",
+                   worker._field_key(self.FIELDS[1], "Last Name*"): "Arora"}
+        with unittest.mock.patch.object(worker, "_live_value", lambda p, f: live.get(f["id"], "")),              unittest.mock.patch.object(worker, "_retype",
+                                        lambda p, f, v: typed.append((f["id"], v)) or True):
+            fixed = worker._repair_written(None, self.FIELDS, written, sess)
+        return fixed, logs
+
+    def test_what_the_page_emptied_is_put_back(self) -> None:
+        typed = []
+        fixed, logs = self._run(live={}, typed=typed)
+        self.assertEqual(fixed, 2)
+        self.assertEqual(typed, [(1, "Rishab"), (2, "Arora")])
+        self.assertTrue(all("[again]" in line for line in logs), logs)
+
+    def test_a_box_still_holding_its_value_is_left_alone(self) -> None:
+        typed = []
+        fixed, logs = self._run(live={1: "Rishab", 2: "Arora"}, typed=typed)
+        self.assertEqual((fixed, typed, logs), (0, [], []))
+
+    def test_only_the_emptied_one_is_retyped(self) -> None:
+        typed = []
+        fixed, _ = self._run(live={1: "Rishab"}, typed=typed)
+        self.assertEqual((fixed, typed), (1, [(2, "Arora")]))
+
+    def test_a_box_that_cannot_be_kept_tells_the_candidate(self) -> None:
+        from src.apply import worker
+
+        logs = []
+        sess = type("S", (), {"log": lambda self, t: logs.append(t)})()
+        written = {worker._field_key(self.FIELDS[0], "First Name*"): "Rishab"}
+        with unittest.mock.patch.object(worker, "_live_value", lambda p, f: ""),              unittest.mock.patch.object(worker, "_retype", lambda p, f, v: False):
+            fixed = worker._repair_written(None, self.FIELDS, written, sess)
+        self.assertEqual(fixed, 0)
+        # Never a silent failure: the step must not be declared ready.
+        self.assertTrue(any("CHECK" in line and "yourself" in line for line in logs), logs)
+
+    def test_nothing_written_means_nothing_to_do(self) -> None:
+        from src.apply import worker
+
+        self.assertEqual(worker._repair_written(None, self.FIELDS, {}, None), 0)
+
+
 class SectionAddTests(unittest.TestCase):
     def test_add_buttons_in_repeating_sections(self) -> None:
         from src.apply.worker import _is_section_add
