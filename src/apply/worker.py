@@ -10,7 +10,8 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, Field
 
 from src import answers
-from src.apply import browser, cover_letter, profile, resolver, salary, session, sites
+from src.apply import (browser, catalogue, cover_letter, profile, resolver, salary,
+                       session, sites)
 from src.apply.session import Aborted, ApplySession
 from src.apply.sites import linkedin
 from src.config import AppConfig, EnvSettings
@@ -150,8 +151,10 @@ Rules:
   resume: finish those entries rather than skipping them - the role description in
   particular is usually still empty and is yours to write from the resume.
   Do not ask the candidate for these, and never invent employers, degrees or dates.
-  Languages and Websites entries are filled by the script from the profile (it
-  clicks their Add buttons itself) - leave those sections alone. A Skills box is
+  Work Experience, Languages and Websites entries are filled by the script from
+  the profile (it clicks their Add buttons itself) - leave those sections alone
+  unless a box in one is still empty and not already_handled, which means the
+  profile had nothing for it: then fill that box from the resume. A Skills box is
   filled by the script from the profile's skills when the profile lists any; only
   when it is still unhandled do you add the resume's main skills, one at a time
   (one fill action per skill on the same field). Date parts are digits only: a
@@ -542,6 +545,10 @@ def run_session(
                     notes.append(f"user: {answer}")
                 continue
             empty_snapshots = 0
+            # Keep this page's SHAPE (labels, sections, widget kinds - never
+            # any value the candidate typed) under its tracking system, so a
+            # form seen once is a fixture and a known widget next time.
+            catalogue.record(sites.ats(_safe_url(page)), _safe_url(page), fields)
 
             # 1) Attachments the form is asking for, built on the spot.
             if _handle_attachments(page, fields, handled, attach, sess, notes):
@@ -563,7 +570,7 @@ def run_session(
                 continue
             filled = _sweep(
                 page, fields, handled, attempts, job, attach.resume_path, sess,
-                attach=attach, written=written,
+                attach=attach, written=written, holder=holder,
             )
             if filled:
                 errors_in_a_row = 0
@@ -1503,6 +1510,33 @@ def _invoke_with_retry(invoke, sess: ApplySession, prompt: str) -> tuple[ApplyPl
     raise last_exc  # type: ignore[misc]
 
 
+NUMBERED_SECTION = re.compile(r"\s*(\d+)\s*$")
+
+
+def _annotate(fields: list[dict[str, Any]]) -> None:
+    """The numbering the sweep and the section opener both read: entry
+    ordinals for repeated fields, and the work-history tagging that ties a
+    stray date box back to the entry it belongs to (Workday's Month sits
+    under a section called "From*", not under Work History). Pure, and safe
+    to run more than once."""
+    # The k-th "Language" select in the Languages section is entry k. The
+    # snapshot numbers same-named fields; older snapshots (tests) get the
+    # same numbering here.
+    if fields and "ordinal" not in fields[0]:
+        seen_labels: dict[tuple[str, str], int] = {}
+        for field in fields:
+            section = str(field.get("section") or "")
+            numbered = re.search(NUMBERED_SECTION, section)
+            slot = (re.sub(NUMBERED_SECTION, "", section),
+                    profile.fingerprint(str(field.get("label") or "")))
+            if numbered:
+                field["ordinal"] = max(0, int(numbered.group(1)) - 1)
+            else:
+                field["ordinal"] = seen_labels.get(slot, 0)
+                seen_labels[slot] = field["ordinal"] + 1
+    resolver.tag_work_entries(fields, resolver.profile_jobs(profile.load_profile()))
+
+
 def _sweep(
     page,
     fields: list[dict[str, Any]],
@@ -1514,6 +1548,7 @@ def _sweep(
     dry_run: bool = False,
     attach: "Attachments | None" = None,
     written: dict[str, str] | None = None,
+    holder: dict[str, Any] | None = None,
 ) -> int:
     """Fill everything the profile and answer bank already know. No model,
     except the one cached expected-salary estimate when a form asks for it.
@@ -1521,21 +1556,13 @@ def _sweep(
     again later (Workday re-renders the address block when State changes)
     gets the same value once more instead of staying empty as "handled"."""
     filled = 0
-    # The k-th "Language" select in the Languages section is entry k. The
-    # snapshot numbers same-named fields (ordinal); older snapshots (tests)
-    # get the same numbering here.
-    if fields and "ordinal" not in fields[0]:
-        seen_labels: dict[tuple[str, str], int] = {}
-        for field in fields:
-            section = str(field.get("section") or "")
-            numbered = re.search(r"(\d+)\s*$", section)
-            slot = (re.sub(r"\s*\d+\s*$", "", section), profile.fingerprint(str(field.get("label") or "")))
-            if numbered:
-                field["ordinal"] = max(0, int(numbered.group(1)) - 1)
-            else:
-                field["ordinal"] = seen_labels.get(slot, 0)
-                seen_labels[slot] = field["ordinal"] + 1
+    _annotate(fields)
     taken_links = None
+    # Entry checkboxes last: ticking "I currently work here" re-renders the
+    # entry, and a text box written after that lands on a stale element.
+    fields = sorted(fields, key=lambda f: (
+        resolver.in_repeating_section(f)
+        and (f.get("type") or "").lower() == "checkbox"))
     for field in fields:
         label = _field_label(field)
         key = _field_key(field, label)
@@ -1616,8 +1643,14 @@ def _sweep(
             # A typeahead pick empties its box on purpose (the choice shows as
             # a chip): never a candidate for the blank-again re-fill.
             if (written is not None and source != "resume" and mode not in ("typeahead", "picked")
-                    and field.get("tag") in ("input", "textarea")):
+                    and field.get("tag") in ("input", "textarea")
+                    and (field.get("type") or "").lower() not in ("checkbox", "radio")):
                 written[key] = value
+            if holder is not None and field.get("tag") == "textarea":
+                # A role description the profile wrote is something the
+                # candidate may want tailored for one application; without
+                # this, "redo" could only reach answers the model gave.
+                _remember_answered(holder, field, label, value)
         except Exception as exc:
             sess.log(f"Could not fill {_brief(label, LOG_LABEL)}: {_short(exc)}")
     return filled
@@ -2556,6 +2589,25 @@ def _execute(
     _apply_value(page, field, chosen, pdf_path, sess)
 
 
+def _clip_to_limit(field: dict[str, Any], value: str, label: str, sess) -> str:
+    """A value cut to what the box will actually hold, at a word boundary.
+
+    Without this the browser truncates silently, the read-back check fails,
+    and the fill falls through to the suggestion hunt before raising - which
+    is seconds of nonsense on a role description that was simply too long.
+    """
+    limit = int(field.get("maxlength") or 0)
+    if limit <= 0 or len(value) <= limit:
+        return value
+    cut = value[:limit]
+    space = cut.rfind(" ")
+    if space > limit * 2 // 3:
+        cut = cut[:space]
+    cut = cut.rstrip(" ,;.")
+    sess.log(f"{_brief(label, LOG_LABEL)} takes {limit} characters; shortening to fit.")
+    return cut
+
+
 def _apply_value(
     page,
     field: dict[str, Any],
@@ -2649,6 +2701,7 @@ def _apply_value(
         if annual is None:
             raise ValueError(f"'{label}' is a number box; '{value}' is not a number")
         value = str(annual)
+    value = _clip_to_limit(field, value, label, sess)
     prefer = _tie_breakers(field)
     if _is_listbox_button(field):
         _pick_listbox(page, locator, value, label, prefix, sess, prefer)
@@ -2687,6 +2740,13 @@ def _apply_value(
             raise ValueError(f"typed '{value}' into the number box '{label}' but it shows '{_shown(locator)}'")
         # A chip-style prompt may already hold the choice as a pill (an
         # earlier pass, or the candidate): nothing to search for.
+        if field.get("tag") == "textarea":
+            shown_now = _shown(locator)
+            if shown_now and value.startswith(shown_now[:40]):
+                sess.log(f"{prefix}{_brief(label, LOG_LABEL)} kept what it could of the text.")
+                return
+            raise ValueError(
+                f"typed the text into '{label}' but it shows '{_brief(shown_now, 40)}'")
         chips = _chips(locator)
         held = _choose_option(chips, value)
         if held >= 0:
@@ -2864,6 +2924,11 @@ def _type_date_box(page, locator, value: str, label: str, prefix: str, sess,
     back empty is filled from the calendar itself."""
     month, day, year = _parse_date(value)
     mask = _date_mask(field, _shown(locator)) or ("MM/YYYY" if day is None else "MM/DD/YYYY")
+    if day is None and "DD" in mask and field.get("work_entry") is not None:
+        # A job's start month is what matters; the profile holds no day and
+        # this box insists on one. Only ever for employment dates - a guessed
+        # day on a date of birth would be a lie about the candidate.
+        day = 1
     text = _format_date(month, day, year, mask)
     if not text:
         raise ValueError(f"'{value}' is not a date this box ({mask}) can take for '{label}'")
@@ -3961,6 +4026,37 @@ REMOVE_ENTRY_RE = re.compile(
 )
 
 
+def _is_remove_button(field: dict[str, Any]) -> bool:
+    return bool(
+        (field.get("tag") in ("button", "a") or field.get("role") == "button")
+        and any(REMOVE_ENTRY_RE.match(str(field.get(k) or "").strip()) for k in ("text", "label"))
+    )
+
+
+def _entry_remove_button(fields, entry) -> dict[str, Any] | None:
+    """The Remove/Delete button that belongs to THIS entry, found by the
+    entry's own section rather than by page order.
+
+    Workday lists an entry's Delete before its Job Title (ids 9 then 10 in
+    the dump), so a slice that starts at the title holds the NEXT entry's
+    Delete and never its own. Acting on that would have deleted the wrong
+    job. Esko puts its button inside the entry, where the slice is right, so
+    the caller falls back to the slice when no section names the entry.
+    """
+    sections = {str(f.get("section") or "").strip() for f in entry}
+    sections.discard("")
+    if not sections:
+        return None
+    for field in fields:
+        if not _is_remove_button(field):
+            continue
+        scope = {str(field.get("section") or "").strip(), str(field.get("group") or "").strip()}
+        scope.discard("")
+        if scope & sections:
+            return field
+    return None
+
+
 def _excluded_entry_removals(fields: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
     """(project, remove-button) for each Work Experience entry that holds a
     flagged project. A site that parses the uploaded resume adds one by
@@ -3984,12 +4080,11 @@ def _excluded_entry_removals(fields: list[dict[str, Any]]) -> list[tuple[str, di
                     break
         if not project:
             continue
-        button = next(
-            (f for f in entry
-             if (f.get("tag") in ("button", "a") or f.get("role") == "button")
-             and any(REMOVE_ENTRY_RE.match(str(f.get(k) or "").strip()) for k in ("text", "label"))),
-            None,
-        )
+        named = _entry_remove_button(fields, entry)
+        if named is not None:
+            out.append((project, named))
+            continue
+        button = next((f for f in entry if _is_remove_button(f)), None)
         if button is not None:
             out.append((project, button))
     return out
@@ -4030,6 +4125,7 @@ def _open_profile_sections(page, fields, handled, sess) -> bool:
     profile item (the model skipped Hindi's Add Another), and retires the
     button once they are all there. True when it clicked (re-snapshot)."""
     data = profile.load_profile()
+    _annotate(fields)
     for field in fields:
         if not _is_section_add(field):
             continue
@@ -4057,6 +4153,10 @@ def _open_profile_sections(page, fields, handled, sess) -> bool:
                 and f.get("tag") in ("input", "textarea")
             )
             what = "Websites"
+        elif resolver.WORK_SECTION_RE.search(scope) or field.get("work_entry") is not None:
+            needed = len(resolver.profile_jobs(data))
+            present = len({f["work_pos"] for f in fields if f.get("work_pos") is not None})
+            what = "Work Experience"
         else:
             continue
         if needed == 0:
@@ -4064,6 +4164,11 @@ def _open_profile_sections(page, fields, handled, sess) -> bool:
         if present >= needed:
             handled.add(key)  # all entries are there; the button is done
             continue
+        clicks = sum(1 for k in handled if k.startswith(f"__added__:{key}:"))
+        if clicks >= needed:
+            handled.add(key)  # clicked enough times; the page is not growing
+            continue
+        handled.add(f"__added__:{key}:{clicks}")
         try:
             shape = browser.page_shape(page)
             browser.click(browser.locate(page, field["id"], str(field.get("elid") or "")), timeout=10000)

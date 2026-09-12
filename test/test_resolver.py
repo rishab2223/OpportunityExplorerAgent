@@ -373,6 +373,254 @@ class EducationEntryTests(ResolverTestCase):
                                                  options=["Physics", "Chemistry"])))
 
 
+JOBS = [
+    {"title": "Senior Engineer", "company": "Northwind Systems", "location": "Noida",
+     "start": "07/2020", "end": "01/2026", "description": "Backends and pipelines."},
+    {"title": "Engineer Intern", "company": "Northwind Systems", "location": "Pune",
+     "start": "06/2019", "end": "07/2020", "description": "Rendering work in C++."},
+]
+
+
+def workday_fields() -> list[dict]:
+    """The shape of the real Workday dump (fields 9-33). The Month and Year
+    boxes carry section "From*"/"To*", NOT the work section, and the Delete
+    button comes before the Job Title."""
+    out: list[dict] = []
+    for n in (1, 2):
+        section = f"Work History (Optional) {n}"
+        out.append(field(id=len(out), tag="button", type="", label="Delete",
+                         text="Delete", section=section, group=section))
+        out.append(field(id=len(out), label="Job Title*", section=section))
+        out.append(field(id=len(out), label="Company*", section=section))
+        out.append(field(id=len(out), label="Location", section=section))
+        out.append(field(id=len(out), type="checkbox", label="I currently work here",
+                         section=section, value="on", checked=False))
+        for side in ("From*", "To*"):
+            out.append(field(id=len(out), type="", label="Month", section=side))
+            out.append(field(id=len(out), type="", label="Year", section=side))
+        out.append(field(id=len(out), tag="textarea", type="",
+                         label="Role Description", section="To*"))
+    out.append(field(id=len(out), tag="button", type="", label="Add Another",
+                     text="Add Another", group="Role Description", section="To*"))
+    out.append(field(id=len(out), label="School or University*",
+                     section="Education (Optional) 1"))
+    return out
+
+
+def esko_fields() -> list[dict]:
+    """The shape of the real Esko/Phenom dump (fields 12-28): one unnumbered
+    heading for every entry, and From*/To* boxes with no section at all."""
+    out: list[dict] = []
+    for _ in range(2):
+        section = "Work Experience :"
+        out.append(field(id=len(out), label="Job Title*", section=section))
+        out.append(field(id=len(out), label="Company*", section=section))
+        out.append(field(id=len(out), label="From*", section=""))
+        out.append(field(id=len(out), label="To*", section=""))
+        out.append(field(id=len(out), type="checkbox", label="I currently work here",
+                         section=section, group="I currently work here",
+                         value="false", checked=False))
+        out.append(field(id=len(out), tag="textarea", type="",
+                         label="Role description", section=section))
+    return out
+
+
+class ProfileJobsTests(ResolverTestCase):
+    def test_dates_are_split_the_way_forms_ask_for_them(self) -> None:
+        jobs = resolver.profile_jobs({"jobs": [dict(JOBS[0])]})
+        self.assertEqual(jobs[0]["start"], "07/2020")
+        self.assertEqual(jobs[0]["start_month"], "07")
+        self.assertEqual(jobs[0]["start_year"], "2020")
+        self.assertEqual(jobs[0]["end_month"], "01")
+
+    def test_other_date_spellings_are_accepted(self) -> None:
+        for written in ("Jul 2020", "2020-07", "7/2020", "July 2020"):
+            jobs = resolver.profile_jobs(
+                {"jobs": [{"title": "T", "company": "C", "start": written}]})
+            self.assertEqual(jobs[0]["start"], "07/2020", written)
+
+    def test_a_date_that_cannot_be_read_is_left_empty_not_guessed(self) -> None:
+        jobs = resolver.profile_jobs(
+            {"jobs": [{"title": "T", "company": "C", "start": "some time in 2020"}]})
+        self.assertEqual(jobs[0]["start"], "")
+        self.assertEqual(jobs[0]["start_month"], "")
+
+    def test_a_current_job_has_no_end_date(self) -> None:
+        for ending in ({"end": "Present"}, {"end": ""}, {"current": True, "end": "01/2026"}):
+            jobs = resolver.profile_jobs(
+                {"jobs": [{"title": "T", "company": "C", "start": "07/2020", **ending}]})
+            self.assertEqual(jobs[0]["current"], "yes", ending)
+            self.assertEqual(jobs[0]["end"], "", ending)
+
+    def test_alias_keys_and_rubbish_rows(self) -> None:
+        jobs = resolver.profile_jobs({"jobs": [
+            {"role": "Engineer", "employer": "Acme", "city": "Pune", "summary": "Work."},
+            {"nothing": "useful"},
+            "not a dict",
+        ]})
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual((jobs[0]["title"], jobs[0]["company"]), ("Engineer", "Acme"))
+        self.assertEqual((jobs[0]["location"], jobs[0]["description"]), ("Pune", "Work."))
+
+    def test_a_profile_with_no_jobs_gives_nothing(self) -> None:
+        self.assertEqual(resolver.profile_jobs({}), [])
+        self.assertEqual(resolver.profile_jobs({"jobs": "not a list"}), [])
+
+
+class WorkEntryTaggingTests(ResolverTestCase):
+    def test_workday_date_boxes_are_tied_to_their_entry(self) -> None:
+        fields = workday_fields()
+        resolver.tag_work_entries(fields, resolver.profile_jobs({"jobs": JOBS}))
+        by_entry: dict[int, list[str]] = {}
+        for f in fields:
+            if f.get("work_entry") is None:
+                continue
+            by_entry.setdefault(f["work_entry"], []).append(
+                f"{f['label']}/{f.get('work_dates', '')}")
+        self.assertIn("Month/start", by_entry[0])
+        self.assertIn("Year/end", by_entry[0])
+        self.assertIn("Month/start", by_entry[1])
+        self.assertIn("Role Description/end", by_entry[1])
+        # The Add button sits under "To*" with no work words at all; the
+        # section opener needs it tagged or it would never be clicked.
+        self.assertIn("Add Another/end", by_entry[1])
+        # And the block must close at the next real heading.
+        school = next(f for f in fields if f["label"] == "School or University*")
+        self.assertIsNone(school.get("work_entry"))
+
+    def test_esko_section_less_date_boxes_are_tied_to_their_entry(self) -> None:
+        fields = esko_fields()
+        resolver.tag_work_entries(fields, resolver.profile_jobs({"jobs": JOBS}))
+        entries = [f["work_entry"] for f in fields if f["label"] == "From*"]
+        self.assertEqual(entries, [0, 1])
+
+    def test_a_description_box_does_not_start_a_new_entry(self) -> None:
+        # "Role description" holds the word role; reading that as a title
+        # split every Esko entry in two and lost the second job.
+        fields = esko_fields()
+        resolver.tag_work_entries(fields, resolver.profile_jobs({"jobs": JOBS}))
+        self.assertEqual(max(f["work_pos"] for f in fields if "work_pos" in f), 1)
+
+
+class WorkEntryResolveTests(ResolverTestCase):
+    def _with_jobs(self, fields):
+        data = dict(DUMMY_PROFILE, jobs=JOBS)
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        resolver.tag_work_entries(fields, resolver.profile_jobs(data))
+        return fields
+
+    def test_every_part_of_an_entry_comes_from_the_profile(self) -> None:
+        fields = self._with_jobs(workday_fields())
+        got = {}
+        for f in fields:
+            if f.get("work_entry") == 1:
+                out = resolver.resolve(f, {})
+                if out:
+                    got.setdefault(f["label"], []).append(out[0])
+        self.assertEqual(got["Job Title*"], ["Engineer Intern"])
+        self.assertEqual(got["Company*"], ["Northwind Systems"])
+        self.assertEqual(got["Location"], ["Pune"])
+        self.assertEqual(got["Month"], ["06", "07"])
+        self.assertEqual(got["Year"], ["2019", "2020"])
+        self.assertEqual(got["Role Description"], ["Rendering work in C++."])
+
+    def test_a_whole_date_box_takes_the_whole_date(self) -> None:
+        fields = self._with_jobs(esko_fields())
+        starts = [resolver.resolve(f, {}) for f in fields if f["label"] == "From*"]
+        self.assertEqual([s[0] for s in starts], ["07/2020", "06/2019"])
+
+    def test_the_currently_here_checkbox_is_reachable_at_last(self) -> None:
+        # It always carries a value ("on" on Workday, "false" on Esko), so the
+        # blank test could never be true for it and it was unreachable.
+        jobs = [dict(JOBS[0], end="Present"), JOBS[1]]
+        data = dict(DUMMY_PROFILE, jobs=jobs)
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        fields = workday_fields()
+        resolver.tag_work_entries(fields, resolver.profile_jobs(data))
+        boxes = [f for f in fields if f["label"] == "I currently work here"]
+        self.assertEqual(resolver.resolve(boxes[0], {}), ("yes", "profile"))
+        # Only the current job, and never a tick that is already there.
+        self.assertIsNone(resolver.resolve(boxes[1], {}))
+        self.assertIsNone(resolver.resolve(dict(boxes[0], checked=True), {}))
+
+    def test_a_radio_in_a_work_entry_is_still_the_models(self) -> None:
+        fields = self._with_jobs(workday_fields())
+        radio = dict(fields[4], type="radio", label="Employment type", checked=False)
+        self.assertIsNone(resolver.resolve(radio, {}))
+
+    def test_an_entry_naming_a_job_the_profile_lacks_is_left_alone(self) -> None:
+        fields = workday_fields()
+        for f in fields:
+            if f["label"] == "Company*" and f["section"].endswith("2"):
+                f["value"] = "Some Other Employer"
+            if f["label"] == "Job Title*" and f["section"].endswith("2"):
+                f["value"] = "Consultant"
+        self._with_jobs(fields)
+        second = [f for f in fields if f.get("work_pos") == 1]
+        self.assertTrue(all(f["work_entry"] == -1 for f in second))
+        self.assertTrue(all(resolver.resolve(f, {}) is None for f in second))
+
+    def test_two_jobs_at_one_employer_are_told_apart_by_title(self) -> None:
+        # The real profile has exactly this: two roles at the same company.
+        fields = workday_fields()
+        titles = [f for f in fields if f["label"] == "Job Title*"]
+        companies = [f for f in fields if f["label"] == "Company*"]
+        titles[0]["value"] = "Engineer Intern"       # the site put them the
+        titles[1]["value"] = "Senior Engineer"       # other way round
+        for c in companies:
+            c["value"] = "Northwind Systems"
+        self._with_jobs(fields)
+        self.assertEqual(titles[0]["work_entry"], 1)
+        self.assertEqual(titles[1]["work_entry"], 0)
+
+    def test_more_entries_on_the_page_than_in_the_profile(self) -> None:
+        fields = self._with_jobs(workday_fields() + [
+            field(id=99, label="Job Title*", section="Work History (Optional) 3"),
+        ])
+        spare = next(f for f in fields if f.get("section", "").endswith("3"))
+        self.assertIsNone(resolver.resolve(spare, {}))
+
+    def test_without_jobs_in_the_profile_nothing_is_filled(self) -> None:
+        fields = workday_fields()
+        resolver.tag_work_entries(fields, [])
+        self.assertTrue(all(resolver.resolve(f, {}) is None
+                            for f in fields if f.get("work_entry") is not None))
+
+    def test_an_entry_the_site_already_filled_is_not_overwritten(self) -> None:
+        fields = workday_fields()
+        for f in fields:
+            if f["label"] == "Job Title*":
+                f["value"] = "Senior Engineer"
+            if f["label"] == "Company*":
+                f["value"] = "Northwind Systems"
+        self._with_jobs(fields)
+        held = next(f for f in fields if f["label"] == "Job Title*")
+        self.assertIsNone(resolver.resolve(held, {}))
+
+
+class WorkSlotTests(ResolverTestCase):
+    def test_the_checkbox_is_decided_before_anything_else(self) -> None:
+        # "I currently work here" contains the word work; a looser rule
+        # claimed it and the box was filled with a job title.
+        box = field(type="checkbox", label="I currently work here", value="on")
+        self.assertEqual(resolver.work_slot(box), "current")
+
+    def test_a_day_box_is_left_alone(self) -> None:
+        box = field(label="Day", section="From*")
+        self.assertEqual(resolver.work_slot(box), "")
+
+    def test_reason_to_leave_is_not_an_end_date(self) -> None:
+        # The education rules search for the bare word "to"; next to a work
+        # entry that would have written a date into a free-text box.
+        self.assertEqual(resolver.work_slot(field(label="Reason to leave")), "")
+        self.assertEqual(resolver.work_slot(field(label="To*")), "end")
+        self.assertEqual(resolver.work_slot(field(label="Start Date")), "start")
+
+    def test_a_description_beats_a_title(self) -> None:
+        self.assertEqual(resolver.work_slot(field(label="Role description")), "description")
+        self.assertEqual(resolver.work_slot(field(label="Job Title*")), "title")
+
+
 class ContactCheckTests(ResolverTestCase):
     """A wrong e-mail means the employer cannot reply, so contact boxes are
     watched after every step - an ATS parsing the resume replaced one."""

@@ -6,6 +6,7 @@ import unittest.mock
 from pathlib import Path
 
 from src import answers, history
+from src.apply import profile
 from src.apply.worker import (
     ApplyAction,
     SubmitBlocked,
@@ -22,15 +23,24 @@ from src.apply.worker import (
 
 
 class TempDbTestCase(unittest.TestCase):
-    """_needs_user consults the answer bank; keep every test off the real DB."""
+    """Keep every test off the candidate's real data.
+
+    The answer bank is consulted by _needs_user, and the profile by the
+    sweep and the section opener. Both paths are redirected into a temporary
+    directory here: a test that wrote to profile.PROFILE_PATH while it still
+    pointed at localData/apply_profile.json destroyed the real profile.
+    """
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self._original_path = history.DB_PATH
         history.DB_PATH = Path(self._tmp.name) / "job_history.db"
+        self._original_profile = profile.PROFILE_PATH
+        profile.PROFILE_PATH = Path(self._tmp.name) / "apply_profile.json"
 
     def tearDown(self) -> None:
         history.DB_PATH = self._original_path
+        profile.PROFILE_PATH = self._original_profile
         self._tmp.cleanup()
 
 
@@ -614,6 +624,164 @@ class SectionAddTests(unittest.TestCase):
         self.assertFalse(_is_section_add({"tag": "button", "text": "Add", "section": "Contact Information"}))
         self.assertFalse(_is_section_add({"tag": "button", "text": "Add to cart", "section": "Work Experience"}))
         self.assertFalse(_is_section_add({"tag": "input", "type": "text", "label": "Add", "section": "Work Experience"}))
+
+
+class WorkSectionAddTests(TempDbTestCase):
+    """The script clicks Add for Work Experience, as it already does for
+    Languages and Websites, and stops when the page will not grow."""
+
+    JOBS = [
+        {"title": "Senior Engineer", "company": "Northwind", "start": "07/2020", "end": "01/2026"},
+        {"title": "Engineer Intern", "company": "Northwind", "start": "06/2019", "end": "07/2020"},
+    ]
+
+    def _profile(self, **extra):
+        from src.apply import profile
+        import json as _json
+        profile.PROFILE_PATH.write_text(
+            _json.dumps({"full_name": "T", **extra}), encoding="utf-8")
+
+    def _page(self, clicks):
+        class Locator:
+            def click(self, timeout=0):
+                clicks.append(1)
+
+        class Frame:
+            def evaluate(self, js):
+                return "1:0:0"
+
+        class Page:
+            url = "https://example.invalid/f"
+
+            def wait_for_timeout(self, ms):
+                pass
+
+            def locator(self, sel):
+                return Locator()
+
+        return Page()
+
+    def _add_button(self):
+        # Workday's own: the label says nothing about work at all.
+        return {"id": 9, "tag": "button", "text": "Add Another", "label": "Add Another",
+                "group": "Role Description", "section": "To*"}
+
+    def _one_entry(self):
+        return [
+            {"id": 1, "tag": "input", "type": "text", "label": "Job Title*",
+             "section": "Work History (Optional) 1", "value": ""},
+            {"id": 2, "tag": "input", "type": "text", "label": "Company*",
+             "section": "Work History (Optional) 1", "value": ""},
+        ]
+
+    def test_a_missing_entry_is_added(self) -> None:
+        from src.apply import browser, worker
+
+        self._profile(jobs=self.JOBS)
+        clicks: list[int] = []
+        fields = self._one_entry() + [self._add_button()]
+        page = self._page(clicks)
+        with unittest.mock.patch.object(browser, "locate", lambda p, i, e: p.locator("x")), \
+             unittest.mock.patch.object(browser, "click", lambda loc, timeout=0: loc.click()), \
+             unittest.mock.patch.object(browser, "settle", lambda *a, **k: True), \
+             unittest.mock.patch.object(browser, "page_shape", lambda p: "x"):
+            logs: list[str] = []
+            sess = type("S", (), {"log": lambda self, t: logs.append(t)})()
+            self.assertTrue(worker._open_profile_sections(page, fields, set(), sess))
+        self.assertEqual(len(clicks), 1)
+        self.assertTrue(any("Work Experience: entry 2 of 2" in line for line in logs), logs)
+
+    def test_nothing_is_clicked_once_every_entry_is_there(self) -> None:
+        from src.apply import browser, worker
+
+        self._profile(jobs=self.JOBS)
+        clicks: list[int] = []
+        fields = self._one_entry() + [
+            {"id": 3, "tag": "input", "type": "text", "label": "Job Title*",
+             "section": "Work History (Optional) 2", "value": ""},
+            self._add_button(),
+        ]
+        page = self._page(clicks)
+        with unittest.mock.patch.object(browser, "locate", lambda p, i, e: p.locator("x")), \
+             unittest.mock.patch.object(browser, "click", lambda loc, timeout=0: loc.click()):
+            sess = type("S", (), {"log": lambda self, t: None})()
+            self.assertFalse(worker._open_profile_sections(page, fields, set(), sess))
+        self.assertEqual(clicks, [])
+
+    def test_a_profile_with_no_jobs_leaves_the_section_to_the_model(self) -> None:
+        from src.apply import browser, worker
+
+        self._profile()
+        clicks: list[int] = []
+        page = self._page(clicks)
+        with unittest.mock.patch.object(browser, "locate", lambda p, i, e: p.locator("x")), \
+             unittest.mock.patch.object(browser, "click", lambda loc, timeout=0: loc.click()):
+            sess = type("S", (), {"log": lambda self, t: None})()
+            self.assertFalse(
+                worker._open_profile_sections(page, self._one_entry() + [self._add_button()],
+                                              set(), sess))
+        self.assertEqual(clicks, [])
+
+    def test_an_add_that_adds_nothing_is_not_clicked_forever(self) -> None:
+        from src.apply import browser, worker
+
+        self._profile(jobs=self.JOBS)
+        clicks: list[int] = []
+        page = self._page(clicks)
+        handled: set[str] = set()
+        with unittest.mock.patch.object(browser, "locate", lambda p, i, e: p.locator("x")), \
+             unittest.mock.patch.object(browser, "click", lambda loc, timeout=0: loc.click()), \
+             unittest.mock.patch.object(browser, "settle", lambda *a, **k: True), \
+             unittest.mock.patch.object(browser, "page_shape", lambda p: "x"):
+            sess = type("S", (), {"log": lambda self, t: None})()
+            for _ in range(6):
+                fields = self._one_entry() + [self._add_button()]   # page never grows
+                worker._open_profile_sections(page, fields, handled, sess)
+        # Never more clicks than there are entries to add.
+        self.assertLessEqual(len(clicks), 2)
+
+
+class ClipToLimitTests(TempDbTestCase):
+    def test_a_long_value_is_cut_at_a_word_boundary(self) -> None:
+        from src.apply import worker
+
+        logs: list[str] = []
+        sess = type("S", (), {"log": lambda self, t: logs.append(t)})()
+        text = "Designed the core backend for collaborative interfaces and pipelines."
+        cut = worker._clip_to_limit({"maxlength": 30}, text, "Role description", sess)
+        self.assertLessEqual(len(cut), 30)
+        self.assertFalse(cut.endswith(" "))
+        self.assertTrue(text.startswith(cut))
+        self.assertTrue(logs)
+
+    def test_a_value_that_fits_is_untouched_and_silent(self) -> None:
+        from src.apply import worker
+
+        logs: list[str] = []
+        sess = type("S", (), {"log": lambda self, t: logs.append(t)})()
+        self.assertEqual(worker._clip_to_limit({"maxlength": 0}, "short", "X", sess), "short")
+        self.assertEqual(worker._clip_to_limit({"maxlength": 99}, "short", "X", sess), "short")
+        self.assertEqual(logs, [])
+
+
+class WorkdayDeleteButtonTests(TempDbTestCase):
+    def test_an_entry_gets_its_own_delete_not_the_next_ones(self) -> None:
+        from src.apply import worker
+
+        # Workday lists Delete BEFORE Job Title, so a slice starting at the
+        # title holds the NEXT entry's Delete. Acting on that removed the
+        # wrong job.
+        fields = []
+        for n in (1, 2):
+            section = f"Work History (Optional) {n}"
+            fields.append({"id": n * 10, "tag": "button", "text": "Delete", "label": "Delete",
+                           "section": section, "group": section})
+            fields.append({"id": n * 10 + 1, "tag": "input", "type": "text",
+                           "label": "Job Title*", "section": section, "value": ""})
+        entry2 = [f for f in fields if f["section"].endswith("2")]
+        self.assertEqual(worker._entry_remove_button(fields, entry2)["id"], 20)
+        entry1 = [f for f in fields if f["section"].endswith("1")]
+        self.assertEqual(worker._entry_remove_button(fields, entry1)["id"], 10)
 
 
 class SectionKeyTests(unittest.TestCase):

@@ -272,6 +272,7 @@ SNAPSHOT_JS = """
       required: el.required === true || el.getAttribute('aria-required') === 'true',
       value: value.slice(0, 200),
       text: (el.innerText || '').trim().slice(0, 80),
+      maxlength: el.maxLength > 0 ? el.maxLength : 0,
     };
     if (el.tagName.toLowerCase() === 'select') {
       item.options = Array.from(el.options).map(o => o.label || o.value).slice(0, 40);
