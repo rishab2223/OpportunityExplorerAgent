@@ -326,7 +326,7 @@ class NeedsUserTests(TempDbTestCase):
         self.assertTrue(_needs_user(check, field, "No"))
 
     def test_confident_fill_does_not_ask(self) -> None:
-        fill = ApplyAction(action="fill", field_id=1, value="Rishab", confidence=0.95)
+        fill = ApplyAction(action="fill", field_id=1, value="Casey", confidence=0.95)
         self.assertFalse(_needs_user(fill, {"tag": "input", "type": "text"}, "First name"))
 
 
@@ -412,7 +412,7 @@ class PageSigTests(unittest.TestCase):
     def test_same_fields_same_sig_value_changes_it(self) -> None:
         fields = [{"tag": "input", "type": "text", "label": "Name", "value": "", "checked": None}]
         self.assertEqual(_page_sig(fields), _page_sig([dict(fields[0])]))
-        changed = [dict(fields[0], value="Rishab")]
+        changed = [dict(fields[0], value="Casey")]
         self.assertNotEqual(_page_sig(fields), _page_sig(changed))
 
 
@@ -630,8 +630,8 @@ class RepairWrittenTests(TempDbTestCase):
 
         logs = []
         sess = type("S", (), {"log": lambda self, t: logs.append(t)})()
-        written = {worker._field_key(self.FIELDS[0], "First Name*"): "Rishab",
-                   worker._field_key(self.FIELDS[1], "Last Name*"): "Arora"}
+        written = {worker._field_key(self.FIELDS[0], "First Name*"): "Casey",
+                   worker._field_key(self.FIELDS[1], "Last Name*"): "Jordan"}
         with unittest.mock.patch.object(worker, "_live_value", lambda p, f: live.get(f["id"], "")),              unittest.mock.patch.object(worker, "_retype",
                                         lambda p, f, v: typed.append((f["id"], v)) or True):
             fixed = worker._repair_written(None, self.FIELDS, written, sess)
@@ -641,25 +641,25 @@ class RepairWrittenTests(TempDbTestCase):
         typed = []
         fixed, logs = self._run(live={}, typed=typed)
         self.assertEqual(fixed, 2)
-        self.assertEqual(typed, [(1, "Rishab"), (2, "Arora")])
+        self.assertEqual(typed, [(1, "Casey"), (2, "Jordan")])
         self.assertTrue(all("[again]" in line for line in logs), logs)
 
     def test_a_box_still_holding_its_value_is_left_alone(self) -> None:
         typed = []
-        fixed, logs = self._run(live={1: "Rishab", 2: "Arora"}, typed=typed)
+        fixed, logs = self._run(live={1: "Casey", 2: "Jordan"}, typed=typed)
         self.assertEqual((fixed, typed, logs), (0, [], []))
 
     def test_only_the_emptied_one_is_retyped(self) -> None:
         typed = []
-        fixed, _ = self._run(live={1: "Rishab"}, typed=typed)
-        self.assertEqual((fixed, typed), (1, [(2, "Arora")]))
+        fixed, _ = self._run(live={1: "Casey"}, typed=typed)
+        self.assertEqual((fixed, typed), (1, [(2, "Jordan")]))
 
     def test_a_box_that_cannot_be_kept_tells_the_candidate(self) -> None:
         from src.apply import worker
 
         logs = []
         sess = type("S", (), {"log": lambda self, t: logs.append(t)})()
-        written = {worker._field_key(self.FIELDS[0], "First Name*"): "Rishab"}
+        written = {worker._field_key(self.FIELDS[0], "First Name*"): "Casey"}
         with unittest.mock.patch.object(worker, "_live_value", lambda p, f: ""),              unittest.mock.patch.object(worker, "_retype", lambda p, f, v: False):
             fixed = worker._repair_written(None, self.FIELDS, written, sess)
         self.assertEqual(fixed, 0)
