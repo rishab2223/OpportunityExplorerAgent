@@ -61,7 +61,13 @@ CLOSED_PAGE_RE = re.compile(
     r"position has been filled|no longer accepting applications"
     r"|not (?:currently |presently )?accepting applications"
     r"|(?:job|position|posting|vacancy|opening)[^.\n]{0,40}?"
-    r"(?:no longer available|has been closed|has closed|has expired|is closed)"
+    r"(?:no longer available|has been closed|has closed|has expired|is closed"
+    r"|has been removed|was removed)"
+    # LinkedIn does not say "closed" when a posting is taken down; it shows
+    # "Unable to load the page - Job id provided may not be valid or the job
+    # posting has been removed", which read as a page with no fields and left
+    # the candidate being asked for a URL that no longer exists.
+    r"|job id provided may not be valid"
     r"|this job has expired",
     re.IGNORECASE,
 )

@@ -134,11 +134,17 @@ class SubmittedPageTests(unittest.TestCase):
             "This posting has expired and applications are closed.",
             "This job has expired",
             "No longer accepting applications",
+            # A posting taken down does not use the word "closed" at all.
+            "Unable to load the page. Job id provided may not be valid or the "
+            "job posting has been removed.",
+            "The job posting has been removed.",
         ):
             self.assertTrue(_looks_closed(text), text)
         for text in (
             "Apply for this job. Position: Senior Software Engineer.",
             "Job openings at Capgemini",
+            # "removed" on its own is ordinary form wording.
+            "Remove experience. Removed the attachment from your application.",
             "",
         ):
             self.assertFalse(_looks_closed(text), text)

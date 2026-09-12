@@ -25,7 +25,11 @@ SIGN_IN_RE = re.compile(r"\b(sign in|join now)\b", re.IGNORECASE)
 LOGIN_URL_RE = re.compile(r"linkedin\.com/(authwall|uas/login|login|checkpoint)", re.IGNORECASE)
 CLOSED_RE = re.compile(
     r"no longer accepting applications|not (currently |presently )?accepting applications|"
-    r"this job is no longer available|job (is|has been) closed|position has been filled",
+    r"this job is no longer available|job (is|has been) closed|position has been filled|"
+    # A posting that was taken down does not say "closed" at all: LinkedIn
+    # shows "Unable to load the page - Job id provided may not be valid or
+    # the job posting has been removed".
+    r"job posting has been removed|job id provided may not be valid",
     re.IGNORECASE,
 )
 

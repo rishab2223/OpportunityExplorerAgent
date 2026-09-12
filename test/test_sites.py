@@ -14,6 +14,14 @@ class ClosedDetectionTests(unittest.TestCase):
             "Software Engineer\nServify\nNo longer accepting applications", self.JOB_URL))
         self.assertTrue(linkedin.is_closed("This job is no longer available", self.JOB_URL))
 
+    def test_a_posting_that_was_taken_down(self) -> None:
+        # LinkedIn shows this instead of a banner, and the page has no form
+        # fields, so without it the candidate was asked to paste a URL for a
+        # job that no longer exists.
+        self.assertTrue(linkedin.is_closed(
+            "Unable to load the page\nJob id provided may not be valid or the job "
+            "posting has been removed.\nGo to Jobs", self.JOB_URL))
+
     def test_redirect_to_search_page(self) -> None:
         self.assertTrue(linkedin.is_closed(
             "", "https://www.linkedin.com/jobs/search/?keywords=software"))
