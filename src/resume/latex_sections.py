@@ -122,19 +122,46 @@ def validate_body(body: str) -> list[str]:
 _DOCUMENTCLASS = re.compile(r"^[^%\n]*\\documentclass[^\n]*\n", re.MULTILINE)
 
 
+FONT_PREAMBLE = "\\usepackage{lmodern}\n\\usepackage[T1]{fontenc}\n"
+# A preamble that picked its own typeface is left alone.
+_HAS_FONT_RE = re.compile(
+    r"\\usepackage(\[[^\]]*\])?\{(lmodern|fontspec|newtx\w*|times|helvet|mathptmx"
+    r"|charter|libertine|kpfonts|palatino|tgtermes|tgheros|cmbright)\}")
+_FONTENC_LINE_RE = re.compile(
+    r"^[^%\n]*\\usepackage(\[[^\]]*\])?\{fontenc\}[^\n]*\n", re.MULTILINE)
+
+
 def ensure_font_encoding(source: str) -> str:
-    """Add \\usepackage[T1]{fontenc} when the preamble has no encoding of its
-    own. Without it pdfTeX's default OT1 fonts carry no Unicode mapping for
-    the underscore, so an e-mail address extracts from the PDF as
-    "a candidate@example.invalid" - and an ATS that parses the resume fills its
-    form with that broken address."""
+    """Give the preamble a T1 font encoding, and the vector font that goes
+    with it, when it has neither.
+
+    T1 on its own was not enough. Without any encoding, pdfTeX's default OT1
+    fonts carry no Unicode mapping for the underscore, so an e-mail address
+    extracts from the PDF as "a candidate@example.invalid" and an ATS that
+    parses the resume fills its form with that broken address. But adding T1
+    alone makes pdfTeX fall back to the bitmap EC fonts, and the PDF then
+    embeds Type 3 fonts, which look soft and a little heavier on screen.
+    Latin Modern is the same design as Computer Modern with real T1 outlines,
+    so the underscore survives and the page looks as it did before.
+    """
     text = source or ""
     if re.search(r"\\usepackage(\[[^\]]*\])?\{(fontenc|fontspec)\}", text):
-        return text
+        return _ensure_vector_font(text)
     match = _DOCUMENTCLASS.search(text)
     if match is None:
         return text
-    return text[:match.end()] + "\\usepackage[T1]{fontenc}\n" + text[match.end():]
+    return text[:match.end()] + FONT_PREAMBLE + text[match.end():]
+
+
+def _ensure_vector_font(text: str) -> str:
+    """A preamble that already asks for T1 but names no typeface still renders
+    as bitmaps: give it Latin Modern."""
+    if _HAS_FONT_RE.search(text):
+        return text
+    match = _FONTENC_LINE_RE.search(text)
+    if match is None:
+        return text
+    return text[:match.start()] + "\\usepackage{lmodern}\n" + text[match.start():]
 
 
 def apply_section_edits(parsed: ParsedResume, accepted: dict[str, str]) -> str:
@@ -180,7 +207,10 @@ def tailor_latex(
     if not accepted:
         return EditResult(problems=problems)
     latex = apply_section_edits(parsed, accepted)
-    ratio = len(latex) / max(len(source), 1)
+    # Measure the candidate's edit, not ours: apply_section_edits adds the
+    # font preamble, and counting those lines as growth rejected a perfectly
+    # good rewrite of a short section.
+    ratio = len(latex) / max(len(ensure_font_encoding(source)), 1)
     if not (MIN_LENGTH_RATIO <= ratio <= MAX_LENGTH_RATIO):
         problems.append(
             f"document length became x{ratio:.2f} of the original; keep each "

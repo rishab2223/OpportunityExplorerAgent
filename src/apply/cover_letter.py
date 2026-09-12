@@ -62,6 +62,10 @@ _ESCAPES = {
 _ESCAPE_RE = re.compile("[" + re.escape("".join(_ESCAPES)) + "]")
 
 TEMPLATE = r"""\documentclass[11pt, letterpaper]{article}
+%% Latin Modern before T1: the encoding alone makes pdfTeX fall back to the
+%% bitmap EC fonts, and the letter then embeds Type 3 fonts that look soft.
+%% (Doubled: this template is filled in with %%-formatting.)
+\usepackage{lmodern}
 \usepackage[T1]{fontenc}
 \usepackage[margin=1in]{geometry}
 \usepackage{parskip}

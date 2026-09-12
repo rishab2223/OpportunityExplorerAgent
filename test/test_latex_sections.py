@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from src.resume.latex_sections import (
+    ensure_font_encoding,
     split_sections,
     strip_fences,
     tailor_latex,
@@ -36,6 +37,49 @@ SOURCE = "\n".join(
         "",
     ]
 )
+
+
+class FontEncodingTests(unittest.TestCase):
+    r"""T1 keeps the underscore in an e-mail address readable to an ATS. But
+    T1 on its own makes pdfTeX fall back to the bitmap EC fonts, and the PDF
+    then embeds Type 3 fonts that look soft and slightly heavier. Latin
+    Modern is the same design as Computer Modern with real T1 outlines."""
+
+    DOC = "\\documentclass[11pt, letterpaper]{article}\n"
+
+    def test_a_bare_preamble_gets_both(self) -> None:
+        out = ensure_font_encoding(self.DOC + "\\begin{document}\n")
+        self.assertIn("\\usepackage{lmodern}", out)
+        self.assertIn("\\usepackage[T1]{fontenc}", out)
+        # Latin Modern must come before the encoding it is chosen for.
+        self.assertLess(out.index("lmodern"), out.index("fontenc"))
+
+    def test_a_preamble_with_t1_but_no_typeface_still_gets_the_font(self) -> None:
+        # This is exactly what the earlier change left behind: an encoding
+        # with nothing to render it but bitmaps.
+        source = self.DOC + "\\usepackage[T1]{fontenc}\n\\begin{document}\n"
+        out = ensure_font_encoding(source)
+        self.assertIn("\\usepackage{lmodern}", out)
+        self.assertEqual(out.count("fontenc"), 1)
+        self.assertLess(out.index("lmodern"), out.index("fontenc"))
+
+    def test_a_preamble_that_chose_its_own_typeface_is_untouched(self) -> None:
+        for package in ("newtxtext", "times", "libertine", "charter", "helvet"):
+            source = self.DOC + f"\\usepackage{{{package}}}\n\\usepackage[T1]{{fontenc}}\n"
+            self.assertEqual(ensure_font_encoding(source), source, package)
+
+    def test_a_xelatex_preamble_is_untouched(self) -> None:
+        # fontspec means the document picks real system fonts; adding a
+        # pdfTeX font package there would be wrong and can break the build.
+        source = self.DOC + "\\usepackage{fontspec}\n\\begin{document}\n"
+        self.assertEqual(ensure_font_encoding(source), source)
+
+    def test_running_it_twice_changes_nothing(self) -> None:
+        once = ensure_font_encoding(self.DOC + "\\begin{document}\n")
+        self.assertEqual(ensure_font_encoding(once), once)
+
+    def test_a_file_with_no_documentclass_is_left_alone(self) -> None:
+        self.assertEqual(ensure_font_encoding("just text"), "just text")
 
 
 class SplitSectionsTests(unittest.TestCase):
