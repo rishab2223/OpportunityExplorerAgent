@@ -2670,6 +2670,22 @@ def _clip_to_limit(field: dict[str, Any], value: str, label: str, sess) -> str:
     return cut
 
 
+def _plain_amount(value: str, field: dict[str, Any]) -> str:
+    """A money amount with its grouping separators taken off.
+
+    "30,00,000" typed a character at a time into a box that inserts its own
+    commas came out as "3,00,00,000" - three crore instead of thirty lakh, on
+    a real application. The box formats what it is given; it only needs the
+    digits.
+    """
+    if not salary.is_salary_field(field):
+        return value
+    if not re.fullmatch(r"[\d,. ]+", (value or "").strip()):
+        return value                      # prose ("25-30 LPA"): leave it alone
+    digits = re.sub(r"[,\s]", "", value.strip())
+    return digits if digits.replace(".", "").isdigit() else value
+
+
 def _apply_value(
     page,
     field: dict[str, Any],
@@ -2756,6 +2772,7 @@ def _apply_value(
     # 2500000): every writer - bank, profile, model, user - goes through here,
     # so this is the one place the amount is converted.
     value = salary.for_field(value, field)
+    value = _plain_amount(value, field)
     # "Notice Period (In days)" is a text box that validates as a number:
     # "Immediate Joiner" was accepted and then rejected by the form itself.
     value = resolver.notice_for_field(value, field)
@@ -2828,6 +2845,19 @@ def _apply_value(
                 alternatives.append(country)
         if prefer:  # a location box: the renamed-city spelling is another query
             alternatives.extend(resolver.city_aliases(value))
+        if salary.is_salary_field(field):
+            # No amount box has suggestions. If it refused the text, the one
+            # thing left to try is the plain annual figure: "35 LPA" was typed
+            # into "Enter expected salary" and the box dropped it.
+            annual = salary.parse_annual_inr(value, salary.unit_of(field))
+            if annual is not None and str(annual) != value:
+                locator.fill("", timeout=3000)
+                locator.press_sequentially(str(annual), delay=15, timeout=15000)
+                if _holds(locator, str(annual)):
+                    sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {annual}")
+                    return
+            raise ValueError(
+                f"'{label}' would not take '{value}'; it shows '{_shown(locator)}'")
         if _commit_typeahead(page, locator, value, label, prefix, sess, alternatives, prefer):
             return "typeahead"
         raise ValueError(
@@ -2865,11 +2895,35 @@ def _near_options(value: str, options: list[str], limit: int = 12) -> list[str]:
     return [o for _, _, o in sorted(scored)][:limit]
 
 
+def _aria_checked(locator) -> bool | None:
+    """The state of a control that has no .checked property of its own: a
+    Radix button with role=checkbox or role=radio carries aria-checked."""
+    try:
+        value = locator.get_attribute("aria-checked", timeout=2000)
+    except Exception:
+        return None
+    return None if value is None else value == "true"
+
+
 def _set_checked(page, locator, field: dict[str, Any], on: bool) -> None:
     """Tick (or untick) a box. Styled checkboxes hide the real input under a
     label that swallows the click - ALTEN's Angular Material consent box
     timed out with "label intercepts pointer events" - so a failed check()
     falls back to the input's own click, then to its label."""
+    if field.get("tag") == "button":
+        # Radix renders the checkbox and radio as BUTTONs; check() refuses
+        # them ("Not a checkbox or radio button"). Clicking is the only way,
+        # and aria-checked is the only state there is to read.
+        if _aria_checked(locator) == on:
+            return
+        browser.click(locator, timeout=8000)
+        page.wait_for_timeout(150)
+        state = _aria_checked(locator)
+        if state is not None and state != on:
+            raise ValueError(
+                f"clicked '{_field_label(field)}' but it is still "
+                f"{'unticked' if on else 'ticked'}")
+        return
     try:
         if on:
             locator.check(timeout=8000)

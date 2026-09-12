@@ -635,7 +635,10 @@ def is_listbox_button(field: dict[str, Any]) -> bool:
     haspopup = (field.get("haspopup") or "").lower()
     role = (field.get("role") or "").lower()
     if tag == "button":
-        return haspopup == "listbox"
+        # Radix/shadcn sets role=combobox and aria-expanded on its trigger and
+        # no aria-haspopup at all, so the button was not read as a dropdown
+        # and fill() was attempted on it ("Element is not an <input>").
+        return haspopup == "listbox" or role == "combobox"
     return role in ("combobox", "listbox") or haspopup in ("listbox", "true")
 
 

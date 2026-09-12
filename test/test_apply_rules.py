@@ -614,6 +614,93 @@ class ListboxButtonTests(unittest.TestCase):
         self.assertEqual([f["label"] for f in _unresolved_fields(fields, set())], ["Country*"])
 
 
+class RadixControlTests(TempDbTestCase):
+    """Radix/shadcn renders every control twice: a styled button with the real
+    label, and a native mirror marked aria-hidden and tabindex=-1."""
+
+    def test_a_combobox_button_is_a_dropdown_not_a_text_box(self) -> None:
+        from src.apply import resolver
+
+        # Radix sets role=combobox and aria-expanded, and no aria-haspopup at
+        # all, so fill() was attempted on it: "Element is not an <input>".
+        trigger = {"tag": "button", "type": "button", "role": "combobox",
+                   "haspopup": "", "label": "Notice Period"}
+        self.assertTrue(resolver.is_listbox_button(trigger))
+        # Workday's own flavour still works.
+        self.assertTrue(resolver.is_listbox_button(
+            {"tag": "button", "haspopup": "listbox", "label": "Degree"}))
+        # A plain button is not a dropdown.
+        self.assertFalse(resolver.is_listbox_button(
+            {"tag": "button", "type": "button", "label": "Submit"}))
+
+    def test_a_radix_checkbox_is_clicked_not_checked(self) -> None:
+        from src.apply import browser, worker
+
+        clicks = []
+
+        class Locator:
+            def __init__(self):
+                self.state = "false"
+
+            def get_attribute(self, name, timeout=0):
+                return self.state if name == "aria-checked" else None
+
+            def check(self, timeout=0):
+                raise AssertionError("check() must not be used on a button")
+
+        locator = Locator()
+        field = {"tag": "button", "type": "checkbox", "label": "I consent", "checked": False}
+        page = type("P", (), {"wait_for_timeout": lambda self, ms: None})()
+        with unittest.mock.patch.object(
+                browser, "click",
+                lambda loc, timeout=0: (clicks.append(1), setattr(loc, "state", "true"))):
+            worker._set_checked(page, locator, field, True)
+        self.assertEqual(len(clicks), 1)
+
+    def test_one_already_ticked_is_left_alone(self) -> None:
+        from src.apply import browser, worker
+
+        clicks = []
+
+        class Locator:
+            def get_attribute(self, name, timeout=0):
+                return "true" if name == "aria-checked" else None
+
+        field = {"tag": "button", "type": "checkbox", "label": "I consent", "checked": True}
+        page = type("P", (), {"wait_for_timeout": lambda self, ms: None})()
+        with unittest.mock.patch.object(browser, "click",
+                                        lambda loc, timeout=0: clicks.append(1)):
+            worker._set_checked(page, locator=Locator(), field=field, on=True)
+        self.assertEqual(clicks, [])
+
+
+class AmountFormattingTests(TempDbTestCase):
+    """A box that inserts its own commas turned "30,00,000" into three crore."""
+
+    FIELD = {"tag": "input", "type": "text", "label": "Enter expected salary"}
+
+    def test_grouping_separators_are_stripped_before_typing(self) -> None:
+        from src.apply import worker
+
+        self.assertEqual(worker._plain_amount("30,00,000", self.FIELD), "3000000")
+        self.assertEqual(worker._plain_amount("25, 00, 000", self.FIELD), "2500000")
+        self.assertEqual(worker._plain_amount("3000000", self.FIELD), "3000000")
+
+    def test_prose_is_left_for_the_amount_retry_to_handle(self) -> None:
+        from src.apply import worker
+
+        for text in ("25-30 LPA", "35 LPA", "negotiable"):
+            self.assertEqual(worker._plain_amount(text, self.FIELD), text)
+
+    def test_a_box_that_is_not_about_money_is_untouched(self) -> None:
+        from src.apply import worker
+
+        for label in ("Pincode", "Phone Number", "Employee ID"):
+            self.assertEqual(
+                worker._plain_amount("1,22,003", {"tag": "input", "label": label}),
+                "1,22,003")
+
+
 class RepairWrittenTests(TempDbTestCase):
     """A form still hydrating accepts a value, passes its read-back, and then
     renders itself empty again. Three boxes were logged as filled that the

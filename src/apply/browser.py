@@ -78,6 +78,13 @@ SNAPSHOT_JS = """
     const rect = el.getBoundingClientRect();
     const type = (el.getAttribute('type') || '').toLowerCase();
     if (type === 'hidden') continue;
+    // Radix/shadcn renders every control TWICE: a styled button carrying the
+    // real label, and a native control that mirrors it for form submission,
+    // marked aria-hidden and tabindex=-1. The mirror's accessible name is its
+    // own option text, so a Notice Period select was snapshotted as a field
+    // called "Immediate 15 Days 1 Month" and the real button went unread.
+    if (el.getAttribute('aria-hidden') === 'true' &&
+        el.getAttribute('tabindex') === '-1') continue;
     if (style.visibility === 'hidden' || style.display === 'none') continue;
     if (rect.width === 0 || rect.height === 0) continue;
     // A custom dropdown that WRAPS a real control is not the field; the
@@ -279,6 +286,15 @@ SNAPSHOT_JS = """
       item.multiple = el.multiple === true;
     }
     if (type === 'checkbox' || type === 'radio') item.checked = el.checked === true;
+    // A styled button IS the checkbox or radio once its mirror is skipped:
+    // give it the type the rest of the code already knows how to handle, and
+    // read its state from aria-checked rather than a .checked property it
+    // does not have.
+    const buttonRole = (el.getAttribute('role') || '').toLowerCase();
+    if (el.tagName === 'BUTTON' && (buttonRole === 'checkbox' || buttonRole === 'radio')) {
+      item.type = buttonRole;
+      item.checked = el.getAttribute('aria-checked') === 'true';
+    }
     out.push(item);
   }
   return out;
