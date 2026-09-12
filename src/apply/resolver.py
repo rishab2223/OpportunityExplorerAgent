@@ -503,6 +503,55 @@ def tag_work_entries(fields: list[dict[str, Any]], jobs: list[dict[str, str]]) -
             field["work_entry"] = index if 0 <= index < len(jobs) else -1
 
 
+_NOTICE_LABEL_RE = re.compile(r"\bnotice\b", re.IGNORECASE)
+_IMMEDIATE_RE = re.compile(
+    r"\b(immediate\w*|available now|right away|asap|none|nil|no notice)\b", re.IGNORECASE)
+_NOTICE_UNIT_RE = re.compile(r"\bin\s+(days?|weeks?|months?)\b|\(\s*(days?|weeks?|months?)\s*\)",
+                             re.IGNORECASE)
+_NOTICE_SPAN_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(day|week|month|year)s?", re.IGNORECASE)
+_PER_DAY = {"day": 1.0, "week": 7.0, "month": 30.0, "year": 365.0}
+
+
+def notice_days(text: str) -> float | None:
+    """'Immediate Joiner' -> 0, '2 months' -> 60, '30 days' -> 30, '45' -> 45.
+    None when the phrase says nothing about a length of time."""
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    if _IMMEDIATE_RE.search(raw):
+        return 0.0
+    span = _NOTICE_SPAN_RE.search(raw)
+    if span:
+        return float(span.group(1)) * _PER_DAY[span.group(2).lower()]
+    bare = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*", raw)
+    return float(bare.group(1)) if bare else None
+
+
+def notice_for_field(value: str, field: dict[str, Any]) -> str:
+    """A notice period in the unit THIS box asks for.
+
+    LinkedIn's "Notice Period (In days)*" is a text input that validates as a
+    number, so "Immediate Joiner" went in and the form answered "Enter a
+    decimal number larger than 0.0". The profile keeps the human phrase; this
+    converts it wherever a box wants a count instead.
+    """
+    label = " ".join(str(field.get(k) or "") for k in ("label", "group", "section"))
+    if not _NOTICE_LABEL_RE.search(label):
+        return value
+    unit_match = _NOTICE_UNIT_RE.search(label)
+    numeric = (field.get("type") or "").lower() == "number"
+    if not unit_match and not numeric:
+        return value                      # a free-text box keeps the phrase
+    days = notice_days(value)
+    if days is None:
+        return value
+    unit = (unit_match.group(1) or unit_match.group(2) or "days").lower() if unit_match else "days"
+    per = _PER_DAY["day" if unit.startswith("day") else
+                   "week" if unit.startswith("week") else "month"]
+    count = days / per
+    return str(int(count)) if count == int(count) else f"{count:.1f}"
+
+
 def profile_links(data: dict[str, Any]) -> list[str]:
     return [str(data.get(k) or "").strip() for k in ("linkedin", "github", "portfolio") if str(data.get(k) or "").strip()]
 

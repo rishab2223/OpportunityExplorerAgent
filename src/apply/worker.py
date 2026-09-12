@@ -2694,6 +2694,9 @@ def _apply_value(
     # 2500000): every writer - bank, profile, model, user - goes through here,
     # so this is the one place the amount is converted.
     value = salary.for_field(value, field)
+    # "Notice Period (In days)" is a text box that validates as a number:
+    # "Immediate Joiner" was accepted and then rejected by the form itself.
+    value = resolver.notice_for_field(value, field)
     if field_type == "number" and re.search(r"[^\d.\-]", value or ""):
         # A number box takes digits only: "30 lpa" is 3000000; "yes" is
         # nothing at all (it was typed in, and rejected, twice).

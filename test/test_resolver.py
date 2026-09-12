@@ -621,6 +621,51 @@ class WorkSlotTests(ResolverTestCase):
         self.assertEqual(resolver.work_slot(field(label="Job Title*")), "title")
 
 
+class NoticePeriodUnitTests(ResolverTestCase):
+    """LinkedIn's "Notice Period (In days)*" is a TEXT box that validates as a
+    number: "Immediate Joiner" went in and the form answered "Enter a decimal
+    number larger than 0.0"."""
+
+    def test_a_box_that_asks_for_days_gets_a_number(self) -> None:
+        box = field(label="Notice Period (In days)*")
+        self.assertEqual(resolver.notice_for_field("Immediate Joiner", box), "0")
+        self.assertEqual(resolver.notice_for_field("2 months", box), "60")
+        self.assertEqual(resolver.notice_for_field("3 weeks", box), "21")
+        self.assertEqual(resolver.notice_for_field("45 days", box), "45")
+        self.assertEqual(resolver.notice_for_field("60", box), "60")
+
+    def test_a_box_that_asks_for_months_gets_months(self) -> None:
+        box = field(label="Notice period (in months)")
+        self.assertEqual(resolver.notice_for_field("2 months", box), "2")
+        self.assertEqual(resolver.notice_for_field("45 days", box), "1.5")
+
+    def test_a_free_text_box_keeps_the_phrase(self) -> None:
+        # "What is your notice period?" takes the sentence, not a count.
+        for label in ("Notice period", "What is your notice period?"):
+            self.assertEqual(
+                resolver.notice_for_field("Immediate Joiner", field(label=label)),
+                "Immediate Joiner")
+
+    def test_a_number_input_gets_a_number_whatever_the_label_says(self) -> None:
+        box = field(label="Notice period", type="number")
+        self.assertEqual(resolver.notice_for_field("Immediate Joiner", box), "0")
+
+    def test_no_other_field_is_touched(self) -> None:
+        self.assertEqual(
+            resolver.notice_for_field("30 days", field(label="Expected salary")), "30 days")
+        self.assertEqual(
+            resolver.notice_for_field("Gurgaon", field(label="Notice Period (In days)*")),
+            "Gurgaon")
+
+    def test_the_phrases_people_actually_write(self) -> None:
+        for phrase in ("Immediate", "Immediate Joiner", "immediately", "ASAP",
+                       "Available now", "None"):
+            self.assertEqual(resolver.notice_days(phrase), 0.0, phrase)
+        self.assertEqual(resolver.notice_days("1 month"), 30.0)
+        self.assertIsNone(resolver.notice_days("negotiable"))
+        self.assertIsNone(resolver.notice_days(""))
+
+
 class ContactCheckTests(ResolverTestCase):
     """A wrong e-mail means the employer cannot reply, so contact boxes are
     watched after every step - an ATS parsing the resume replaced one."""
