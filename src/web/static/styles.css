@@ -66,7 +66,7 @@ input:disabled {
   font-size: 13px;
 }
 
-/* Table pagers: First / Prev / 1 2 3 … / Next / Last */
+/* Table pagers: Prev / 1 2 3 … [jump box] … 9 10 / Next */
 .pager button {
   min-width: 34px;
   padding: 3px 8px;
@@ -81,6 +81,19 @@ input:disabled {
 .pager button:disabled:not(.current) {
   opacity: 0.45;
   cursor: default;
+}
+/* The jump box: type a page number and press Enter. Sized for four digits so
+   a long shortlist does not make it jump about. */
+.pager .pagebox {
+  width: 58px;
+  padding: 3px 6px;
+  text-align: center;
+  font: inherit;
+}
+.pager .pagebox.current {
+  font-weight: 700;
+  border-color: #1a73e8;
+  box-shadow: inset 0 0 0 1px #1a73e8;
 }
 
 /* Collapsible Selected-job panel: the 780px PDF preview otherwise pushes the

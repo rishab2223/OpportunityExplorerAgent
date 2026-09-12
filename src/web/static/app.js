@@ -8,23 +8,23 @@ const PAGE_SIZE = 15;
 
 const $ = (id) => document.getElementById(id);
 
-// Which page numbers to show: always the first and last, the current one
-// with two neighbours each side, and "…" where numbers are skipped.
+// Which page numbers to show either side of the jump box: the first three
+// and the last two. Everything between them is reached by typing a number,
+// which beats a strip of thirty buttons once a shortlist gets long.
+const PAGER_HEAD = 3;
+const PAGER_TAIL = 2;
+const PAGER_ALL_UPTO = 7;   // few enough pages: show every one, no box
+
 function pageNumbers(page, pages) {
-  if (pages <= 9) return Array.from({ length: pages }, (_, i) => i);
-  const shown = new Set([0, pages - 1]);
-  for (let i = page - 2; i <= page + 2; i++) if (i >= 0 && i < pages) shown.add(i);
-  const out = [];
-  let last = -1;
-  [...shown].sort((a, b) => a - b).forEach((i) => {
-    if (last >= 0 && i - last > 1) out.push("gap");
-    out.push(i);
-    last = i;
-  });
-  return out;
+  if (pages <= PAGER_ALL_UPTO) {
+    return Array.from({ length: pages }, (_, i) => i);
+  }
+  const head = Array.from({ length: PAGER_HEAD }, (_, i) => i);
+  const tail = Array.from({ length: PAGER_TAIL }, (_, i) => pages - PAGER_TAIL + i);
+  return [...head, "box", ...tail];
 }
 
-// First / Prev / 1 2 3 … / Next / Last for a table. `go(page)` re-renders.
+// Prev / 1 2 3 … [go to page] … 9 10 / Next for a table. `go(page)` re-renders.
 function renderPager(el, page, pages, total, noun, go) {
   el.replaceChildren();
   el.hidden = total <= PAGE_SIZE;
@@ -41,21 +41,54 @@ function renderPager(el, page, pages, total, noun, go) {
     b.disabled = opts.disabled || opts.current || false;
     b.addEventListener("click", () => go(target));
     el.appendChild(b);
+    return b;
   };
-  button("« First", 0, { disabled: page === 0, title: "First page" });
+  const gap = () => {
+    const span = document.createElement("span");
+    span.className = "muted";
+    span.textContent = "…";
+    el.appendChild(span);
+  };
+
   button("‹ Prev", page - 1, { disabled: page === 0, title: "Previous page" });
   pageNumbers(page, pages).forEach((n) => {
-    if (n === "gap") {
-      const gap = document.createElement("span");
-      gap.className = "muted";
-      gap.textContent = "…";
-      el.appendChild(gap);
-    } else {
+    if (n !== "box") {
       button(String(n + 1), n, { current: n === page });
+      return;
     }
+    gap();
+    const box = document.createElement("input");
+    box.type = "number";
+    box.className = "pagebox";
+    box.min = "1";
+    box.max = String(pages);
+    box.value = String(page + 1);
+    box.title = `Type a page between 1 and ${pages}, then press Enter`;
+    box.setAttribute("aria-label", `Page number, 1 to ${pages}`);
+    // A page inside the gap is still the current one: show it as such, so
+    // the box doubles as "you are here" rather than only a jump.
+    if (page >= PAGER_HEAD && page < pages - PAGER_TAIL) box.classList.add("current");
+    const jump = () => {
+      // Not `|| page + 1`: a typed 0 is falsy, so it was read as "nothing
+      // typed" and the box sat there instead of clamping to page 1.
+      const typed = parseInt(box.value, 10);
+      const wanted = Number.isFinite(typed)
+        ? Math.min(pages, Math.max(1, typed))
+        : page + 1;
+      box.value = String(wanted);
+      if (wanted - 1 !== page) go(wanted - 1);
+    };
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        jump();
+      }
+    });
+    box.addEventListener("change", jump);
+    el.appendChild(box);
+    gap();
   });
   button("Next ›", page + 1, { disabled: page >= pages - 1, title: "Next page" });
-  button("Last »", pages - 1, { disabled: page >= pages - 1, title: "Last page" });
   const info = document.createElement("span");
   info.className = "muted";
   info.textContent = `Page ${page + 1} of ${pages} - ${total} ${noun}`;
