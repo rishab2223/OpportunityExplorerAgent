@@ -24,22 +24,24 @@ class QueueTestCase(unittest.TestCase):
 
 
 class QueueSizeTests(QueueTestCase):
-    def test_a_queue_over_the_cap_is_refused(self) -> None:
-        too_many = [job(n) for n in range(applyqueue.MAX_QUEUE + 1)]
-        with self.assertRaises(applyqueue.QueueFull):
-            applyqueue.start(too_many, self.starter)
-        self.assertEqual(self.started, [])       # nothing was opened
+    def test_a_long_queue_is_allowed(self) -> None:
+        # No cap: how many applications can be read properly in one sitting
+        # is the candidate's judgement, not this module's.
+        applyqueue.start([job(n) for n in range(25)], self.starter)
+        self.assertEqual(self.started, ["job0"])           # still one at a time
+        self.assertEqual(len(applyqueue.state()["pending"]), 24)
 
     def test_an_empty_queue_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             applyqueue.start([], self.starter)
         with self.assertRaises(ValueError):
             applyqueue.start([{"stamp": "", "job_id": ""}], self.starter)
+        self.assertEqual(self.started, [])
 
-    def test_the_cap_itself_is_allowed(self) -> None:
-        applyqueue.start([job(n) for n in range(applyqueue.MAX_QUEUE)], self.starter)
-        self.assertEqual(self.started, ["job0"])
-        self.assertEqual(len(applyqueue.state()["pending"]), applyqueue.MAX_QUEUE - 1)
+    def test_a_queue_of_one_is_fine(self) -> None:
+        applyqueue.start([job(1)], self.starter)
+        self.assertEqual(self.started, ["job1"])
+        self.assertEqual(applyqueue.state()["pending"], [])
 
 
 class QueueAdvanceTests(QueueTestCase):

@@ -276,9 +276,9 @@ What happens:
 
 ### The queue
 
-Tick the box on up to three shortlist rows and press **Start queue**: the agent works down them in order, opening the next as soon as the previous one is finished with.
+Tick the box on any number of shortlist rows and press **Start queue**: the agent works down them in order, opening the next as soon as the previous one is finished with.
 
-It is worth being exact about what this does and does not do. **It does not reduce how often you are needed.** The agent never submits, so a queue of three is still three forms you read and three Submit buttons you press yourself. What it removes is everything either side of that: walking back to the table, finding the next row, pressing Start apply, and waiting for Chrome.
+It is worth being exact about what this does and does not do. **It does not reduce how often you are needed.** The agent never submits, so a queue of five is still five forms you read and five Submit buttons you press yourself. What it removes is everything either side of that: walking back to the table, finding the next row, pressing Start apply, and waiting for Chrome.
 
 Strictly one job at a time, and that is a constraint rather than a choice. Chrome allows one instance per user-data-dir, and the persistent profile holding your logins is a single directory; Playwright's sync API is thread-affine on top of that. So the next job starts only once the previous browser has actually closed — which is a few seconds after a submitted application, since the window deliberately lingers so the confirmation page is not yanked away mid-read.
 
@@ -293,7 +293,7 @@ Only the bare word counts, so an answer that happens to contain it — a locatio
 
 A job that simply fails does not stop the queue; only `abort` does. Neither does a browser that would not open, but that one stops it deliberately: whatever blocked this job almost certainly blocks the next, so the queue halts and says why rather than churning through the rest. **Clear queued** drops what is still waiting without touching the job in front of you.
 
-**Three is the cap, and the cap is the point.** A queue is a stack of applications you have promised to read, and a long one is a promise you will not keep. The friction of going back to the table is what currently makes you look properly at each form; take it away and you are relying on discipline alone. Raise `MAX_QUEUE` in [`src/web/applyqueue.py`](src/web/applyqueue.py) if you disagree, but decide it deliberately.
+**There is no cap on the length, deliberately.** How many applications you can read properly in one sitting is your judgement, and a number picked in the code would only be a guess dressed as a rule. But know what you are trading: the walk back to the table is currently what makes you look properly at each form, and a queue removes it. The count beside the button is there so the length is a number you chose rather than one you drifted into.
 
 ### The chat pane
 

@@ -272,8 +272,6 @@ def api_apply_queue_start(payload: dict = Body(...)) -> dict:
 
     try:
         return applyqueue.start(items, starter)
-    except applyqueue.QueueFull as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

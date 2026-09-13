@@ -10,7 +10,7 @@ const PAGE_SIZE = 15;
 // a page change) so a tick made on page 1 is still there after visiting
 // page 2. Cleared when the queue actually starts.
 const queueTicks = new Set();
-let queueState = { max: 3, current: null, pending: [], parked: [], done: [], note: "", active: false };
+let queueState = { current: null, pending: [], parked: [], done: [], note: "", active: false };
 
 const $ = (id) => document.getElementById(id);
 
@@ -995,15 +995,15 @@ async function abortApply() {
 
 function refreshQueueButton() {
   const n = queueTicks.size;
-  const max = queueState.max || 3;
   const button = $("startqueue");
   const running = queueState.active || !!applySessionId;
-  button.disabled = n < 1 || n > max || running;
+  button.disabled = n < 1 || running;
   button.textContent = n ? `Start queue (${n})` : "Start queue";
   const hint = $("queuehint");
+  // No cap: how many forms you can read properly in one sitting is your
+  // call. The count is shown so it is a deliberate number, not a slip.
   if (running) hint.textContent = "a session is running";
-  else if (n > max) hint.textContent = `at most ${max} at a time - untick ${n - max}`;
-  else if (n) hint.textContent = `${n} of ${max} ticked`;
+  else if (n) hint.textContent = `${n} ticked - each one stops for you to submit`;
   else hint.textContent = "";
 }
 

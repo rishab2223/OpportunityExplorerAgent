@@ -15,22 +15,16 @@ which is what worker.start_apply's on_released reports.
 Two ways out of a job, and they are opposites:
   park  - leave this one for later, start the next. Nothing is recorded.
   abort - stop the whole queue.
+
+There is no cap on the length. How many applications a candidate can read
+properly in one sitting is their judgement, not this module's, and a number
+picked here would only be a guess dressed as a rule.
 """
 
 from __future__ import annotations
 
 import threading
 from typing import Any, Callable
-
-# Deliberately small. The cap is the pacing control for now: a queue is a
-# stack of applications the candidate has promised to read, and a long one is
-# a promise they will not keep.
-MAX_QUEUE = 3
-
-
-class QueueFull(Exception):
-    pass
-
 
 _LOCK = threading.Lock()
 _pending: list[dict[str, str]] = []
@@ -58,8 +52,6 @@ def start(items: list[dict[str, Any]], starter: Callable[[str, str], str]) -> di
     wanted = [entry for entry in wanted if entry["stamp"] and entry["job_id"]]
     if not wanted:
         raise ValueError("no jobs to apply to")
-    if len(wanted) > MAX_QUEUE:
-        raise QueueFull(f"a queue is capped at {MAX_QUEUE} job(s); {len(wanted)} were selected")
 
     with _LOCK:
         if _current is not None:
@@ -133,7 +125,6 @@ def clear() -> dict[str, Any]:
 def state() -> dict[str, Any]:
     with _LOCK:
         return {
-            "max": MAX_QUEUE,
             "current": dict(_current) if _current else None,
             "pending": [dict(entry) for entry in _pending],
             "parked": [dict(entry) for entry in _parked],
