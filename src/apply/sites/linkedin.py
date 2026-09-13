@@ -60,6 +60,51 @@ def _clickable(field: dict[str, Any]) -> bool:
     return field.get("tag") in ("button", "a") or field.get("role") == "button"
 
 
+# browser.launch navigates with wait_until="domcontentloaded", but LinkedIn
+# builds the job card client-side after that, so a snapshot taken the moment
+# the page "loads" can hold none of it.
+READY_TIMEOUT = 10000
+READY_STEP = 250
+
+
+def page_state(fields: list[dict[str, Any]], page_text: str, url: str) -> str:
+    """Which of the three things that decide what happens next this page is
+    showing: 'login', 'closed', 'apply', or '' for none of them yet.
+
+    Order matters. A logged-out job page shows an apply button AND a sign-in,
+    and clicking apply there only bounces to the authwall, so login wins.
+    """
+    buttons = [f for f in fields if _clickable(f)]
+    if any(SIGN_IN_RE.search(_text(f)) for f in buttons):
+        return "login"
+    if is_closed(page_text, url):
+        return "closed"
+    return "apply" if pick_apply(buttons)[0] is not None else ""
+
+
+def wait_for_page(page, timeout: int = READY_TIMEOUT) -> str:
+    """Wait for the job page to show an apply control, a sign-in wall or a
+    closed banner, and say which arrived. '' means none did in time.
+
+    This replaces asking the candidate "type done when the page has loaded".
+    That question put a human in front of something the page can be asked
+    directly, and it was answered before the card had rendered about as often
+    as after - while on a posting that was already closed, or one that needed
+    a login, it made them press a key to be told so.
+    """
+    waited = 0
+    while True:
+        try:
+            state = page_state(browser.snapshot(page),
+                               browser.page_text(page, 4000), page.url or "")
+        except Exception:
+            state = ""
+        if state or waited >= timeout:
+            return state
+        page.wait_for_timeout(READY_STEP)
+        waited += READY_STEP
+
+
 def pick_apply(buttons: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str]:
     """The job's own apply control and its kind ('easy_apply' | 'external').
 
@@ -82,19 +127,20 @@ def start(page, sess) -> str:
     if LOGIN_URL_RE.search(page.url or ""):
         sess.log("[linkedin] LinkedIn wants a login first.")
         return "login"
-    fields = browser.snapshot(page)
-    buttons = [f for f in fields if _clickable(f)]
 
-    # A logged-out job page shows Sign in AND an Apply button; clicking Apply
-    # while logged out just bounces to the authwall, so log in first.
-    if any(SIGN_IN_RE.search(_text(f)) for f in buttons):
+    # Wait for the card rather than asking the candidate whether it has
+    # arrived. A logged-out page shows Sign in AND an Apply button; clicking
+    # Apply there only bounces to the authwall, so login wins.
+    state = wait_for_page(page)
+    if state == "login":
         sess.log("[linkedin] LinkedIn wants a login first.")
         return "login"
-
-    if is_closed(browser.page_text(page, 4000), page.url):
+    if state == "closed":
         sess.log("[linkedin] This job is no longer accepting applications.")
         return "closed"
 
+    fields = browser.snapshot(page)
+    buttons = [f for f in fields if _clickable(f)]
     target, kind = pick_apply(buttons)
     if target is None:
         sess.log("[linkedin] No apply button found on this page.")

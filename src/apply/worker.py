@@ -350,14 +350,16 @@ def run_session(
 
         sess.log(f"Opening {url}")
         pw, context, page = browser.launch(url, headless=headless)
-        sess.log("Chrome is open. Log in or dismiss dialogs yourself, then type done.")
         sess.log(
             "Resume and cover letter are prepared when the form asks for them "
             "(or use the Attach resume / Cover letter buttons)."
         )
-        sess.ask("Ready to start? Type done when the page has loaded.")
 
         if sites.detect(url) == "linkedin":
+            # No "ready?" question here: the handler waits for the page to
+            # show an apply control, a sign-in or a closed banner, and every
+            # one of those it then handles itself. Asking first only made the
+            # candidate press a key before being told a posting was dead.
             branch = linkedin.start(page, sess)
             for _attempt in range(2):
                 if branch != "login":
@@ -374,6 +376,15 @@ def run_session(
                 # Recorded via on_finish so future scrapes drop this posting.
                 sess.finish("closed", "no longer accepting applications")
                 return
+            if not branch:
+                # The page is not what LinkedIn job pages look like - a consent
+                # wall on a fresh profile, an interstitial, something new. Hand
+                # back rather than guess.
+                sess.log("Chrome is open. Deal with whatever is in the way, then type done.")
+                sess.ask("I could not find the apply button. Type done when the page is ready.")
+        else:
+            sess.log("Chrome is open. Log in or dismiss dialogs yourself, then type done.")
+            sess.ask("Ready to start? Type done when the page has loaded.")
 
         history: list[str] = []
         notes: list[str] = []

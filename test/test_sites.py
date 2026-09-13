@@ -60,6 +60,105 @@ class PickApplyTests(unittest.TestCase):
         )
 
 
+class PageStateTests(unittest.TestCase):
+    """What the page is showing, which is what replaced asking the candidate
+    "type done when it has loaded"."""
+
+    JOB_URL = "https://in.linkedin.com/jobs/view/software-engineer-at-servify-4458960558"
+
+    def state(self, fields, text="Software Engineer at Servify") -> str:
+        return linkedin.page_state(fields, text, self.JOB_URL)
+
+    def test_nothing_rendered_yet(self) -> None:
+        # The shell is there, the job card is not: keep waiting.
+        self.assertEqual(self.state([]), "")
+        self.assertEqual(
+            self.state([{"tag": "a", "text": "Jobs", "label": ""},
+                        {"tag": "button", "text": "Skip to search", "label": ""}]),
+            "",
+        )
+
+    def test_an_apply_button_is_ready(self) -> None:
+        self.assertEqual(
+            self.state([{"tag": "button", "text": "Easy Apply", "label": ""}]), "apply")
+        self.assertEqual(
+            self.state([{"tag": "button", "text": "Apply", "label": ""}]), "apply")
+
+    def test_a_closed_banner_beats_a_leftover_apply_button(self) -> None:
+        got = self.state([{"tag": "button", "text": "Apply", "label": ""}],
+                         "Servify\nNo longer accepting applications")
+        self.assertEqual(got, "closed")
+
+    def test_login_beats_apply(self) -> None:
+        # A logged-out page shows both; clicking Apply bounces to the authwall.
+        got = self.state([{"tag": "button", "text": "Apply", "label": ""},
+                          {"tag": "a", "text": "Sign in", "label": ""}])
+        self.assertEqual(got, "login")
+
+    def test_a_removed_posting_reads_as_closed(self) -> None:
+        got = self.state([], "Unable to load the page\nJob id provided may not be valid "
+                             "or the job posting has been removed.")
+        self.assertEqual(got, "closed")
+
+
+class WaitForPageTests(unittest.TestCase):
+    class FakePage:
+        """Renders its job card after `ticks` polls, like LinkedIn does after
+        domcontentloaded."""
+
+        def __init__(self, ticks: int, fields=None, text: str = "") -> None:
+            self.ticks = ticks
+            self.polls = 0
+            self.waited = 0
+            self.url = "https://www.linkedin.com/jobs/view/123"
+            self._fields = fields if fields is not None else [
+                {"tag": "button", "text": "Easy Apply", "label": ""}]
+            self._text = text
+
+        def wait_for_timeout(self, ms: int) -> None:
+            self.waited += ms
+
+    def _patch(self, page):
+        """Stand in for browser.snapshot / page_text against the fake page."""
+        from src.apply import browser
+
+        def snapshot(target):
+            target.polls += 1
+            return target._fields if target.polls > target.ticks else []
+
+        def page_text(target, limit=2500):
+            return target._text if target.polls > target.ticks else ""
+
+        self.addCleanup(setattr, browser, "snapshot", browser.snapshot)
+        self.addCleanup(setattr, browser, "page_text", browser.page_text)
+        browser.snapshot = snapshot
+        browser.page_text = page_text
+
+    def test_a_page_that_is_ready_at_once_does_not_wait(self) -> None:
+        page = self.FakePage(ticks=0)
+        self._patch(page)
+        self.assertEqual(linkedin.wait_for_page(page), "apply")
+        self.assertEqual(page.waited, 0)      # no sleep at all
+
+    def test_a_slow_card_is_waited_for(self) -> None:
+        page = self.FakePage(ticks=3)
+        self._patch(page)
+        self.assertEqual(linkedin.wait_for_page(page), "apply")
+        self.assertEqual(page.waited, 3 * linkedin.READY_STEP)
+
+    def test_a_page_that_never_renders_gives_up_and_says_so(self) -> None:
+        # The caller then hands back to the candidate rather than guessing.
+        page = self.FakePage(ticks=10**6)
+        self._patch(page)
+        self.assertEqual(linkedin.wait_for_page(page, timeout=1000), "")
+        self.assertLessEqual(page.waited, 1000)
+
+    def test_a_closed_posting_is_recognised_without_a_keystroke(self) -> None:
+        page = self.FakePage(ticks=1, fields=[], text="No longer accepting applications")
+        self._patch(page)
+        self.assertEqual(linkedin.wait_for_page(page), "closed")
+
+
 class LoginDetectionTests(unittest.TestCase):
     def test_authwall_urls(self) -> None:
         for url in ("https://www.linkedin.com/authwall?trk=x",
