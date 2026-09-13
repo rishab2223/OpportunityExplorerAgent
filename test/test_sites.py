@@ -168,19 +168,28 @@ class ClickApplyTests(unittest.TestCase):
     EASY = [{"tag": "a", "text": "Easy Apply", "label": "", "id": 1, "elid": ""}]
 
     class FakePage:
-        def __init__(self, dialog_visible: bool = False, controls: int = 1,
+        def __init__(self, dialogs: int = 0, tabs: int = 1, controls: int = 1,
                      url: str = "https://x/jobs/view/1"):
             self.url = url
-            self.dialog_visible = dialog_visible
+            self.dialogs = dialogs
             self.controls = controls
             self.waited = 0
+            page = self
+            self.context = type("C", (), {
+                "pages": [type("P", (), {"is_closed": staticmethod(lambda: False)})()
+                          for _ in range(tabs)]
+            })()
 
         def wait_for_timeout(self, ms: int) -> None:
             self.waited += ms
 
         def locator(self, selector: str):
             page = self
-            return type("L", (), {"count": staticmethod(lambda: 1 if page.dialog_visible else 0)})()
+            return type("L", (), {"count": staticmethod(lambda: page.dialogs)})()
+
+        def open_tab(self) -> None:
+            self.context.pages.append(
+                type("P", (), {"is_closed": staticmethod(lambda: False)})())
 
     class FakeSession:
         def __init__(self):
@@ -200,7 +209,7 @@ class ClickApplyTests(unittest.TestCase):
             return list(fields)
 
         for name, value in (("snapshot", snapshot), ("locate", lambda *a, **k: object()),
-                            ("click", click), ("control_count", lambda _p: page.controls)):
+                            ("click", click)):
             self.addCleanup(setattr, browser, name, getattr(browser, name))
             setattr(browser, name, value)
 
@@ -210,7 +219,7 @@ class ClickApplyTests(unittest.TestCase):
 
         def click(loc, timeout=0):
             calls.append(1)
-            page.dialog_visible = True          # the flow opened
+            page.dialogs += 1                   # the modal opened
 
         self._patch(self.EASY, click, page)
         target, kind = linkedin.click_apply(page, self.FakeSession())
@@ -226,7 +235,7 @@ class ClickApplyTests(unittest.TestCase):
             calls.append(1)
             if len(calls) == 1:
                 raise RuntimeError("element was detached from the DOM")
-            page.dialog_visible = True
+            page.dialogs += 1
 
         sess = self.FakeSession()
         self._patch(self.EASY, click, page)
@@ -248,7 +257,7 @@ class ClickApplyTests(unittest.TestCase):
         def click(loc, timeout=0):
             calls.append(1)
             if len(calls) >= 2:
-                page.controls = page.controls + linkedin.APPLY_NEW_CONTROLS
+                page.dialogs += 1
 
         sess = self.FakeSession()
         self._patch(self.EASY, click, page)
@@ -258,14 +267,16 @@ class ClickApplyTests(unittest.TestCase):
         self.assertTrue(any("did not open anything" in line for line in sess.logs), sess.logs)
 
     def test_a_click_that_landed_is_never_sent_twice(self) -> None:
-        # The click worked and the card then swallowed its own button. Clicking
-        # again would open a second apply flow.
-        page = self.FakePage(dialog_visible=True)
+        # The click worked, opened the modal, and the card then swallowed its
+        # own button - so Playwright still raised. Clicking again would open a
+        # second apply flow.
+        page = self.FakePage()
         calls = []
 
         def click(loc, timeout=0):
             calls.append(1)
-            raise RuntimeError("element was detached from the DOM")
+            page.dialogs += 1            # it landed...
+            raise RuntimeError("element was detached from the DOM")   # ...then vanished
 
         self._patch(self.EASY, click, page)
         target, kind = linkedin.click_apply(page, self.FakeSession())
@@ -273,22 +284,33 @@ class ClickApplyTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_what_counts_as_an_open_flow(self) -> None:
-        from src.apply import browser
+        # Every signal is a CHANGE from before the click. "The page looks
+        # different" is what the first version tested, and it lied twice.
+        before = linkedin._baseline(self.FakePage(dialogs=1, tabs=1))
 
-        self.addCleanup(setattr, browser, "control_count", browser.control_count)
-        here = "https://x/jobs/view/1"
+        self.assertFalse(linkedin._flow_opened(self.FakePage(dialogs=1, tabs=1), before))
+        self.assertTrue(linkedin._flow_opened(self.FakePage(dialogs=2, tabs=1), before),
+                        "the Easy Apply modal")
+        self.assertTrue(linkedin._flow_opened(self.FakePage(dialogs=1, tabs=2), before),
+                        "apply on the company website, in a new tab")
+        self.assertTrue(linkedin._flow_opened(
+            self.FakePage(dialogs=1, tabs=1, url="https://x/apply"), before),
+            "openSDUIApplyFlow, which navigates")
 
-        # A dialog present but hidden is not an open flow: a page that keeps
-        # its apply dialog behind display:none has one from the moment it
-        # loads, and counting it reports a click that never happened.
-        browser.control_count = lambda p: p.controls
-        self.assertFalse(linkedin._flow_opened(self.FakePage(controls=1), here, 1))
-        self.assertTrue(linkedin._flow_opened(self.FakePage(dialog_visible=True), here, 1))
-        self.assertTrue(linkedin._flow_opened(self.FakePage(url="https://x/apply"), here, 1))
-        # A flow that is not marked as a dialog at all (openSDUIApplyFlow) is
-        # recognised by the form it puts on the page.
-        self.assertTrue(linkedin._flow_opened(self.FakePage(controls=6), here, 1))
-        self.assertFalse(linkedin._flow_opened(self.FakePage(controls=2), here, 1))
+    def test_a_job_page_that_already_has_a_dialog_is_not_an_open_flow(self) -> None:
+        # The real regression: LinkedIn job pages carry visible overlays of
+        # their own. Testing for a dialog's PRESENCE called that success, so
+        # the agent announced the form was open, then paid for a model call
+        # to be told to press Easy Apply.
+        before = linkedin._baseline(self.FakePage(dialogs=2))
+        self.assertFalse(linkedin._flow_opened(self.FakePage(dialogs=2), before))
+
+    def test_lazy_panels_rendering_are_not_an_open_flow(self) -> None:
+        # The other one: the job card keeps adding controls while it renders,
+        # with no click involved, and a rise in the control count was read as
+        # the apply form arriving.
+        before = linkedin._baseline(self.FakePage(controls=1))
+        self.assertFalse(linkedin._flow_opened(self.FakePage(controls=40), before))
 
     def test_no_apply_button_is_not_an_error(self) -> None:
         page = self.FakePage()
