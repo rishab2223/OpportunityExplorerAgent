@@ -780,6 +780,16 @@ def run_session(
                 # No fields, no advance, no submit: a listing page with only an
                 # apply link, say. The model decides the next move (click/goto).
 
+            # A confirmation page often keeps a control or two (Done, "view
+            # your application"), so it never reached the no-fields branch
+            # that recognises it. The session then paid a whole model round
+            # trip to be told what the page says in plain English. Nothing
+            # left to fill plus a page that says it went through IS the
+            # answer.
+            if not unresolved and not pending_adds and _looks_submitted(browser.page_text(page)):
+                outcome, outcome_text = "applied", "confirmed by the page"
+                break
+
             # 2) One batched model call for whatever the script could not do.
             sig = _page_sig(fields)
             if sig == last_llm_sig:

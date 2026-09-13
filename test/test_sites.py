@@ -168,17 +168,19 @@ class ClickApplyTests(unittest.TestCase):
     EASY = [{"tag": "a", "text": "Easy Apply", "label": "", "id": 1, "elid": ""}]
 
     class FakePage:
-        def __init__(self, dialog_visible: bool = False, url: str = "https://x/jobs/view/1"):
+        def __init__(self, dialog_visible: bool = False, controls: int = 1,
+                     url: str = "https://x/jobs/view/1"):
             self.url = url
             self.dialog_visible = dialog_visible
+            self.controls = controls
             self.waited = 0
 
         def wait_for_timeout(self, ms: int) -> None:
             self.waited += ms
 
         def locator(self, selector: str):
-            visible = self.dialog_visible
-            return type("L", (), {"count": staticmethod(lambda: 1 if visible else 0)})()
+            page = self
+            return type("L", (), {"count": staticmethod(lambda: 1 if page.dialog_visible else 0)})()
 
     class FakeSession:
         def __init__(self):
@@ -187,80 +189,121 @@ class ClickApplyTests(unittest.TestCase):
         def log(self, text: str) -> None:
             self.logs.append(text)
 
-    def _patch(self, fields, click):
+    def _patch(self, fields, click, page):
         """Stand in for the browser layer. `click` is called per attempt."""
         from src.apply import browser
 
         self.snapshots = 0
 
-        def snapshot(page):
+        def snapshot(_page):
             self.snapshots += 1
             return list(fields)
 
         for name, value in (("snapshot", snapshot), ("locate", lambda *a, **k: object()),
-                            ("click", click)):
+                            ("click", click), ("control_count", lambda _p: page.controls)):
             self.addCleanup(setattr, browser, name, getattr(browser, name))
             setattr(browser, name, value)
 
-    def test_a_clean_click_happens_once(self) -> None:
+    def test_a_click_that_opens_the_flow_happens_once(self) -> None:
+        page = self.FakePage()
         calls = []
-        self._patch(self.EASY, lambda loc, timeout=0: calls.append(1))
-        target, kind = linkedin.click_apply(self.FakePage(), self.FakeSession())
+
+        def click(loc, timeout=0):
+            calls.append(1)
+            page.dialog_visible = True          # the flow opened
+
+        self._patch(self.EASY, click, page)
+        target, kind = linkedin.click_apply(page, self.FakeSession())
         self.assertEqual(kind, "easy_apply")
         self.assertEqual(len(calls), 1)
         self.assertEqual(self.snapshots, 1)
 
-    def test_a_replaced_button_is_found_again(self) -> None:
+    def test_a_click_that_raises_is_retried_from_a_fresh_snapshot(self) -> None:
+        page = self.FakePage()
         calls = []
 
         def click(loc, timeout=0):
             calls.append(1)
             if len(calls) == 1:
                 raise RuntimeError("element was detached from the DOM")
+            page.dialog_visible = True
 
         sess = self.FakeSession()
-        self._patch(self.EASY, click)
-        target, kind = linkedin.click_apply(self.FakePage(), sess)
+        self._patch(self.EASY, click, page)
+        target, kind = linkedin.click_apply(page, sess)
         self.assertEqual(kind, "easy_apply")
         self.assertEqual(len(calls), 2)
-        # The retry re-read the page rather than waiting on the old element.
-        self.assertEqual(self.snapshots, 2)
+        self.assertEqual(self.snapshots, 2)     # re-read, not waited on
         self.assertTrue(any("rendering" in line for line in sess.logs), sess.logs)
+
+    def test_a_click_that_quietly_does_nothing_is_retried(self) -> None:
+        # The regression this exists for: browser.click's fallback dispatches
+        # the click on the element itself, which succeeds on a node React has
+        # already thrown away. Nothing opens and nothing raises, and the old
+        # code called that a success - then waited ten seconds for a dialog
+        # and spent a model call being told to press the button again.
+        page = self.FakePage()
+        calls = []
+
+        def click(loc, timeout=0):
+            calls.append(1)
+            if len(calls) >= 2:
+                page.controls = page.controls + linkedin.APPLY_NEW_CONTROLS
+
+        sess = self.FakeSession()
+        self._patch(self.EASY, click, page)
+        target, kind = linkedin.click_apply(page, sess)
+        self.assertEqual(kind, "easy_apply")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(any("did not open anything" in line for line in sess.logs), sess.logs)
 
     def test_a_click_that_landed_is_never_sent_twice(self) -> None:
         # The click worked and the card then swallowed its own button. Clicking
         # again would open a second apply flow.
+        page = self.FakePage(dialog_visible=True)
         calls = []
 
         def click(loc, timeout=0):
             calls.append(1)
             raise RuntimeError("element was detached from the DOM")
 
-        page = self.FakePage(dialog_visible=True)
-        self._patch(self.EASY, click)
+        self._patch(self.EASY, click, page)
         target, kind = linkedin.click_apply(page, self.FakeSession())
         self.assertEqual(kind, "easy_apply")
         self.assertEqual(len(calls), 1)
 
-    def test_a_dialog_hidden_in_the_dom_is_not_an_open_flow(self) -> None:
-        # Presence is not enough: a page that keeps its apply dialog behind
-        # display:none has one from load, and counting it would report a click
-        # that never happened as a success.
-        self.assertFalse(linkedin._flow_opened(self.FakePage(dialog_visible=False), "https://x/jobs/view/1"))
-        self.assertTrue(linkedin._flow_opened(self.FakePage(dialog_visible=True), "https://x/jobs/view/1"))
-        self.assertTrue(linkedin._flow_opened(self.FakePage(url="https://x/apply"), "https://x/jobs/view/1"))
+    def test_what_counts_as_an_open_flow(self) -> None:
+        from src.apply import browser
+
+        self.addCleanup(setattr, browser, "control_count", browser.control_count)
+        here = "https://x/jobs/view/1"
+
+        # A dialog present but hidden is not an open flow: a page that keeps
+        # its apply dialog behind display:none has one from the moment it
+        # loads, and counting it reports a click that never happened.
+        browser.control_count = lambda p: p.controls
+        self.assertFalse(linkedin._flow_opened(self.FakePage(controls=1), here, 1))
+        self.assertTrue(linkedin._flow_opened(self.FakePage(dialog_visible=True), here, 1))
+        self.assertTrue(linkedin._flow_opened(self.FakePage(url="https://x/apply"), here, 1))
+        # A flow that is not marked as a dialog at all (openSDUIApplyFlow) is
+        # recognised by the form it puts on the page.
+        self.assertTrue(linkedin._flow_opened(self.FakePage(controls=6), here, 1))
+        self.assertFalse(linkedin._flow_opened(self.FakePage(controls=2), here, 1))
 
     def test_no_apply_button_is_not_an_error(self) -> None:
-        self._patch([], lambda loc, timeout=0: None)
-        self.assertEqual(linkedin.click_apply(self.FakePage(), self.FakeSession()), (None, ""))
+        page = self.FakePage()
+        self._patch([], lambda loc, timeout=0: None, page)
+        self.assertEqual(linkedin.click_apply(page, self.FakeSession()), (None, ""))
 
     def test_a_button_that_never_takes_a_click_raises(self) -> None:
+        page = self.FakePage()
+
         def click(loc, timeout=0):
             raise RuntimeError("element is not stable")
 
-        self._patch(self.EASY, click)
+        self._patch(self.EASY, click, page)
         with self.assertRaises(RuntimeError):
-            linkedin.click_apply(self.FakePage(), self.FakeSession())
+            linkedin.click_apply(page, self.FakeSession())
         self.assertEqual(self.snapshots, linkedin.APPLY_CLICK_TRIES)
 
 
