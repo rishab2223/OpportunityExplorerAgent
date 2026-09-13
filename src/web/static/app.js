@@ -140,12 +140,25 @@ function applyLineKind(text) {
 const LINE_HEAD_RE =
   /^(\[[a-z]+\]\s*)?((?:could not [a-z]+|filled|selected|checked|unchecked|uploaded|clicked|removed|switched|opened|left empty|drafting|redrafting|compiling|estimating|asking the model|model returned|model calls|recorded as applied|page dumped)\b)?/i;
 
-function appendApply(text) {
+// `at` is seconds since the session began, and it is rendered as its own
+// element rather than pushed into the text: every line kind is matched from
+// the start of the line, so a prefix inside the string would break all of
+// them. Only the first line of a multi-line event is stamped.
+function appendApply(text, at) {
   const box = $("applylog");
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  let first = true;
   for (const piece of String(text).split("\n")) {
     const line = document.createElement("div");
     line.className = `logline ${applyLineKind(piece)}`;
+    if (first && typeof at === "number") {
+      const stamp = document.createElement("span");
+      stamp.className = "at";
+      stamp.textContent = `${at.toFixed(1)}s`;
+      stamp.title = "seconds since the session started";
+      line.appendChild(stamp);
+    }
+    first = false;
     const head = LINE_HEAD_RE.exec(piece);
     const tag = (head && head[1]) || "";
     const verb = (head && head[2]) || "";
@@ -813,7 +826,7 @@ function streamApply(sessionId) {
       error: "ERROR: ",
       done: "SESSION ",
     }[event.type] || "";
-    appendApply(prefix + event.text);
+    appendApply(prefix + event.text, event.at);
     if (event.type === "question" || event.type === "choice") alertUser(event.text);
     if (event.type === "question") {
       // A model-drafted answer arrives pre-filled for editing; never clobber

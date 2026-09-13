@@ -676,11 +676,18 @@ def alerts(page) -> str:
         return ""
 
 
-def click(locator, timeout: int = 10000) -> str:
+def click(locator, timeout: int = 10000, fallback_timeout: int = 3000) -> str:
     """Click, and when the real click cannot land (an overlay or a stale
     popup intercepts pointer events - one dentsu Workday page blocked Accept
     Cookies, Prefix, the phone code and the skills box alike), dispatch the
-    click on the element itself. Returns 'clicked' or 'clicked (direct)'."""
+    click on the element itself. Returns 'clicked' or 'clicked (direct)'.
+
+    `fallback_timeout` is worth setting low wherever the element is expected
+    to be mid-rebuild: a node React has already discarded will never resolve,
+    so the fallback spends its whole budget and then raises anyway. On
+    LinkedIn's job card that was three seconds every attempt, on top of the
+    stability wait that had just failed for the same reason.
+    """
     try:
         locator.click(timeout=timeout)
         return "clicked"
@@ -690,7 +697,7 @@ def click(locator, timeout: int = 10000) -> str:
         if not blocked:
             raise
         try:
-            locator.evaluate("el => el.click()", timeout=3000)
+            locator.evaluate("el => el.click()", timeout=fallback_timeout)
         except Exception:
             raise exc
         return "clicked (direct)"

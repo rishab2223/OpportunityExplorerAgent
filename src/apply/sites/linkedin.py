@@ -82,8 +82,20 @@ def page_state(fields: list[dict[str, Any]], page_text: str, url: str) -> str:
     return "apply" if pick_apply(buttons)[0] is not None else ""
 
 
-APPLY_CLICK_TIMEOUT = 6000
-APPLY_CLICK_TRIES = 3
+# One timeout per attempt, and the first one is deliberately short.
+#
+# Playwright's click waits for the element to hold still, and LinkedIn's job
+# card is animating precisely when we first reach it - so attempt one is the
+# attempt most likely to fail, and the least worth waiting on. Six seconds of
+# stability wait plus three of fallback bought nothing and cost ten seconds
+# before the retry that actually worked. Patience is spent later instead, on
+# the attempts where the card has had time to settle and a slow click is
+# plausibly a click that will land.
+APPLY_CLICK_TIMEOUTS = (1200, 3000, 6000)
+APPLY_CLICK_TRIES = len(APPLY_CLICK_TIMEOUTS)
+# A node the card has already replaced never resolves, so the direct-dispatch
+# fallback spends its whole budget and raises regardless.
+APPLY_CLICK_FALLBACK = 1200
 
 
 APPLY_OPEN_TIMEOUT = 4000
@@ -241,7 +253,8 @@ def click_apply(page, sess) -> tuple[dict[str, Any] | None, str, str]:
         try:
             browser.click(
                 browser.locate(page, target["id"], str(target.get("elid") or "")),
-                timeout=APPLY_CLICK_TIMEOUT,
+                timeout=APPLY_CLICK_TIMEOUTS[attempt],
+                fallback_timeout=APPLY_CLICK_FALLBACK,
             )
         except Exception as exc:
             last_error = exc
@@ -322,6 +335,12 @@ def start(page, sess) -> str:
     if state == "closed":
         sess.log("[linkedin] This job is no longer accepting applications.")
         return "closed"
+    if state == "apply":
+        # Marks the boundary between LinkedIn's own loading and our clicking.
+        # With elapsed times on every line, this is the difference between
+        # "the site is slow" and "the agent is slow", which is not a question
+        # anyone should have to answer by watching the screen.
+        sess.log("[linkedin] The job card has finished loading.")
 
     target, kind, opened = click_apply(page, sess)
     if target is None:

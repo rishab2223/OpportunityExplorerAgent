@@ -705,3 +705,16 @@ a { color: var(--accent); }
   .card { padding: 12px; }
   #pdf { height: 520px; }
 }
+
+/* Seconds since the session began, on every transcript line. Narrow and
+   right-aligned so the times form a column the eye can run down looking for
+   the gap, and quiet enough not to compete with the line itself. */
+.logline .at {
+  display: inline-block;
+  min-width: 3.4em;
+  margin-right: 0.6em;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.65;
+}

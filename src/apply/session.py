@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 import uuid
 from queue import Empty, Queue
 from typing import Any
@@ -50,6 +51,12 @@ class ApplySession:
         self.label = label
         self.status = "running"
         self.pending_question = ""
+        # Every event carries seconds since the session began. Where an apply
+        # actually spends its time is not guessable from the outside - three
+        # rounds of guessing at LinkedIn's timings proved that - and a harness
+        # cannot answer it either, because the harness stubs the model and
+        # serves the page off disk.
+        self.started = time.monotonic()
         self._events: list[dict[str, Any]] = []
         self._subscribers: list[Queue] = []
         self._answers: Queue = Queue()
@@ -68,7 +75,8 @@ class ApplySession:
     def emit(self, event_type: str, text: str, **extra: Any) -> None:
         # extra may itself carry a "kind" key (choice events), so the event
         # type parameter must not share that name.
-        event = {"type": event_type, "text": text, "status": self.status, **extra}
+        event = {"type": event_type, "text": text, "status": self.status,
+                 "at": round(time.monotonic() - self.started, 1), **extra}
         with self._lock:
             self._events.append(event)
             targets = list(self._subscribers)

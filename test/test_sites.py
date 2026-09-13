@@ -261,7 +261,7 @@ class ClickApplyTests(unittest.TestCase):
         page = FakePage()
         calls = []
 
-        def click(loc, timeout=0):
+        def click(loc, timeout=0, **kw):
             calls.append(1)
             page.open_dialog(self.MODAL)
 
@@ -276,7 +276,7 @@ class ClickApplyTests(unittest.TestCase):
         page = FakePage()
         calls = []
 
-        def click(loc, timeout=0):
+        def click(loc, timeout=0, **kw):
             calls.append(1)
             if len(calls) == 1:
                 raise RuntimeError("element was detached from the DOM")
@@ -299,7 +299,7 @@ class ClickApplyTests(unittest.TestCase):
         page = FakePage()
         calls = []
 
-        def click(loc, timeout=0):
+        def click(loc, timeout=0, **kw):
             calls.append(1)
             if len(calls) >= 2:
                 page.open_dialog(self.MODAL)
@@ -318,7 +318,7 @@ class ClickApplyTests(unittest.TestCase):
         page = FakePage()
         calls = []
 
-        def click(loc, timeout=0):
+        def click(loc, timeout=0, **kw):
             calls.append(1)
             page.open_dialog(self.MODAL)   # it landed...
             raise RuntimeError("element was detached from the DOM")   # ...then vanished
@@ -334,7 +334,7 @@ class ClickApplyTests(unittest.TestCase):
         # had it press Easy Apply itself, the slowest way to click a button.
         page = FakePage()
         sess = self.FakeSession()
-        self._patch(self.EASY, lambda loc, timeout=0: None, page)
+        self._patch(self.EASY, lambda loc, **kw: None, page)
         self.assertEqual(linkedin.click_apply(page, sess)[2], "")
 
     def test_what_counts_as_an_open_flow(self) -> None:
@@ -395,15 +395,36 @@ class ClickApplyTests(unittest.TestCase):
         page.url = "https://www.linkedin.com/jobs/view/1/?refId=abc&trackingId=def"
         self.assertEqual(linkedin._flow_opened(page, before), "")
 
+    def test_the_first_attempt_does_not_wait_for_a_card_that_is_animating(self) -> None:
+        # Playwright's click waits for the element to hold still, and the job
+        # card is animating exactly when we first reach it - so attempt one is
+        # the one most likely to fail and the least worth waiting on. Six
+        # seconds of it, plus three more of fallback, cost ten seconds before
+        # the retry that actually worked.
+        page = FakePage()
+        seen = []
+
+        def click(loc, timeout=0, **kw):
+            seen.append((timeout, kw.get("fallback_timeout")))
+            if len(seen) >= 2:
+                page.open_dialog(self.MODAL)
+
+        self._patch(self.EASY, click, page)
+        linkedin.click_apply(page, self.FakeSession())
+        self.assertEqual([t for t, _ in seen],
+                         list(linkedin.APPLY_CLICK_TIMEOUTS[:2]))
+        self.assertLess(seen[0][0], seen[1][0], "patience is spent later, not first")
+        self.assertTrue(all(f == linkedin.APPLY_CLICK_FALLBACK for _, f in seen))
+
     def test_no_apply_button_is_not_an_error(self) -> None:
         page = FakePage()
-        self._patch([], lambda loc, timeout=0: None, page)
+        self._patch([], lambda loc, **kw: None, page)
         self.assertEqual(linkedin.click_apply(page, self.FakeSession()), (None, "", ""))
 
     def test_a_button_that_never_takes_a_click_raises(self) -> None:
         page = FakePage()
 
-        def click(loc, timeout=0):
+        def click(loc, timeout=0, **kw):
             raise RuntimeError("element is not stable")
 
         self._patch(self.EASY, click, page)
