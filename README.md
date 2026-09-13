@@ -65,6 +65,19 @@ resume:
 - V1 is a single main `.tex` file (no `\input` graph).
 - Tailoring keys off `\section{...}` / `\section*{...}` headings; a `.tex` without any falls back to text suggestions.
 
+#### Fonts
+
+Every tailored `.tex` is given two packages before it compiles, if your source does not already have them:
+
+```latex
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+```
+
+`fontenc` is what makes an underscore in an email address survive PDF text extraction — without it, a site that parses your uploaded resume reads `rishab_arora@…` as `rishabarora@…` and fills the wrong address into its own form. But `[T1]{fontenc}` **alone** switches the document to EC fonts, which ship only as bitmaps: the text stays correct and becomes visibly soft and grey, and the PDF carries Type 3 fonts. `lmodern` supplies the same shapes as real Type 1 vectors, so you get the encoding without the blur. Both lines, or neither — one on its own is the worst of the three.
+
+If you hand-write a `.tex`, put both in your preamble. The pair is added idempotently, so a source that already has them is left byte-identical.
+
 ### Scrape
 
 Jobs come from Apify (no local browser):
@@ -125,9 +138,17 @@ opportunity-explorer run
 
 Exit code `0` on success, `1` if a pipeline step failed.
 
-### Standalone tests
+### Tests
 
-Scraper tests hit Apify only (no scoring). From the project root:
+The whole suite is offline — no API key, no network, no browser — so it runs in about ten seconds:
+
+```powershell
+python -m unittest discover -s test
+```
+
+They cover the resolver's rules, the apply loop's guards, the answer bank, LaTeX validation, PDF trimming, salary parsing and the history database. Anything touching the apply engine should keep them green. Most exist because a real application went wrong in a specific way, and the comment above each says which — so a failure usually names the bug it was written for.
+
+Two files in `test/` are **not** unit tests: they are manual probes that call the real Apify actors and spend credits. Run them by hand when an actor's output format changes, never as part of the suite:
 
 ```powershell
 python test/test_indeed_apify.py
@@ -135,12 +156,6 @@ python test/test_linkedin_apify.py
 ```
 
 They write JSON under `test/output/`.
-
-Filename and LaTeX-strip unit tests (no API):
-
-```powershell
-python -m unittest test.test_filenames test.test_latex_plain
-```
 
 ## Outputs
 
@@ -185,10 +200,10 @@ python -m src.web              # then open http://127.0.0.1:8000
 opportunity-explorer-web       # same thing after pip install -e .
 ```
 
-One plain page, four sections:
+One plain page, four sections plus a **Referrals** tab that appears once a job is waiting on a contact:
 
 - **Run** — optional resume path and job cap, a Start run button, and the live log. Logs stream over server-sent events, so you watch `[score] 12/40 …` as it happens instead of guessing. One run at a time.
-- **Shortlist** — pick any past run from the dropdown; the table shows company, title, relevance, location, apply and listing links, the local PDF path with a copy button, status, and per-row actions.
+- **Shortlist** — pick any past run from the dropdown; the table shows company, title, relevance, location, apply and listing links, the local PDF path with a copy button, status, and per-row actions. Long runs page at 15 rows: `‹ Prev  1 2 3 … [box] … 29 30  Next ›`, where the box takes a page number directly, so run 200 of a 400-job scrape is one keystroke away instead of thirty clicks.
 - **Selected job** — why_score, the resume-edit changelog, interview prep, and the tailored resume rendered in a PDF preview.
 - **Apply** — the transcript and chat box for an assisted apply session.
 
@@ -198,10 +213,13 @@ The UI never downloads files. Copy the path from the table and open the PDF wher
 
 Click **Start apply** on a row. This is deliberately supervised, one job at a time.
 
-Before the first run, fill in [`localData/apply_profile.json`](localData/) (created automatically, gitignored) with your name, email, phone, notice period, CTC expectations, and work authorization — every field filled there is a question the agent never has to ask. Several more keys each remove a whole class of question:
+Before the first run, fill in [`localData/apply_profile.json`](localData/) (created automatically, gitignored) with your name, email, phone, location, notice period and CTC expectations — every field filled there is a question the agent never has to ask, and a fact the model never has to be paid to re-derive from your resume. Several more keys each remove a whole class of question:
 
 | Key | What it fills |
 | --- | --- |
+| `full_name`, `email`, `phone`, `location` | the contact block on every form, matched by the boxes' `autocomplete` attributes before their labels, so a form in any wording gets them |
+| `current_company`, `current_title`, `total_experience_years` | "Current employer", "Current designation", "Total years of experience" |
+| `notice_period`, `current_ctc`, `expected_ctc`, `willing_to_relocate` | the four questions almost every Indian application asks. `notice_period` takes a human phrase (`2 months`, `Immediate`) and is converted to whatever unit the box wants |
 | `skills` | a comma-separated list, written into a skills box or picked one by one in a skills typeahead. **Order matters**: a form that says "add up to 10 skills" gets the first ten, so put the strongest first |
 | `languages` | `English - Intermediate; Hindi - Fluent` — the agent clicks *Add Language* once per entry and fills the level selects |
 | `education` | `NorthCap University - Bachelors, Computer and Information Science, 2015-2019` — school, degree, field of study and years, so a 345-entry "Field of study" dropdown is answered without the model guessing |
@@ -216,9 +234,30 @@ Before the first run, fill in [`localData/apply_profile.json`](localData/) (crea
 
 Eligibility and demographic questions are deliberately **not** profile keys. Work authorisation, visa sponsorship, citizenship, gender, disability, veteran status and background checks are legal declarations: the agent asks you once, stores the answer only after you confirm it, and logs every reuse. No profile rule can answer one of them, whatever the profile happens to hold.
 
-**Your contact details are re-checked after every step.** A site that parses your uploaded resume can overwrite them with its own reading — one wrote `acandidate@example.invalid` for an address whose underscore the PDF text layer had swallowed. If a box the agent filled changes underneath it, the right value goes back in; if any contact box disagrees with your profile, whoever wrote it, the review prompt leads with `CHECK YOUR CONTACT DETAILS` and names both values. (Resumes compiled by this project carry `\usepackage[T1]{fontenc}` so the underscore survives extraction; add it to any hand-written `.tex`.)
+**Your contact details are re-checked after every step.** A site that parses your uploaded resume can overwrite them with its own reading — one wrote `acandidate@example.invalid` for an address whose underscore the PDF text layer had swallowed. If a box the agent filled changes underneath it, the right value goes back in; if any contact box disagrees with your profile, whoever wrote it, the review prompt leads with `CHECK YOUR CONTACT DETAILS` and names both values. (Resumes compiled by this project carry `\usepackage{lmodern}` and `\usepackage[T1]{fontenc}` so the underscore survives extraction; add both to any hand-written `.tex`. `fontenc` alone is not enough — see [Fonts](#fonts).)
 
 The form-filling model is `apply_provider` in `settings.yaml` (`claude` → `claude.apply_model`, default `claude-opus-5` at `apply_effort: low`; `openai` → `openai.apply_model`) — but most fields never reach it. A deterministic resolver fills everything the profile or the answer bank already covers (contact fields via their `autocomplete` attributes, links, notice period, CTC…), the script clicks Next/Continue/Review wizard buttons itself, and the model gets **one batched call per page** for only the fields that remain. A typical application costs 0-3 model calls; the session log ends with the exact tally (`Model calls this session: N`).
+
+#### What the script handles without asking
+
+Each of these started as a real application that went wrong. They are listed so you know what the agent is already expected to survive — if one of them misbehaves again, it is a regression, not a gap.
+
+| Situation | What happens |
+| --- | --- |
+| **A form wipes what was typed** | React and Next.js forms hydrate *after* the first paint. A value filled before that moment is accepted, reads back correctly, and is then thrown away when the component mounts. Every value the agent wrote is re-checked against the live page at the end of the step and typed again — with real keystrokes, which a controlled component cannot discard — if it went missing |
+| **A skills box that is not a chip box** | The control is classified before anything is typed: a plain input or textarea gets one comma-separated write, a chip typeahead gets one skill at a time with its suggestion list, a `<select multiple>` gets its options picked by name. Guessing wrong the other way — dumping a comma list into a chip box — makes one nonsense chip that cannot be undone, so an ambiguous control tries the typeahead first |
+| **"Notice period" in the wrong unit** | A box asking for days gets `60`, one asking for months gets `2`, one asking for free text gets `2 months`. The unit comes from the label, not from a guess |
+| **A salary box that reformats as you type** | Some amount fields insert their own separators on each keystroke, so a profile value of `30,00,000` typed one character at a time came out as `3,00,00,000` — three crore instead of thirty lakh, on a real application. Salary amounts go in as bare digits and the box applies its own formatting. A value that is prose rather than a number (`25-30 LPA`) is left exactly as written |
+| **Styled controls with no real input** | Radix and shadcn render a checkbox or radio as a `<button>` with `aria-checked`, paired with a hidden native input that is `aria-hidden` and untabbable. The snapshot skips the mirror and treats the button as the control, so the answer lands where the page is actually looking |
+| **A wizard that renders slowly** | Waiting is adaptive, not a fixed sleep: after a click the page is polled every 100 ms until it changes and then holds still for two polls. A step that renders at once costs ~300 ms instead of the whole budget; one that takes 1.5 s is still waited for. The quiet polls matter — frameworks routinely render an entry and immediately re-render it, and returning on the first sign of change reads a half-built page |
+| **A job that no longer exists** | LinkedIn does not say "closed" for a posting that was taken down; it serves *"Job id provided may not be valid or the job posting has been removed"* on a page with no form at all. That is recorded as closed and the job drops out of future scrapes, instead of the agent asking you to paste a URL for a job nobody can apply to |
+| **Work history the model would otherwise re-derive** | Employment entries come from the `jobs` key, matched to the form's entry blocks by title and company. An entry the site pre-filled with an employer your profile does not name is left completely alone |
+
+#### The form catalogue
+
+`localData/form_catalogue.json` (gitignored) keeps a **shape-only** record of the forms you meet, filed by applicant tracking system — Workday, Phenom, Greenhouse, Lever, SuccessFactors, iCIMS, Taleo, Ashby, SmartRecruiters, Talentrecruit. Shape means label, tag, type, section, role and required-ness. Every value and every piece of text is stripped before anything is written, because the live snapshot holds your employers, dates and contact details.
+
+It is used as a **hint** — which widget a known field turned out to be — and never as a substitute for reading the live page. Acting on a stale shape is how you fill the wrong box. Delete the file any time; it rebuilds as you apply.
 
 **The answer bank.** Any question you answer in chat is remembered in the `known_answers` table of `localData/job_history.db`, keyed by topic so every phrasing of "notice period" is one entry. Next application, it's filled automatically: neutral answers silently (logged as `[saved]`), legal/eligibility answers only after you confirmed "remember this?" once — and every reuse prints a visible `[saved] question -> answer` line. OTPs, passwords and captchas are never stored, and neither is anything mentioning the specific company. Fix a wrong entry any time: `python -m sqlite3 localData/job_history.db "SELECT * FROM known_answers"`.
 

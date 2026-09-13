@@ -25,30 +25,41 @@ SECRET_HINTS = (
 
 # Answered questions live in the answer bank (src/answers.py, SQLite), not
 # here; this file is the curated, hand-edited part of the candidate's data.
+# Every key a rule can read is listed, empty, so the file the candidate opens
+# shows the whole surface rather than hiding half of it in the README. An
+# empty value costs nothing: as_prompt_text() skips it, and no rule fires.
 TEMPLATE: dict[str, Any] = {
     "full_name": "",
     "email": "",
     "phone": "",
+    "phone_country_code": "",
     "location": "",
     "linkedin": "",
     "github": "",
     "portfolio": "",
     "current_company": "",
+    "current_company_location": "",
     "current_title": "",
     "total_experience_years": "",
     "notice_period": "",
     "current_ctc": "",
     "expected_ctc": "",
-    "work_authorization": "",
+    # The dropdowns that sit beside a salary amount, e.g. "INR" and "Annual".
+    "salary_currency": "",
+    "salary_period": "",
     "willing_to_relocate": "",
     "preferred_location": "",
+    "address_line1": "",
     "city": "",
+    "state": "",
     "postal_code": "",
     "date_of_birth": "",
-    # Eligibility and demographic questions (sponsorship, citizenship,
-    # gender, disability, veteran status) are deliberately NOT here:
-    # they are legal declarations, asked once and stored only in the
-    # answer bank after the candidate confirms them.
+    # Eligibility and demographic questions (work authorisation, sponsorship,
+    # citizenship, gender, disability, veteran status) are deliberately NOT
+    # here: they are legal declarations, asked once and stored only in the
+    # answer bank after the candidate confirms them. "work_authorization" was
+    # a key here until its rule was removed; offering a box for it invited an
+    # answer that no rule could ever use and that every prompt would carry.
     "willing_to_travel": "",
     "earliest_start_date": "",
     "how_did_you_hear": "",
@@ -60,11 +71,23 @@ TEMPLATE: dict[str, Any] = {
     "highest_education_level": "",
     "field_of_study": "",
     "graduation_year": "",
+    # One line per school, separated by ";" or a newline, for the forms that
+    # want the whole thing in one box:
+    #   "NorthCap University - Bachelors, Computer Science, 2015-2019"
+    "education": "",
+    # Strongest first: a form capped at ten skills takes the first ten.
+    "skills": "",
+    # "English - Intermediate; Hindi - Fluent"
+    "languages": "",
     # Employment history, most recent first. Filled by the script, never by
     # the model: it does not change between applications. Each row takes
     # title, company, location, start and end as "MM/YYYY", current, and a
     # description. The candidate's own project work does NOT belong here.
     "jobs": [],
+    # Resume entries that are the candidate's own projects rather than jobs.
+    # Never entered as work experience, and removed again when a site creates
+    # one from the uploaded resume.
+    "not_employment": "",
 }
 
 _NON_ALNUM = re.compile(r"[^a-z0-9 ]+")

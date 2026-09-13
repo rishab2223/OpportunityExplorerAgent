@@ -754,3 +754,39 @@ class PortfolioSectionTests(ResolverTestCase):
         self.assertEqual(resolver.resolve(box), ("https://linkedin.com/in/test", "profile"))
         self.assertEqual(resolver.resolve(field(label="URL*", section="Portfolio (Optional) 1", ordinal=0, taken_links=taken)),
                          ("https://github.com/test", "profile"))
+
+
+class ProfileTemplateTests(unittest.TestCase):
+    """The template is the only thing most candidates ever read. A key in it
+    that no rule consults is worse than a missing one: it invites an answer
+    that silently does nothing, and (for an eligibility question) one that
+    every model prompt would then carry. "work_authorization" sat there for a
+    week after its rule was deleted, which is what this test is for."""
+
+    SRC = Path(__file__).resolve().parent.parent / "src" / "apply"
+
+    def _code(self) -> str:
+        return "\n".join(
+            (self.SRC / name).read_text(encoding="utf-8")
+            for name in ("resolver.py", "worker.py")
+        )
+
+    def test_every_template_key_is_read_by_a_rule(self) -> None:
+        code = self._code()
+        orphans = [key for key in profile.TEMPLATE
+                   if f'"{key}"' not in code and f"'{key}'" not in code]
+        self.assertEqual(orphans, [], f"profile keys nothing reads: {orphans}")
+
+    def test_every_template_key_is_documented(self) -> None:
+        readme = (self.SRC.parent.parent / "README.md").read_text(encoding="utf-8")
+        missing = [key for key in profile.TEMPLATE if f"`{key}`" not in readme]
+        self.assertEqual(missing, [], f"profile keys the README never names: {missing}")
+
+    def test_eligibility_is_never_offered_as_a_key(self) -> None:
+        # Legal declarations are asked once and stored in the answer bank
+        # after the candidate confirms them; a profile box for one would be
+        # answered without them ever seeing the question.
+        for key in ("work_authorization", "requires_sponsorship", "nationality",
+                    "citizenship", "gender", "ethnicity", "disability_status",
+                    "veteran_status"):
+            self.assertNotIn(key, profile.TEMPLATE)
