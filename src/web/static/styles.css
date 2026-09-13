@@ -1,27 +1,105 @@
+/* Opportunity Explorer dashboard.
+   One accent colour, one neutral ramp, and cards to separate the three things
+   the page does: start a run, pick from the shortlist, work an application. */
+
+:root {
+  --bg: #f5f6f8;
+  --surface: #fff;
+  --border: #e4e7eb;
+  --border-strong: #cfd4da;
+  --text: #1f2328;
+  --muted: #646c76;
+  --accent: #1a56db;
+  --accent-soft: #eef3fd;
+  --accent-line: #c9dafa;
+  --good: #147a3d;
+  --good-soft: #eaf6ee;
+  --bad: #b42318;
+  --bad-soft: #fdf0ee;
+  --warn: #9a6700;
+  --warn-soft: #fdf6e5;
+  --radius: 8px;
+  --radius-sm: 5px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+
+* { box-sizing: border-box; }
+
 body {
-  font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
   line-height: 1.5;
   margin: 0;
-  color: #1b1b1b;
-  background: #fff;
+  color: var(--text);
+  background: var(--bg);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
 }
 
 main {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
-  padding: 16px 24px 64px;
+  padding: 20px 24px 72px;
 }
 
 h1 {
-  font-size: 20px;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  margin: 0 0 4px;
 }
 
 h2 {
-  font-size: 16px;
-  margin-top: 32px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid #d9d9d9;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  margin: 0;
 }
+
+/* ---------------------------------------------------------------- cards */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px 16px;
+  margin: 0 0 16px;
+}
+
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.card-head h2 { margin-right: auto; }
+
+.card-head-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The action bar above and below the table. Repeated at both ends so a long
+   shortlist never needs scrolling back up to start a queue. */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin: 0 0 10px;
+  background: #fafbfc;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.toolbar[data-toolbar="bottom"] { margin: 10px 0 0; }
 
 .row {
   display: flex;
@@ -31,401 +109,18 @@ h2 {
   margin: 8px 0;
 }
 
+.row .grow,
+.toolbar .grow,
+#chatrow .grow { flex: 1; }
+
 label {
   font-size: 13px;
-  color: #555;
-}
-
-input,
-select,
-button {
-  padding: 5px 8px;
-  font-size: 13px;
-  border: 1px solid #bbb;
-  border-radius: 3px;
-  background: #fff;
-}
-
-button {
-  cursor: pointer;
-  background: #f2f2f2;
-}
-
-button:hover:enabled {
-  background: #e6e6e6;
-}
-
-button:disabled,
-input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+  color: var(--muted);
 }
 
 .muted {
-  color: #666;
+  color: var(--muted);
   font-size: 13px;
-}
-
-/* Table pagers: Prev / 1 2 3 … [jump box] … 9 10 / Next */
-.pager button {
-  min-width: 34px;
-  padding: 3px 8px;
-}
-.pager button.current {
-  font-weight: 700;
-  background: #1a73e8;
-  color: #fff;
-  border-color: #1a73e8;
-  cursor: default;
-}
-.pager button:disabled:not(.current) {
-  opacity: 0.45;
-  cursor: default;
-}
-/* The jump box: type a page number and press Enter. Sized for four digits so
-   a long shortlist does not make it jump about. */
-.pager .pagebox {
-  width: 58px;
-  padding: 3px 6px;
-  text-align: center;
-  font: inherit;
-}
-.pager .pagebox.current {
-  font-weight: 700;
-  border-color: #1a73e8;
-  box-shadow: inset 0 0 0 1px #1a73e8;
-}
-
-/* Collapsible Selected-job panel: the 780px PDF preview otherwise pushes the
-   Apply chat far below the table. */
-#jobdetail summary {
-  cursor: pointer;
-  user-select: none;
-  list-style-position: outside;
-}
-#jobdetail summary h2 {
-  display: inline;
-}
-#jobdetail summary:hover h2 {
-  color: #333;
-}
-#jobdetailname {
-  font-weight: normal;
-}
-
-/* Collapsible command reference under the apply chat. */
-#chathelp {
-  margin: 6px 0 0;
-  font-size: 13px;
-  color: #555;
-}
-#chathelp summary {
-  cursor: pointer;
-  color: #666;
-  user-select: none;
-}
-#chathelp .cmds {
-  margin: 6px 0 2px;
-  border-collapse: collapse;
-}
-#chathelp .cmds td {
-  padding: 2px 10px 2px 0;
-  vertical-align: top;
-}
-#chathelp .cmds td:first-child {
-  white-space: nowrap;
-}
-#chathelp code {
-  background: #f0f0f0;
-  border-radius: 3px;
-  padding: 0 4px;
-}
-
-.logbox {
-  height: 220px;
-  overflow: auto;
-  margin: 8px 0;
-  padding: 8px;
-  background: #f7f7f7;
-  border: 1px solid #ddd;
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 12px;
-  white-space: pre-wrap;
-}
-
-/* The answer box: a drafted answer is a paragraph, so it needs room. It
-   grows with the text instead of scrolling sideways in a one-line input. */
-#chatbox { margin: 8px 0; }
-
-#chat {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  min-height: 34px;
-  max-height: 260px;
-  padding: 8px;
-  border: 1px solid #bbb;
-  border-radius: 3px;
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.45;
-  resize: vertical;
-  overflow-y: auto;
-}
-#chat:focus {
-  outline: none;
-  border-color: #0b3d91;
-  box-shadow: 0 0 0 2px rgba(11, 61, 145, 0.12);
-}
-#chatrow {
-  margin-top: 6px;
-  align-items: center;
-}
-#chatrow .grow { flex: 1; }
-#chatcount { font-size: 11px; }
-
-/* The apply transcript: read while answering, so the eye needs to land on
-   the question. Routine fills recede; nothing is hidden. */
-#applylog { height: 300px; }
-
-.logline {
-  padding: 1px 0 1px 6px;
-  border-left: 3px solid transparent;
-}
-.logline.ask {
-  font-weight: 600;
-  color: #0b3d91;
-  background: #eef3fb;
-  border-left-color: #0b3d91;
-  margin-top: 4px;
-}
-.logline.asked { color: #4a6fa5; }
-.logline.you {
-  color: #0a5c2e;
-  background: #f0f7f2;
-  border-left-color: #0a5c2e;
-}
-.logline.bad {
-  color: #a3261c;
-  background: #fbf0ef;
-  border-left-color: #a3261c;
-}
-.logline.warn {
-  color: #8a5a00;
-  background: #fdf6e7;
-  border-left-color: #c08a1e;
-}
-.logline.fill { color: #3b3b3b; }
-.logline .tag {
-  text-transform: uppercase;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  color: #5a5a5a;
-}
-.logline .verb {
-  text-transform: uppercase;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-}
-.logline.bad .tag,
-.logline.bad .verb { color: #a3261c; }
-.logline.warn .verb { color: #8a5a00; }
-.logline.quiet .verb {
-  font-weight: 600;
-  color: #8a8a8a;
-}
-.logline.quiet { color: #8a8a8a; }
-.logline.meta {
-  color: #777;
-  font-style: italic;
-  margin-top: 4px;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-th,
-td {
-  border: 1px solid #ddd;
-  padding: 6px 8px;
-  text-align: left;
-  vertical-align: top;
-}
-
-thead th {
-  position: sticky;
-  top: 0;
-  background: #eee;
-}
-
-tbody tr {
-  cursor: pointer;
-}
-
-tbody tr:nth-child(even) {
-  background: #fafafa;
-}
-
-tbody tr:hover {
-  background: #f0f6ff;
-}
-
-tbody tr.selected {
-  background: #dceaff;
-}
-
-.score-high {
-  background: #d9f0d9;
-  font-weight: 600;
-  text-align: center;
-}
-
-.score-mid {
-  background: #fdf3d0;
-  text-align: center;
-}
-
-.source {
-  color: #555;
-  font-size: 12px;
-  text-transform: capitalize;
-}
-
-.path {
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 11px;
-  word-break: break-all;
-}
-
-.status-applied {
-  color: #1a7f37;
-  font-weight: 600;
-}
-
-.status-failed {
-  color: #b42318;
-  font-weight: 600;
-}
-
-.status-skipped {
-  color: #888;
-}
-
-.status-running {
-  color: #9a6700;
-  font-weight: 600;
-}
-
-#nav {
-  display: flex;
-  gap: 4px;
-  margin: 16px 0 0;
-  border-bottom: 1px solid #d9d9d9;
-}
-
-#nav button {
-  border: 1px solid #d9d9d9;
-  border-bottom: none;
-  border-radius: 4px 4px 0 0;
-  background: #f7f7f7;
-  padding: 6px 16px;
-  font-size: 13px;
-  margin-bottom: -1px;
-}
-
-#nav button.active {
-  background: #fff;
-  border-bottom: 1px solid #fff;
-  font-weight: 600;
-}
-
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 50;
-}
-
-/* display:flex would beat the hidden attribute's UA rule and leave an
-   invisible overlay swallowing every click on the page. */
-.modal-backdrop[hidden] {
-  display: none;
-}
-
-.modal {
-  background: #fff;
-  border: 1px solid #bbb;
-  border-radius: 6px;
-  padding: 16px 20px;
-  width: min(560px, 90vw);
-  max-height: 80vh;
-  overflow: auto;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
-}
-
-.modal h3 {
-  margin: 0 0 8px;
-  font-size: 15px;
-}
-
-.modal-text {
-  width: 100%;
-  box-sizing: border-box;
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.45;
-  margin: 8px 0;
-}
-
-.modal-changes {
-  white-space: pre-wrap;
-  font-size: 12px;
-  background: #f7f7f7;
-  border: 1px solid #e2e2e2;
-  border-radius: 4px;
-  padding: 8px;
-  max-height: 220px;
-  overflow: auto;
-  margin-bottom: 8px;
-}
-
-.status-closed {
-  color: #888;
-  font-weight: 600;
-  text-decoration: line-through;
-}
-
-.status-referral_pending {
-  color: #6f42c1;
-  font-weight: 600;
-}
-
-.status-referral_sent {
-  color: #0969da;
-  font-weight: 600;
-}
-
-#detail {
-  white-space: pre-wrap;
-  font-size: 13px;
-}
-
-#pdf {
-  width: 100%;
-  height: 780px;
-  margin-top: 12px;
-  border: 1px solid #ccc;
-}
-
-/* Queue: ticked rows, and the strip above the apply transcript. */
-.row .grow {
-  flex: 1;
 }
 
 .sr-only {
@@ -440,9 +135,180 @@ tbody tr.selected {
   border: 0;
 }
 
+/* ------------------------------------------------------------- controls */
+
+input,
+select,
+button {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+
+button {
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+button:hover:enabled {
+  background: #f1f3f5;
+  border-color: #b9c0c8;
+}
+
+button:active:enabled { background: #e8ebee; }
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover:enabled {
+  background: #1747b8;
+  border-color: #1747b8;
+}
+
+.btn-primary:active:enabled { background: #133c9c; }
+
+#abort {
+  color: var(--bad);
+  border-color: #e6bdb7;
+}
+
+#abort:hover:enabled {
+  background: var(--bad-soft);
+  border-color: #d69a92;
+}
+
+button:disabled,
+input:disabled,
+textarea:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #eef0f2;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ nav */
+
+#nav {
+  display: flex;
+  gap: 4px;
+  margin: 14px 0 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+#nav button {
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 7px 16px;
+  margin-bottom: -1px;
+}
+
+#nav button:hover:enabled {
+  background: #edeff2;
+  border-color: transparent;
+  color: var(--text);
+}
+
+#nav button.active {
+  background: var(--surface);
+  border-color: var(--border);
+  border-bottom: 1px solid var(--surface);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- table */
+
+/* The header sticks while the body scrolls, so a shortlist page can be read
+   without losing which column is which. */
+.tablewrap {
+  max-height: 68vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f3f5f7;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.045em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+}
+
+tbody tr { cursor: pointer; }
+tbody tr:nth-child(even) { background: #fbfcfd; }
+tbody tr:hover { background: var(--accent-soft); }
+tbody tr:last-child td { border-bottom: none; }
+
+tbody tr.selected {
+  background: #dfeafd;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+td button {
+  padding: 2px 7px;
+  font-size: 11.5px;
+  margin: 0 2px 2px 0;
+}
+
+/* Actions and links read as one block, not a ragged column of buttons. */
+tbody td:last-child { min-width: 150px; }
+
 th.tick,
 td.tick {
-  width: 26px;
+  width: 34px;
   text-align: center;
   padding-right: 0;
 }
@@ -450,48 +316,392 @@ td.tick {
 td.tick input {
   cursor: pointer;
   margin: 0;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
 }
 
-tr.queued {
-  background: #f0f6ff;
+tr.queued { background: #eaf1fe; }
+tr.queued td.tick { box-shadow: inset 3px 0 0 var(--accent); }
+
+.score-high,
+.score-mid {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
 }
+
+.score-high { background: var(--good-soft); color: var(--good); }
+.score-mid { background: var(--warn-soft); color: var(--warn); }
+
+.source {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.path {
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 11px;
+  word-break: break-all;
+  color: var(--muted);
+  max-width: 260px;
+  max-height: 2.9em;
+  overflow: hidden;
+}
+
+td[class^="status-"],
+td[class*=" status-"] {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-applied { color: var(--good); }
+.status-failed { color: var(--bad); }
+.status-running { color: var(--warn); }
+.status-skipped { color: #8c949e; }
+.status-pending { color: var(--muted); font-weight: 500; }
+.status-closed {
+  color: #8c949e;
+  text-decoration: line-through;
+}
+.status-referral_pending { color: #6f42c1; }
+.status-referral_sent { color: #0969da; }
+
+/* --------------------------------------------------------------- pager */
+
+.pager {
+  justify-content: center;
+  gap: 4px;
+  margin: 10px 0 0;
+}
+
+.pager button {
+  min-width: 34px;
+  padding: 4px 9px;
+}
+
+.pager button.current {
+  font-weight: 650;
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  cursor: default;
+}
+
+.pager button:disabled:not(.current) {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The jump box: type a page number and press Enter. Four digits wide so a
+   long shortlist does not make it jump about. */
+.pager .pagebox {
+  width: 62px;
+  padding: 4px 6px;
+  text-align: center;
+  font: inherit;
+}
+
+.pager .pagebox.current {
+  font-weight: 650;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* --------------------------------------------------- selected-job panel */
+
+/* Closed by default and opened from the Job info buttons, so the 780px PDF
+   preview does not sit between the table and the apply chat. */
+#jobdetail {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fbfcfd;
+}
+
+#jobdetail summary {
+  cursor: pointer;
+  user-select: none;
+  padding: 9px 12px;
+  font-size: 13px;
+}
+
+#jobdetail[open] summary { border-bottom: 1px solid var(--border); }
+#jobdetail summary:hover { background: #f3f5f7; }
+.panel-title { font-weight: 650; }
+#jobdetailname { font-weight: normal; }
+
+#detail {
+  white-space: pre-wrap;
+  font-size: 13px;
+  padding: 12px;
+}
+
+#pdfnote { padding: 0 12px; }
+
+#pdf {
+  width: calc(100% - 24px);
+  height: 780px;
+  margin: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+/* ------------------------------------------------------------ log boxes */
+
+.logbox {
+  height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  background: #fbfcfd;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+#log { height: 150px; }
+#applylog { height: 320px; }
+
+/* The apply transcript: read while answering, so the eye must land on the
+   question. Routine fills recede; nothing is hidden. */
+.logline {
+  padding: 1px 0 1px 8px;
+  border-left: 3px solid transparent;
+  border-radius: 0 3px 3px 0;
+}
+
+.logline.ask {
+  font-weight: 600;
+  color: #0b3d91;
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+  margin-top: 4px;
+}
+
+.logline.asked { color: #4a6fa5; }
+
+.logline.you {
+  color: #0a5c2e;
+  background: var(--good-soft);
+  border-left-color: var(--good);
+}
+
+.logline.bad {
+  color: #a3261c;
+  background: var(--bad-soft);
+  border-left-color: var(--bad);
+}
+
+.logline.warn {
+  color: #8a5a00;
+  background: var(--warn-soft);
+  border-left-color: #c08a1e;
+}
+
+.logline.fill { color: #3b3b3b; }
+
+.logline .tag,
+.logline .verb {
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.logline .tag { color: #5a5a5a; }
+.logline.bad .tag,
+.logline.bad .verb { color: #a3261c; }
+.logline.warn .verb { color: #8a5a00; }
+.logline.quiet,
+.logline.quiet .verb { color: #8a8a8a; }
+.logline.quiet .verb { font-weight: 600; }
+
+.logline.meta {
+  color: #777;
+  font-style: italic;
+  margin-top: 4px;
+}
+
+/* ------------------------------------------------------------ apply chat */
+
+/* The answer box: a drafted answer is a paragraph, so it needs room. It grows
+   with the text instead of scrolling sideways in a one-line input. */
+#chatbox { margin: 10px 0 0; }
+
+#chat {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  max-height: 260px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  resize: vertical;
+  overflow-y: auto;
+}
+
+#chat:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+#chatrow {
+  margin-top: 8px;
+  align-items: center;
+}
+
+#chatcount { font-size: 11px; }
+
+/* Collapsible command reference under the apply chat. */
+#chathelp {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+#chathelp summary {
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
+}
+
+#chathelp .cmds {
+  margin: 8px 0 2px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+#chathelp .cmds td {
+  padding: 3px 12px 3px 0;
+  vertical-align: top;
+  border: none;
+}
+
+#chathelp .cmds td:first-child { white-space: nowrap; }
+
+code {
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  background: #eef0f2;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------- queue strip */
 
 .queuestrip {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin: 8px 0;
-  padding: 8px 10px;
-  border: 1px solid #dceaff;
-  background: #f0f6ff;
-  border-radius: 4px;
+  margin: 0 0 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
   font-size: 12px;
 }
 
+.queuestrip[hidden] { display: none; }
+
+.queuestrip strong { font-size: 12px; }
+
 .queuestrip .qjob {
-  padding: 2px 8px;
-  border: 1px solid #d9d9d9;
-  border-radius: 10px;
-  background: #fff;
+  padding: 2px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
 }
 
 .queuestrip .qjob.now {
-  border-color: #9a6700;
-  color: #9a6700;
-  font-weight: 600;
+  border-color: var(--warn);
+  color: var(--warn);
+  font-weight: 650;
 }
 
 .queuestrip .qjob.was-applied {
-  border-color: #1a7f37;
-  color: #1a7f37;
+  border-color: var(--good);
+  color: var(--good);
 }
 
 .queuestrip .qjob.was-parked {
-  border-color: #9a6700;
-  color: #888;
+  border-color: #d9c48a;
+  color: #8c949e;
 }
 
-.queuestrip .qnote {
-  color: #b42318;
+.queuestrip .qnote { color: var(--bad); }
+.queuestrip button { padding: 3px 9px; font-size: 12px; }
+
+/* --------------------------------------------------------------- modal */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+/* display:flex would beat the hidden attribute's UA rule and leave an
+   invisible overlay swallowing every click on the page. */
+.modal-backdrop[hidden] { display: none; }
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  width: min(600px, 92vw);
+  max-height: 82vh;
+  overflow: auto;
+  box-shadow: 0 12px 40px rgba(16, 24, 40, 0.22);
+}
+
+.modal h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.modal-text {
+  width: 100%;
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.modal-changes {
+  white-space: pre-wrap;
+  font-size: 12px;
+  background: #fbfcfd;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  max-height: 220px;
+  overflow: auto;
+  margin-bottom: 10px;
+}
+
+a { color: var(--accent); }
+
+@media (max-width: 860px) {
+  main { padding: 16px 12px 56px; }
+  .card { padding: 12px; }
+  #pdf { height: 520px; }
 }

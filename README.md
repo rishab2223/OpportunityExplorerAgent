@@ -200,12 +200,13 @@ python -m src.web              # then open http://127.0.0.1:8000
 opportunity-explorer-web       # same thing after pip install -e .
 ```
 
-One plain page, four sections plus a **Referrals** tab that appears once a job is waiting on a contact:
+One page, three cards, plus a **Referrals** tab that appears once a job is waiting on a contact:
 
 - **Run** — optional resume path and job cap, a Start run button, and the live log. Logs stream over server-sent events, so you watch `[score] 12/40 …` as it happens instead of guessing. One run at a time.
-- **Shortlist** — pick any past run from the dropdown; the table shows company, title, relevance, location, apply and listing links, the local PDF path with a copy button, status, and per-row actions. Long runs page at 15 rows: `‹ Prev  1 2 3 … [box] … 29 30  Next ›`, where the box takes a page number directly, so run 200 of a 400-job scrape is one keystroke away instead of thirty clicks.
-- **Selected job** — why_score, the resume-edit changelog, interview prep, and the tailored resume rendered in a PDF preview.
-- **Apply** — the transcript and chat box for an assisted apply session.
+- **Shortlist** — pick any past run from the dropdown; the table shows company, title, relevance, location, apply and listing links, the local PDF path with a copy button, status, and per-row actions. Long runs page at 15 rows: `‹ Prev  1 2 3 … [box] … 29 30  Next ›`, where the box takes a page number directly, so run 200 of a 400-job scrape is one keystroke away instead of thirty clicks. An identical toolbar sits **above and below** the table — tick boxes and **Start queue**, plus **Job info** — so a long page never has to be scrolled back up to act on it.
+- **Apply** — the transcript and chat box for an assisted apply session, directly under the table.
+
+Clicking a row selects it; it does not open anything. **Job info** expands the selected job's why_score, resume-edit changelog, interview prep and a PDF preview of the tailored resume — kept behind a button because that preview is 780px tall and otherwise sits between the shortlist and the chat you are answering.
 
 The UI never downloads files. Copy the path from the table and open the PDF wherever you like.
 

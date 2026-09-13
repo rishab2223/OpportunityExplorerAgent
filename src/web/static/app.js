@@ -13,6 +13,11 @@ const queueTicks = new Set();
 let queueState = { current: null, pending: [], parked: [], done: [], note: "", active: false };
 
 const $ = (id) => document.getElementById(id);
+// The queue and job-info controls sit in a toolbar ABOVE and BELOW the table,
+// so a long shortlist never needs scrolling back up. Both copies are driven
+// together, which is why these are attributes rather than ids.
+const act = (name) => document.querySelectorAll(`[data-act="${name}"]`);
+const role = (name) => document.querySelectorAll(`[data-role="${name}"]`);
 
 // Which page numbers to show either side of the jump box: the first three
 // and the last two. Everything between them is reached by typing a number,
@@ -228,6 +233,7 @@ function pathCell(job) {
   } else {
     text.textContent = "-";
   }
+  text.title = text.textContent;   // clipped to two lines; hover for the rest
   cell.appendChild(text);
   const value = pdfPath || job.tex_path;
   if (value) {
@@ -437,12 +443,10 @@ function renderShortlist(jobs) {
     }
     row.appendChild(actionsCell(job));
 
-    row.addEventListener("click", (event) => {
-      selectJob(job.job_id);
-      // A plain row click means "show me this job"; clicks on the row's
-      // buttons/links (Start apply, Skip...) must not pop the panel open.
-      if (!event.target.closest("button, a")) $("jobdetail").open = true;
-    });
+    // Selecting is all a row click does: the details panel (and its 780px
+    // PDF preview) opens from the Job info button, so the apply pane stays
+    // directly under the table.
+    row.addEventListener("click", () => selectJob(job.job_id));
     body.appendChild(row);
   });
 }
@@ -488,10 +492,7 @@ function renderReferrals(jobs) {
     row.appendChild(linksCell(job));
     row.appendChild(referralActionsCell(job));
 
-    row.addEventListener("click", (event) => {
-      selectJob(job.job_id);
-      if (!event.target.closest("button, a")) $("jobdetail").open = true;
-    });
+    row.addEventListener("click", () => selectJob(job.job_id));
     body.appendChild(row);
   });
 }
@@ -503,6 +504,7 @@ function selectJob(jobId) {
   // Name the collapsed panel; open/closed state is the user's, changed only
   // by a direct row click (see the row listeners).
   $("jobdetailname").textContent = ` — ${job.company} · ${job.title}`;
+  act("jobinfo").forEach((button) => (button.disabled = false));
   document.querySelectorAll("#jobs tbody tr, #referrals tbody tr").forEach((row) => {
     row.classList.toggle("selected", row.dataset.jobId === jobId);
   });
@@ -995,16 +997,18 @@ async function abortApply() {
 
 function refreshQueueButton() {
   const n = queueTicks.size;
-  const button = $("startqueue");
   const running = queueState.active || !!applySessionId;
-  button.disabled = n < 1 || running;
-  button.textContent = n ? `Start queue (${n})` : "Start queue";
-  const hint = $("queuehint");
+  act("startqueue").forEach((button) => {
+    button.disabled = n < 1 || running;
+    button.textContent = n ? `Start queue (${n})` : "Start queue";
+  });
   // No cap: how many forms you can read properly in one sitting is your
   // call. The count is shown so it is a deliberate number, not a slip.
-  if (running) hint.textContent = "a session is running";
-  else if (n) hint.textContent = `${n} ticked - each one stops for you to submit`;
-  else hint.textContent = "";
+  let hint = "";
+  if (running) hint = "a session is running";
+  else if (n) hint = `${n} ticked - each one stops for you to submit`;
+  role("queuehint").forEach((el) => (el.textContent = hint));
+  act("jobinfo").forEach((button) => (button.disabled = !currentJobId));
 }
 
 function renderQueueStrip() {
@@ -1051,6 +1055,12 @@ function renderQueueStrip() {
     });
     strip.appendChild(clear);
   }
+}
+
+function toggleJobInfo() {
+  const panel = $("jobdetail");
+  panel.open = !panel.open;
+  if (panel.open) panel.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 async function loadQueue() {
@@ -1183,7 +1193,8 @@ $("stamp").addEventListener("change", (ev) => loadJobs(ev.target.value));
 $("refresh").addEventListener("click", () => loadStamps(currentStamp));
 $("send").addEventListener("click", sendChat);
 $("abort").addEventListener("click", abortApply);
-$("startqueue").addEventListener("click", startQueue);
+act("startqueue").forEach((b) => b.addEventListener("click", startQueue));
+act("jobinfo").forEach((b) => b.addEventListener("click", toggleJobInfo));
 $("park").addEventListener("click", () => {
   if (!applySessionId) return;
   fillChat("", "");
