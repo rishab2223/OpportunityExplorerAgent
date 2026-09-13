@@ -82,6 +82,65 @@ def page_state(fields: list[dict[str, Any]], page_text: str, url: str) -> str:
     return "apply" if pick_apply(buttons)[0] is not None else ""
 
 
+APPLY_CLICK_TIMEOUT = 6000
+APPLY_CLICK_TRIES = 3
+
+
+def _flow_opened(page, before_url: str) -> bool:
+    """The apply flow is up: the URL moved, or a dialog became VISIBLE.
+
+    Checked before any retry, so a click that landed and only THEN lost its
+    element to a re-render is never sent a second time. Visibility is the
+    whole point: a page that keeps its apply dialog in the DOM behind
+    display:none has one from the moment it loads, and counting that as
+    "opened" reports a click that never happened as a success.
+    """
+    if (page.url or "") != before_url:
+        return True
+    try:
+        return page.locator("div[role=dialog]:visible").count() > 0
+    except Exception:
+        return False
+
+
+def click_apply(page, sess) -> tuple[dict[str, Any] | None, str]:
+    """Click the job's apply control, re-reading the page between attempts.
+
+    LinkedIn's job card animates while its panels load, and is rebuilt more
+    than once. Playwright's click waits for an element to hold still, which
+    that card does not, and then the node it was waiting on is replaced:
+    "element is not stable", then "element was detached from the DOM". A real
+    application died there after fifteen seconds with the Easy Apply button
+    plainly on screen.
+
+    Two things go wrong and both are handled: an element that will not settle
+    is clicked directly instead (browser.click does that, and the raw
+    Playwright click used here before did not), and each attempt takes a
+    fresh snapshot, so a rebuilt button is found again rather than waited on.
+    """
+    before_url = page.url or ""
+    last_error: Exception | None = None
+    for attempt in range(APPLY_CLICK_TRIES):
+        target, kind = pick_apply([f for f in browser.snapshot(page) if _clickable(f)])
+        if target is None:
+            return None, ""
+        try:
+            browser.click(
+                browser.locate(page, target["id"], str(target.get("elid") or "")),
+                timeout=APPLY_CLICK_TIMEOUT,
+            )
+            return target, kind
+        except Exception as exc:
+            last_error = exc
+            if _flow_opened(page, before_url):
+                return target, kind          # it landed; the card moved on after
+            if attempt + 1 < APPLY_CLICK_TRIES:
+                sess.log("[linkedin] The apply button moved as the page was still "
+                         "rendering; reading the page again.")
+                page.wait_for_timeout(800)
+    raise last_error if last_error is not None else RuntimeError("could not click apply")
+
+
 def wait_for_page(page, timeout: int = READY_TIMEOUT) -> str:
     """Wait for the job page to show an apply control, a sign-in wall or a
     closed banner, and say which arrived. '' means none did in time.
@@ -139,13 +198,10 @@ def start(page, sess) -> str:
         sess.log("[linkedin] This job is no longer accepting applications.")
         return "closed"
 
-    fields = browser.snapshot(page)
-    buttons = [f for f in fields if _clickable(f)]
-    target, kind = pick_apply(buttons)
+    target, kind = click_apply(page, sess)
     if target is None:
         sess.log("[linkedin] No apply button found on this page.")
         return ""
-    browser.locate(page, target["id"]).click(timeout=15000)
     if kind == "easy_apply":
         try:
             page.wait_for_selector("div[role=dialog]", timeout=10000)

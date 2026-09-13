@@ -159,6 +159,111 @@ class WaitForPageTests(unittest.TestCase):
         self.assertEqual(linkedin.wait_for_page(page), "closed")
 
 
+class ClickApplyTests(unittest.TestCase):
+    """A real application died here: LinkedIn's card animates while its panels
+    load and is then rebuilt, so Playwright's click waited on an element that
+    never held still and was then detached, and timed out with the Easy Apply
+    button plainly on screen."""
+
+    EASY = [{"tag": "a", "text": "Easy Apply", "label": "", "id": 1, "elid": ""}]
+
+    class FakePage:
+        def __init__(self, dialog_visible: bool = False, url: str = "https://x/jobs/view/1"):
+            self.url = url
+            self.dialog_visible = dialog_visible
+            self.waited = 0
+
+        def wait_for_timeout(self, ms: int) -> None:
+            self.waited += ms
+
+        def locator(self, selector: str):
+            visible = self.dialog_visible
+            return type("L", (), {"count": staticmethod(lambda: 1 if visible else 0)})()
+
+    class FakeSession:
+        def __init__(self):
+            self.logs: list[str] = []
+
+        def log(self, text: str) -> None:
+            self.logs.append(text)
+
+    def _patch(self, fields, click):
+        """Stand in for the browser layer. `click` is called per attempt."""
+        from src.apply import browser
+
+        self.snapshots = 0
+
+        def snapshot(page):
+            self.snapshots += 1
+            return list(fields)
+
+        for name, value in (("snapshot", snapshot), ("locate", lambda *a, **k: object()),
+                            ("click", click)):
+            self.addCleanup(setattr, browser, name, getattr(browser, name))
+            setattr(browser, name, value)
+
+    def test_a_clean_click_happens_once(self) -> None:
+        calls = []
+        self._patch(self.EASY, lambda loc, timeout=0: calls.append(1))
+        target, kind = linkedin.click_apply(self.FakePage(), self.FakeSession())
+        self.assertEqual(kind, "easy_apply")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.snapshots, 1)
+
+    def test_a_replaced_button_is_found_again(self) -> None:
+        calls = []
+
+        def click(loc, timeout=0):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("element was detached from the DOM")
+
+        sess = self.FakeSession()
+        self._patch(self.EASY, click)
+        target, kind = linkedin.click_apply(self.FakePage(), sess)
+        self.assertEqual(kind, "easy_apply")
+        self.assertEqual(len(calls), 2)
+        # The retry re-read the page rather than waiting on the old element.
+        self.assertEqual(self.snapshots, 2)
+        self.assertTrue(any("rendering" in line for line in sess.logs), sess.logs)
+
+    def test_a_click_that_landed_is_never_sent_twice(self) -> None:
+        # The click worked and the card then swallowed its own button. Clicking
+        # again would open a second apply flow.
+        calls = []
+
+        def click(loc, timeout=0):
+            calls.append(1)
+            raise RuntimeError("element was detached from the DOM")
+
+        page = self.FakePage(dialog_visible=True)
+        self._patch(self.EASY, click)
+        target, kind = linkedin.click_apply(page, self.FakeSession())
+        self.assertEqual(kind, "easy_apply")
+        self.assertEqual(len(calls), 1)
+
+    def test_a_dialog_hidden_in_the_dom_is_not_an_open_flow(self) -> None:
+        # Presence is not enough: a page that keeps its apply dialog behind
+        # display:none has one from load, and counting it would report a click
+        # that never happened as a success.
+        self.assertFalse(linkedin._flow_opened(self.FakePage(dialog_visible=False), "https://x/jobs/view/1"))
+        self.assertTrue(linkedin._flow_opened(self.FakePage(dialog_visible=True), "https://x/jobs/view/1"))
+        self.assertTrue(linkedin._flow_opened(self.FakePage(url="https://x/apply"), "https://x/jobs/view/1"))
+
+    def test_no_apply_button_is_not_an_error(self) -> None:
+        self._patch([], lambda loc, timeout=0: None)
+        self.assertEqual(linkedin.click_apply(self.FakePage(), self.FakeSession()), (None, ""))
+
+    def test_a_button_that_never_takes_a_click_raises(self) -> None:
+        def click(loc, timeout=0):
+            raise RuntimeError("element is not stable")
+
+        self._patch(self.EASY, click)
+        with self.assertRaises(RuntimeError):
+            linkedin.click_apply(self.FakePage(), self.FakeSession())
+        self.assertEqual(self.snapshots, linkedin.APPLY_CLICK_TRIES)
+
+
 class LoginDetectionTests(unittest.TestCase):
     def test_authwall_urls(self) -> None:
         for url in ("https://www.linkedin.com/authwall?trk=x",
