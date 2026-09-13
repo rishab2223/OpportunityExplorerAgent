@@ -159,6 +159,73 @@ class WaitForPageTests(unittest.TestCase):
         self.assertEqual(linkedin.wait_for_page(page), "closed")
 
 
+class FakeDialog:
+    """A dialog element: what it is called is what tells the apply modal apart
+    from LinkedIn's messaging bubble, and whether it was stamped is what tells
+    one the click opened from one that was already there."""
+
+    def __init__(self, label: str, visible: bool = True):
+        self.label = label
+        self.visible = visible
+        self.stamped = False
+
+    def get_attribute(self, name: str) -> str:
+        return self.label if name == "aria-label" else ""
+
+    def inner_text(self) -> str:
+        return self.label
+
+
+class FakeLocator:
+    def __init__(self, matches):
+        self.matches = matches
+
+    def count(self) -> int:
+        return len(self.matches)
+
+    def nth(self, index: int):
+        return self.matches[index]
+
+    def evaluate_all(self, script: str) -> None:
+        for dialog in self.matches:
+            dialog.stamped = True
+
+
+def _tab():
+    return type("P", (), {"is_closed": staticmethod(lambda: False)})()
+
+
+class FakePage:
+    def __init__(self, dialogs=(), tabs: int = 1,
+                 url: str = "https://www.linkedin.com/jobs/view/1"):
+        self.url = url
+        self.dialogs = [FakeDialog(name) for name in dialogs]
+        self.waited = 0
+        self.context = type("C", (), {"pages": [_tab() for _ in range(tabs)]})()
+
+    def wait_for_timeout(self, ms: int) -> None:
+        self.waited += ms
+
+    def locator(self, selector: str):
+        found = [d for d in self.dialogs if d.visible or ":visible" not in selector]
+        if f"not([{linkedin.PRE_DIALOG_ATTR}])" in selector:
+            found = [d for d in found if not d.stamped]
+        return FakeLocator(found)
+
+    # --- things the page does, which the checks have to notice or ignore ---
+    def open_dialog(self, label: str) -> None:
+        self.dialogs.append(FakeDialog(label))
+
+    def reveal(self, label: str) -> None:
+        """Show a dialog that was in the markup all along, hidden."""
+        for dialog in self.dialogs:
+            if dialog.label == label:
+                dialog.visible = True
+
+    def open_tab(self) -> None:
+        self.context.pages.append(_tab())
+
+
 class ClickApplyTests(unittest.TestCase):
     """A real application died here: LinkedIn's card animates while its panels
     load and is then rebuilt, so Playwright's click waited on an element that
@@ -166,30 +233,7 @@ class ClickApplyTests(unittest.TestCase):
     button plainly on screen."""
 
     EASY = [{"tag": "a", "text": "Easy Apply", "label": "", "id": 1, "elid": ""}]
-
-    class FakePage:
-        def __init__(self, dialogs: int = 0, tabs: int = 1, controls: int = 1,
-                     url: str = "https://x/jobs/view/1"):
-            self.url = url
-            self.dialogs = dialogs
-            self.controls = controls
-            self.waited = 0
-            page = self
-            self.context = type("C", (), {
-                "pages": [type("P", (), {"is_closed": staticmethod(lambda: False)})()
-                          for _ in range(tabs)]
-            })()
-
-        def wait_for_timeout(self, ms: int) -> None:
-            self.waited += ms
-
-        def locator(self, selector: str):
-            page = self
-            return type("L", (), {"count": staticmethod(lambda: page.dialogs)})()
-
-        def open_tab(self) -> None:
-            self.context.pages.append(
-                type("P", (), {"is_closed": staticmethod(lambda: False)})())
+    MODAL = "Apply to UbiqEdge"
 
     class FakeSession:
         def __init__(self):
@@ -214,33 +258,34 @@ class ClickApplyTests(unittest.TestCase):
             setattr(browser, name, value)
 
     def test_a_click_that_opens_the_flow_happens_once(self) -> None:
-        page = self.FakePage()
+        page = FakePage()
         calls = []
 
         def click(loc, timeout=0):
             calls.append(1)
-            page.dialogs += 1                   # the modal opened
+            page.open_dialog(self.MODAL)
 
         self._patch(self.EASY, click, page)
-        target, kind = linkedin.click_apply(page, self.FakeSession())
+        target, kind, opened = linkedin.click_apply(page, self.FakeSession())
         self.assertEqual(kind, "easy_apply")
+        self.assertEqual(opened, "dialog")
         self.assertEqual(len(calls), 1)
         self.assertEqual(self.snapshots, 1)
 
     def test_a_click_that_raises_is_retried_from_a_fresh_snapshot(self) -> None:
-        page = self.FakePage()
+        page = FakePage()
         calls = []
 
         def click(loc, timeout=0):
             calls.append(1)
             if len(calls) == 1:
                 raise RuntimeError("element was detached from the DOM")
-            page.dialogs += 1
+            page.open_dialog(self.MODAL)
 
         sess = self.FakeSession()
         self._patch(self.EASY, click, page)
-        target, kind = linkedin.click_apply(page, sess)
-        self.assertEqual(kind, "easy_apply")
+        target, kind, opened = linkedin.click_apply(page, sess)
+        self.assertEqual((kind, opened), ("easy_apply", "dialog"))
         self.assertEqual(len(calls), 2)
         self.assertEqual(self.snapshots, 2)     # re-read, not waited on
         self.assertTrue(any("rendering" in line for line in sess.logs), sess.logs)
@@ -251,18 +296,18 @@ class ClickApplyTests(unittest.TestCase):
         # already thrown away. Nothing opens and nothing raises, and the old
         # code called that a success - then waited ten seconds for a dialog
         # and spent a model call being told to press the button again.
-        page = self.FakePage()
+        page = FakePage()
         calls = []
 
         def click(loc, timeout=0):
             calls.append(1)
             if len(calls) >= 2:
-                page.dialogs += 1
+                page.open_dialog(self.MODAL)
 
         sess = self.FakeSession()
         self._patch(self.EASY, click, page)
-        target, kind = linkedin.click_apply(page, sess)
-        self.assertEqual(kind, "easy_apply")
+        target, kind, opened = linkedin.click_apply(page, sess)
+        self.assertEqual((kind, opened), ("easy_apply", "dialog"))
         self.assertEqual(len(calls), 2)
         self.assertTrue(any("did not open anything" in line for line in sess.logs), sess.logs)
 
@@ -270,55 +315,93 @@ class ClickApplyTests(unittest.TestCase):
         # The click worked, opened the modal, and the card then swallowed its
         # own button - so Playwright still raised. Clicking again would open a
         # second apply flow.
-        page = self.FakePage()
+        page = FakePage()
         calls = []
 
         def click(loc, timeout=0):
             calls.append(1)
-            page.dialogs += 1            # it landed...
+            page.open_dialog(self.MODAL)   # it landed...
             raise RuntimeError("element was detached from the DOM")   # ...then vanished
 
         self._patch(self.EASY, click, page)
-        target, kind = linkedin.click_apply(page, self.FakeSession())
-        self.assertEqual(kind, "easy_apply")
+        target, kind, opened = linkedin.click_apply(page, self.FakeSession())
+        self.assertEqual((kind, opened), ("easy_apply", "dialog"))
         self.assertEqual(len(calls), 1)
 
-    def test_what_counts_as_an_open_flow(self) -> None:
-        # Every signal is a CHANGE from before the click. "The page looks
-        # different" is what the first version tested, and it lied twice.
-        before = linkedin._baseline(self.FakePage(dialogs=1, tabs=1))
+    def test_an_unconfirmed_click_is_never_called_an_open_form(self) -> None:
+        # Whatever these checks miss, the transcript must not claim a form
+        # that is not there: that claim is what sent the model a job page and
+        # had it press Easy Apply itself, the slowest way to click a button.
+        page = FakePage()
+        sess = self.FakeSession()
+        self._patch(self.EASY, lambda loc, timeout=0: None, page)
+        self.assertEqual(linkedin.click_apply(page, sess)[2], "")
 
-        self.assertFalse(linkedin._flow_opened(self.FakePage(dialogs=1, tabs=1), before))
-        self.assertTrue(linkedin._flow_opened(self.FakePage(dialogs=2, tabs=1), before),
-                        "the Easy Apply modal")
-        self.assertTrue(linkedin._flow_opened(self.FakePage(dialogs=1, tabs=2), before),
-                        "apply on the company website, in a new tab")
-        self.assertTrue(linkedin._flow_opened(
-            self.FakePage(dialogs=1, tabs=1, url="https://x/apply"), before),
-            "openSDUIApplyFlow, which navigates")
+    def test_what_counts_as_an_open_flow(self) -> None:
+        # Every signal is a CHANGE from before the click, and every one is
+        # narrowed to a change only a click can cause.
+        page = FakePage(dialogs=["Messaging"])
+        before = linkedin._baseline(page)
+        self.assertEqual(linkedin._flow_opened(page, before), "")
+
+        page.open_dialog("Apply to UbiqEdge")
+        self.assertEqual(linkedin._flow_opened(page, before), "dialog")
+
+        tabbed = FakePage()
+        before = linkedin._baseline(tabbed)
+        tabbed.open_tab()
+        self.assertEqual(linkedin._flow_opened(tabbed, before), "new tab",
+                         "apply on the company website")
+
+        moved = FakePage()
+        before = linkedin._baseline(moved)
+        moved.url = "https://www.linkedin.com/jobs/openSDUIApplyFlow"
+        self.assertEqual(linkedin._flow_opened(moved, before), "navigated")
 
     def test_a_job_page_that_already_has_a_dialog_is_not_an_open_flow(self) -> None:
-        # The real regression: LinkedIn job pages carry visible overlays of
-        # their own. Testing for a dialog's PRESENCE called that success, so
-        # the agent announced the form was open, then paid for a model call
-        # to be told to press Easy Apply.
-        before = linkedin._baseline(self.FakePage(dialogs=2))
-        self.assertFalse(linkedin._flow_opened(self.FakePage(dialogs=2), before))
+        # LinkedIn job pages carry visible overlays of their own. Testing for
+        # a dialog's PRESENCE called that success, so the agent announced the
+        # form was open and then paid for a model call to press Easy Apply.
+        page = FakePage(dialogs=["Messaging", "Cookie preferences"])
+        before = linkedin._baseline(page)
+        self.assertEqual(linkedin._flow_opened(page, before), "")
 
-    def test_lazy_panels_rendering_are_not_an_open_flow(self) -> None:
-        # The other one: the job card keeps adding controls while it renders,
-        # with no click involved, and a rise in the control count was read as
-        # the apply form arriving.
-        before = linkedin._baseline(self.FakePage(controls=1))
-        self.assertFalse(linkedin._flow_opened(self.FakePage(controls=40), before))
+    def test_an_overlay_that_mounts_after_the_baseline_is_not_an_open_flow(self) -> None:
+        # Counting dialogs by INCREASE was still wrong: LinkedIn mounts its
+        # own overlays late, so the count rose with no click involved. A new
+        # dialog now has to name itself an apply form.
+        page = FakePage()
+        before = linkedin._baseline(page)
+        page.open_dialog("Messaging")
+        self.assertEqual(linkedin._flow_opened(page, before), "")
+
+    def test_a_modal_shipped_hidden_in_the_markup_still_counts_when_shown(self) -> None:
+        # Stamping every [role=dialog] in the document, rather than only the
+        # ones actually open, buried the apply modal before it was opened: the
+        # usual way to build one is hidden markup revealed on click, so the
+        # click could then never be confirmed and was retried until it raised.
+        page = FakePage(dialogs=[])
+        page.dialogs.append(FakeDialog("Easy Apply", visible=False))
+        before = linkedin._baseline(page)
+        self.assertEqual(linkedin._flow_opened(page, before), "")
+        page.reveal("Easy Apply")
+        self.assertEqual(linkedin._flow_opened(page, before), "dialog")
+
+    def test_linkedins_own_tracking_parameters_are_not_a_navigation(self) -> None:
+        # The job card rewrites its own query string as it hydrates. Comparing
+        # whole URLs read that as the apply flow navigating.
+        page = FakePage(url="https://www.linkedin.com/jobs/view/1")
+        before = linkedin._baseline(page)
+        page.url = "https://www.linkedin.com/jobs/view/1/?refId=abc&trackingId=def"
+        self.assertEqual(linkedin._flow_opened(page, before), "")
 
     def test_no_apply_button_is_not_an_error(self) -> None:
-        page = self.FakePage()
+        page = FakePage()
         self._patch([], lambda loc, timeout=0: None, page)
-        self.assertEqual(linkedin.click_apply(page, self.FakeSession()), (None, ""))
+        self.assertEqual(linkedin.click_apply(page, self.FakeSession()), (None, "", ""))
 
     def test_a_button_that_never_takes_a_click_raises(self) -> None:
-        page = self.FakePage()
+        page = FakePage()
 
         def click(loc, timeout=0):
             raise RuntimeError("element is not stable")

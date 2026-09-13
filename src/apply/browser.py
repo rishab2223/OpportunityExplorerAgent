@@ -696,19 +696,6 @@ def click(locator, timeout: int = 10000) -> str:
         return "clicked (direct)"
 
 
-def control_count(page) -> int:
-    """How many visible form controls the page's form frame is showing.
-
-    Cheap enough to poll, and the plainest answer to "did that click open
-    something with a form in it": a LinkedIn job page has a search box and
-    little else, an open apply flow has several inputs.
-    """
-    try:
-        return int(target(page).evaluate(CONTROL_COUNT_JS) or 0)
-    except Exception:
-        return 0
-
-
 def locate(page, field_id: int, elid: str = ""):
     """The field's element. Workday re-renders a widget's input when its
     list opens or closes (the search box is a fresh node), which drops the

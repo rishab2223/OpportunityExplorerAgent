@@ -107,51 +107,104 @@ def open_tabs(page) -> int:
         return 1
 
 
-def _baseline(page) -> tuple[str, int, int]:
-    """What the page looked like before the click, to compare against."""
-    return page.url or "", visible_dialogs(page), open_tabs(page)
+# A dialog LinkedIn had OPEN before we clicked is not evidence of anything, so
+# every one of those is stamped and then ignored. Only an unstamped dialog can
+# be the apply modal.
+#
+# Stamped through the same ":visible" rule the check uses, not through every
+# [role=dialog] in the document: a site that ships its apply modal hidden in
+# the markup and reveals it on click - which is the common way to build one -
+# would otherwise have the modal stamped before it was ever opened, and the
+# click could then never be confirmed at all.
+PRE_DIALOG_ATTR = "data-oea-predialog"
+OPEN_DIALOG_SELECTOR = "div[role=dialog]:visible"
+STAMP_DIALOGS_JS = f"els => els.forEach(d => d.setAttribute('{PRE_DIALOG_ATTR}', '1'))"
+NEW_DIALOG_SELECTOR = f"div[role=dialog]:not([{PRE_DIALOG_ATTR}]):visible"
+# ...and being new is still not enough. LinkedIn mounts its own overlays late
+# (the messaging bubble carries a search box, so "has a control" does not
+# separate it either). The apply modal names itself: "Apply to <company>",
+# "Contact info", "Submit application".
+APPLY_DIALOG_RE = re.compile(
+    r"\bapply\b|\bapplication\b|contact info|\bresume\b", re.IGNORECASE
+)
 
 
-def _flow_opened(page, before: tuple[str, int, int]) -> bool:
-    """Did the click actually open an apply flow?
+def _url_key(url: str) -> str:
+    """Host and path only. LinkedIn rewrites its own query string as the card
+    hydrates - refId, trackingId, currentJobId - which is not a navigation and
+    must not be read as one. Both real navigations away from a job page (the
+    openSDUIApplyFlow page, an employer's site) change the host or the path."""
+    text = (url or "").split("#", 1)[0].split("?", 1)[0]
+    return text.rstrip("/").lower()
 
-    One signal per way LinkedIn opens one, and every one is measured as a
-    CHANGE from before the click:
 
-      the URL moved        - the openSDUIApplyFlow page, which is a navigation
-      a new tab appeared   - "Apply on company website"
-      one more visible dialog than before - the Easy Apply modal
+def _new_apply_dialog(page) -> bool:
+    """A dialog that was not open before the click, and that reads like an
+    apply form rather than one of LinkedIn's own overlays."""
+    try:
+        dialogs = page.locator(NEW_DIALOG_SELECTOR)
+        for i in range(dialogs.count()):
+            dialog = dialogs.nth(i)
+            text = f"{dialog.get_attribute('aria-label') or ''} {dialog.inner_text() or ''}"
+            if APPLY_DIALOG_RE.search(text):
+                return True
+    except Exception:
+        return False
+    return False
 
-    Nothing here is "the page looks different", which is what the previous
-    version tested and why it lied. Counting dialogs by presence called a job
-    page that already had a visible overlay an open apply flow; counting a
-    rise in form controls fired on LinkedIn's own lazy panels finishing their
-    render, with no click involved at all. Both reported success, start()
-    then spent eight seconds hunting a dialog that was never there, and the
-    model was paid to press the button the agent thought it had pressed.
+
+def _baseline(page) -> tuple[str, int]:
+    """What the page looked like before the click, to compare against. Stamps
+    the dialogs that are already open as a side effect."""
+    try:
+        page.locator(OPEN_DIALOG_SELECTOR).evaluate_all(STAMP_DIALOGS_JS)
+    except Exception:
+        pass
+    return _url_key(page.url or ""), open_tabs(page)
+
+
+def _flow_opened(page, before: tuple[str, int]) -> str:
+    """Which way the apply flow opened, or '' if it did not.
+
+    One signal per way LinkedIn opens one, each measured as a CHANGE from
+    before the click, and each narrowed to changes only a click can cause:
+
+      navigated  - host or path moved: the openSDUIApplyFlow page
+      new tab    - "Apply on company website"
+      dialog     - a dialog that was not open before AND names itself an
+                   apply form
+
+    Every previous version of this check answered "does the page look
+    different", which the page answers yes to on its own. Dialogs counted by
+    presence called a job page carrying a messaging overlay an open apply
+    flow. A rise in form controls fired on LinkedIn's lazy panels rendering.
+    Counting dialogs by increase still fired when an overlay mounted late, and
+    comparing the whole URL still fired when LinkedIn appended its own
+    tracking parameters. Each time the agent announced a form that was not
+    there, and the model was paid to press the button it thought it had
+    pressed.
     """
-    before_url, before_dialogs, before_tabs = before
-    if (page.url or "") != before_url:
-        return True
+    before_url, before_tabs = before
+    if _url_key(page.url or "") != before_url:
+        return "navigated"
     if open_tabs(page) > before_tabs:
-        return True
-    return visible_dialogs(page) > before_dialogs
+        return "new tab"
+    return "dialog" if _new_apply_dialog(page) else ""
 
 
-def _wait_for_flow(page, before: tuple[str, int, int],
-                   timeout: int = APPLY_OPEN_TIMEOUT) -> bool:
-    """Give the click a moment to do something, and say whether it did."""
+def _wait_for_flow(page, before: tuple[str, int],
+                   timeout: int = APPLY_OPEN_TIMEOUT) -> str:
+    """Give the click a moment to do something, and say what it did."""
     waited = 0
     while True:
-        if _flow_opened(page, before):
-            return True
-        if waited >= timeout:
-            return False
+        opened = _flow_opened(page, before)
+        if opened or waited >= timeout:
+            return opened
         page.wait_for_timeout(APPLY_OPEN_STEP)
         waited += APPLY_OPEN_STEP
 
 
-def click_apply(page, sess) -> tuple[dict[str, Any] | None, str]:
+def click_apply(page, sess) -> tuple[dict[str, Any] | None, str, str]:
     """Click the job's apply control, re-reading the page between attempts.
 
     LinkedIn's job card animates while its panels load, and is rebuilt more
@@ -172,6 +225,10 @@ def click_apply(page, sess) -> tuple[dict[str, Any] | None, str]:
     thrown away - nothing opens, nothing raises. A session then spent ten
     seconds waiting for a dialog and a whole model call being told to press
     the button it thought it had already pressed.
+
+    Returns the button, its kind, and HOW the flow opened ('navigated', 'new
+    tab', 'dialog') or '' when the click was never confirmed. The caller must
+    not describe the form as open on an empty third value.
     """
     before = _baseline(page)
     last_error: Exception | None = None
@@ -179,7 +236,7 @@ def click_apply(page, sess) -> tuple[dict[str, Any] | None, str]:
     for attempt in range(APPLY_CLICK_TRIES):
         target, kind = pick_apply([f for f in browser.snapshot(page) if _clickable(f)])
         if target is None:
-            return None, ""
+            return None, "", ""
         raised = False
         try:
             browser.click(
@@ -190,8 +247,14 @@ def click_apply(page, sess) -> tuple[dict[str, Any] | None, str]:
             last_error = exc
             raised = True
         budget = APPLY_OPEN_AFTER_ERROR if raised else APPLY_OPEN_TIMEOUT
-        if _wait_for_flow(page, before, budget):
-            return target, kind
+        opened = _wait_for_flow(page, before, budget)
+        if opened:
+            # Which signal fired is worth a line in the transcript: three
+            # versions of this check have now reported a form that was not
+            # there, and a log that names the evidence is the only way to tell
+            # a fourth one from a real open without watching the screen.
+            sess.log(f"[linkedin] The apply flow opened ({opened}).")
+            return target, kind, opened
         if attempt + 1 < APPLY_CLICK_TRIES:
             sess.log("[linkedin] The apply button did not open anything - the card was "
                      "still rendering; reading the page and trying again.")
@@ -200,7 +263,7 @@ def click_apply(page, sess) -> tuple[dict[str, Any] | None, str]:
         raise last_error
     # Clicked with no error and nothing visibly opened. Hand back anyway: the
     # generic loop reads whatever is on screen, which beats raising here.
-    return target, kind
+    return target, kind, ""
 
 
 def wait_for_page(page, timeout: int = READY_TIMEOUT) -> str:
@@ -260,33 +323,35 @@ def start(page, sess) -> str:
         sess.log("[linkedin] This job is no longer accepting applications.")
         return "closed"
 
-    target, kind = click_apply(page, sess)
+    target, kind, opened = click_apply(page, sess)
     if target is None:
         sess.log("[linkedin] No apply button found on this page.")
         return ""
     if kind == "easy_apply":
-        # One wait, not two. click_apply has already confirmed that something
-        # opened, so the only thing left to wait for is the step's fields: the
-        # modal's shell (title, close button, spinner) arrives first, and
-        # reading the page in between scoped the snapshot to the job page
-        # BEHIND the modal. Waiting for the dialog and THEN for its fields
-        # cost eleven seconds on a flow that is not marked as a dialog at all.
-        if visible_dialogs(page):
-            # There IS a modal: its shell (title, close button, spinner)
-            # arrives before its fields, and reading in between scoped the
-            # snapshot to the job page behind it.
+        # One wait, not two, and each one earned by what actually opened. The
+        # modal's shell (title, close button, spinner) arrives before its
+        # fields, and reading the page in between scoped the snapshot to the
+        # job page BEHIND the modal - so wait for the fields, but ONLY when
+        # there is a modal to wait for. Hunting a dialog that was never there
+        # cost eight seconds and taught us nothing.
+        if opened == "dialog":
             try:
                 page.wait_for_selector(
-                    "div[role=dialog] :is(input, select, textarea)", timeout=8000
+                    f"{NEW_DIALOG_SELECTOR} :is(input, select, textarea)", timeout=8000
                 )
             except Exception:
                 pass
             page.wait_for_timeout(400)
-        else:
-            # A flow that navigated instead of opening a modal. Hunting for a
-            # dialog here burned eight seconds before the loop read the page.
+        elif opened:
             page.wait_for_timeout(600)
-        sess.log("[linkedin] Easy Apply - the application form is open.")
+        if opened:
+            sess.log("[linkedin] Easy Apply - the application form is open.")
+        else:
+            # Say what is true. Announcing an open form that is not open sent
+            # the model a job page and had it press the button for us, which
+            # is the slowest possible way to click Easy Apply.
+            sess.log("[linkedin] Clicked Easy Apply, but nothing opened that I could "
+                     "confirm - reading the page as it stands.")
     else:
         page.wait_for_timeout(3000)
         sess.log("[linkedin] External apply - following the employer's site.")

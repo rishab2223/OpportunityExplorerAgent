@@ -178,6 +178,15 @@ function resetApply(text) {
   if (text) appendApply(text);
 }
 
+// The Apply card sits below the shortlist table and its two toolbars, so a
+// session started from a row down the page begins off-screen. Only the two
+// deliberate starts scroll; a background resync must never move the page
+// under someone who is reading something else.
+function showApplyCard() {
+  const card = $("applycard");
+  if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function setLog(box, text) {
   box.textContent = text;
   box.scrollTop = box.scrollHeight;
@@ -944,6 +953,7 @@ async function startApply(jobId) {
   }
   selectJob(jobId);
   resetApply("Starting apply session...");
+  showApplyCard();
   try {
     const sess = await postJSON("/api/apply/start", {
       stamp: currentStamp,
@@ -1086,6 +1096,7 @@ async function startQueue() {
     } catch {}
   }
   resetApply(`Queue: ${items.length} job(s). Each one stops for you to review and submit.`);
+  showApplyCard();
   try {
     queueState = await postJSON("/api/apply/queue", { items });
   } catch (err) {
