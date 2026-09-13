@@ -422,3 +422,76 @@ tbody tr.selected {
   margin-top: 12px;
   border: 1px solid #ccc;
 }
+
+/* Queue: ticked rows, and the strip above the apply transcript. */
+.row .grow {
+  flex: 1;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+th.tick,
+td.tick {
+  width: 26px;
+  text-align: center;
+  padding-right: 0;
+}
+
+td.tick input {
+  cursor: pointer;
+  margin: 0;
+}
+
+tr.queued {
+  background: #f0f6ff;
+}
+
+.queuestrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid #dceaff;
+  background: #f0f6ff;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.queuestrip .qjob {
+  padding: 2px 8px;
+  border: 1px solid #d9d9d9;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.queuestrip .qjob.now {
+  border-color: #9a6700;
+  color: #9a6700;
+  font-weight: 600;
+}
+
+.queuestrip .qjob.was-applied {
+  border-color: #1a7f37;
+  color: #1a7f37;
+}
+
+.queuestrip .qjob.was-parked {
+  border-color: #9a6700;
+  color: #888;
+}
+
+.queuestrip .qnote {
+  color: #b42318;
+}

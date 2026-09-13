@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from src import answers
 from src.apply import (browser, catalogue, cover_letter, profile, resolver, salary,
                        session, sites)
-from src.apply.session import Aborted, ApplySession
+from src.apply.session import Aborted, ApplySession, Parked
 from src.apply.sites import linkedin
 from src.config import AppConfig, EnvSettings
 from src.llm import describe_provider, make_invoker
@@ -291,8 +291,16 @@ def start_apply(
     on_finish: Callable[[str], None] | None = None,
     resume_options: Callable[[], dict[str, Any]] | None = None,
     out_dir: Path | None = None,
+    on_released: Callable[[str], None] | None = None,
 ) -> ApplySession:
-    """Begin one assisted-apply session on a worker thread."""
+    """Begin one assisted-apply session on a worker thread.
+
+    on_finish runs the moment the outcome is known, so the UI sees it at once.
+    on_released runs later, once run_session has returned and the browser is
+    CLOSED - the only safe moment to open another one, because Chrome allows a
+    single instance per user-data-dir and the window lingers for
+    CLOSE_GRACE_SECONDS after a submitted application. A queue advances here.
+    """
     label = f"{job.get('company', '')} {job.get('title', '')}".strip()
     sess = session.start(stamp, str(job.get("job_id") or ""), label)
     # Recording happens inside finish(), before the done event, so the UI's
@@ -310,6 +318,11 @@ def start_apply(
             if on_finish is not None and sess.on_outcome is not None:
                 sess.on_outcome = None
                 on_finish(sess.status)
+            if on_released is not None:
+                try:
+                    on_released(sess.status)
+                except Exception:
+                    pass          # a queue must never break the session it follows
 
     threading.Thread(target=target, name=f"apply-{sess.id}", daemon=True).start()
     return sess
@@ -906,6 +919,12 @@ def run_session(
         sess.log(f"Model calls this session: {llm_calls}")
         sess.log("Aborted.")
         sess.finish("aborted", "aborted by user")
+    except Parked:
+        # Nothing is recorded: the job keeps its place in the shortlist and
+        # stays eligible for a later scrape. A queue moves on to the next.
+        sess.log(f"Model calls this session: {llm_calls}")
+        sess.log("Parked for later. Nothing was submitted or recorded.")
+        sess.finish("parked", "parked for later")
     except Exception as exc:
         message = str(exc)
         # The user closing the Chrome window means "stop" - treat it as an

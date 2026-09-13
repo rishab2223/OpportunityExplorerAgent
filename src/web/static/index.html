@@ -32,10 +32,14 @@
       <select id="stamp"></select>
       <button id="refresh">Refresh</button>
       <span id="runinfo" class="muted"></span>
+      <span class="grow"></span>
+      <button id="startqueue" disabled title="Apply to the ticked jobs one after another. Each one still stops for you to review and submit it yourself.">Start queue</button>
+      <span id="queuehint" class="muted"></span>
     </div>
     <table id="jobs">
       <thead>
         <tr>
+          <th class="tick" title="Tick rows to apply to them in order"><span aria-hidden="true">&#10003;</span><span class="sr-only">Queue</span></th>
           <th>Company</th>
           <th>Title</th>
           <th>Score</th>
@@ -59,6 +63,7 @@
     </details>
 
     <h2>Apply</h2>
+    <div id="queuestrip" class="queuestrip" hidden></div>
     <pre id="applylog" class="logbox">No apply session. Use Start apply on a row.</pre>
     <div id="chatbox">
       <textarea id="chat" rows="1" placeholder="Answer the agent's question, then press Enter (Shift+Enter for a new line)" disabled></textarea>
@@ -70,7 +75,8 @@
         <span class="grow"></span>
         <button id="attachresume" disabled title="Prepare and attach a resume now, if the form's upload field was not detected">Attach resume</button>
         <button id="attachletter" disabled title="Write a cover letter now, if the form's cover-letter field was not detected">Cover letter</button>
-        <button id="abort" disabled>Abort</button>
+        <button id="park" disabled title="Leave this application for later and start the next queued job. Nothing is recorded.">Park</button>
+        <button id="abort" disabled title="Stop this application and the rest of the queue">Abort</button>
       </div>
     </div>
     <details id="chathelp">
@@ -109,8 +115,12 @@
             <td>open that page when the agent is stuck</td></tr>
         <tr><td><code>retry</code></td>
             <td>try the model again after an outage</td></tr>
+        <tr><td><code>park</code></td>
+            <td>leave THIS application for later and start the next queued job; nothing is
+                submitted or recorded and the job keeps its place in the shortlist
+                (also: <code>later</code>, <code>skip job</code>)</td></tr>
         <tr><td><code>abort</code></td>
-            <td>end the session (also: <code>stop</code>, <code>cancel</code>)</td></tr>
+            <td>end the session and the rest of the queue (also: <code>stop</code>, <code>cancel</code>)</td></tr>
       </table>
     </details>
   </section>

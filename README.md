@@ -211,7 +211,7 @@ The UI never downloads files. Copy the path from the table and open the PDF wher
 
 ## Assisted apply
 
-Click **Start apply** on a row. This is deliberately supervised, one job at a time.
+Click **Start apply** on a row, or tick a few rows and use **Start queue** ([the queue](#the-queue)). Either way it is deliberately supervised and strictly one job at a time.
 
 Before the first run, fill in [`localData/apply_profile.json`](localData/) (created automatically, gitignored) with your name, email, phone, location, notice period and CTC expectations — every field filled there is a question the agent never has to ask, and a fact the model never has to be paid to re-derive from your resume. Several more keys each remove a whole class of question:
 
@@ -274,6 +274,27 @@ What happens:
 3. The resolver fills what it can, the model plans the rest, and the agent stops and asks in the chat pane for anything unknown: OTPs, captchas, consent and legal questions. Answer, or handle it in the browser yourself and type `done`. Type `skip` to leave a field alone, paste a URL to send the agent there, `abort` to stop.
 4. **The agent never clicks submit — you do.** When everything is filled it says so and waits; you review the form, click Submit in the browser yourself, and type `done`. This is enforced in code (a submit click raises), not just prompted.
 
+### The queue
+
+Tick the box on up to three shortlist rows and press **Start queue**: the agent works down them in order, opening the next as soon as the previous one is finished with.
+
+It is worth being exact about what this does and does not do. **It does not reduce how often you are needed.** The agent never submits, so a queue of three is still three forms you read and three Submit buttons you press yourself. What it removes is everything either side of that: walking back to the table, finding the next row, pressing Start apply, and waiting for Chrome.
+
+Strictly one job at a time, and that is a constraint rather than a choice. Chrome allows one instance per user-data-dir, and the persistent profile holding your logins is a single directory; Playwright's sync API is thread-affine on top of that. So the next job starts only once the previous browser has actually closed — which is a few seconds after a submitted application, since the window deliberately lingers so the confirmation page is not yanked away mid-read.
+
+Two ways out of a job, and they are opposites:
+
+| | What it does |
+| --- | --- |
+| **Park** (or type `park`, `later`, `skip job`) | leaves **this** application and starts the next queued job. Nothing is submitted and nothing is recorded: the job keeps its place in the shortlist and stays eligible for a later scrape. This is the answer to a form that wants an employer account and an email verification before it will show you anything |
+| **Abort** (or type `abort`, `stop`, `cancel`) | stops this application **and the rest of the queue** |
+
+Only the bare word counts, so an answer that happens to contain it — a location of "Cyber Park, Gurgaon" — is typed into the form like any other text.
+
+A job that simply fails does not stop the queue; only `abort` does. Neither does a browser that would not open, but that one stops it deliberately: whatever blocked this job almost certainly blocks the next, so the queue halts and says why rather than churning through the rest. **Clear queued** drops what is still waiting without touching the job in front of you.
+
+**Three is the cap, and the cap is the point.** A queue is a stack of applications you have promised to read, and a long one is a promise you will not keep. The friction of going back to the table is what currently makes you look properly at each form; take it away and you are relying on discipline alone. Raise `MAX_QUEUE` in [`src/web/applyqueue.py`](src/web/applyqueue.py) if you disagree, but decide it deliberately.
+
 ### The chat pane
 
 The transcript is colour-coded so the eye lands on what needs you: what the agent asks (blue), what you replied (green), failures (red), warnings such as a contact detail that disagrees with your profile or an optional question left empty (amber), routine fills from the profile or answer bank (grey), and model chatter (faint). Long field labels and values are shortened to one line each — hover a shortened line to see it in full.
@@ -303,7 +324,8 @@ Two limits: `redo` only reaches boxes still on the step in front of you (once yo
 | a URL | open that page when the agent is stuck |
 | `retry` | try the model again after an outage (`try again`) |
 | `closed` | record that the posting no longer accepts applications and stop |
-| `abort` | end the session (`stop`, `cancel`) |
+| `park` | leave this application for later and start the next queued job; nothing is submitted or recorded (`later`, `skip job`) |
+| `abort` | end the session, and the rest of the queue (`stop`, `cancel`) |
 
 OTPs and other secrets are held in memory for the session and never written to disk. The agent will not invent visa status, salary, or legal answers: anything that reads like a legal or eligibility declaration (consent, terms, work authorisation, citizenship, background checks, demographics) is gated — answered from your confirmed saved answer with a loud log line, or asked. For radio groups the gate acts only on the option that matches your answer, so a saved "No" can never tick the "Yes" box. A yes/no you type is parsed on whole words with negatives winning — "I don't agree" leaves the box unticked. There is no captcha solving and no unattended mass-apply.
 

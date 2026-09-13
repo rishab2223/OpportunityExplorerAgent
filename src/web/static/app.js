@@ -6,6 +6,12 @@ let shortlistPage = 0;
 let referralPage = 0;
 const PAGE_SIZE = 15;
 
+// Jobs ticked for a queue, by job_id. Survives a table re-render (a refresh,
+// a page change) so a tick made on page 1 is still there after visiting
+// page 2. Cleared when the queue actually starts.
+const queueTicks = new Set();
+let queueState = { max: 3, current: null, pending: [], parked: [], done: [], note: "", active: false };
+
 const $ = (id) => document.getElementById(id);
 
 // Which page numbers to show either side of the jump box: the first three
@@ -352,6 +358,24 @@ function rowCellAdder(row) {
   };
 }
 
+function tickCell(job) {
+  const cell = document.createElement("td");
+  cell.className = "tick";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = queueTicks.has(job.job_id);
+  box.title = "Queue this job";
+  box.addEventListener("click", (ev) => ev.stopPropagation());  // not a row click
+  box.addEventListener("change", () => {
+    if (box.checked) queueTicks.add(job.job_id);
+    else queueTicks.delete(job.job_id);
+    box.closest("tr").classList.toggle("queued", box.checked);
+    refreshQueueButton();
+  });
+  cell.appendChild(box);
+  return cell;
+}
+
 function linksCell(job) {
   const links = document.createElement("td");
   const applyLink = link(job.apply_url, "apply");
@@ -370,6 +394,7 @@ function renderJobs(jobs) {
   renderShortlist(jobs.filter((j) => !REFERRAL_STATES.includes(j.history_status)));
   renderReferrals(jobs.filter((j) => REFERRAL_STATES.includes(j.history_status)));
   if (currentJobId && jobsById[currentJobId]) selectJob(currentJobId);
+  refreshQueueButton();
 }
 
 function renderShortlist(jobs) {
@@ -382,15 +407,17 @@ function renderShortlist(jobs) {
     renderJobs(lastJobs);
   });
   if (!jobs.length) {
-    emptyRow(body, 9, "No shortlisted jobs left in this run.");
+    emptyRow(body, 10, "No shortlisted jobs left in this run.");
     return;
   }
   const start = shortlistPage * PAGE_SIZE;
   jobs.slice(start, start + PAGE_SIZE).forEach((job) => {
     const row = document.createElement("tr");
     row.dataset.jobId = job.job_id;
+    if (queueTicks.has(job.job_id)) row.classList.add("queued");
     const add = rowCellAdder(row);
 
+    row.appendChild(tickCell(job));
     add(job.company);
     add(job.title);
     add(job.relevance, scoreClass(job.relevance));
@@ -646,6 +673,7 @@ function setChatEnabled(enabled) {
   $("chat").disabled = !enabled;
   $("send").disabled = !enabled;
   $("abort").disabled = !enabled;
+  $("park").disabled = !enabled;
   $("attachresume").disabled = !enabled;
   $("attachletter").disabled = !enabled;
   if (!enabled) showDraftTools("");
@@ -728,7 +756,7 @@ async function resyncApply(reason) {
   if (!applySessionId) return;
   try {
     const state = await getJSON("/api/apply/status");
-    const dead = ["applied", "failed", "aborted", "closed", "idle"];
+    const dead = ["applied", "failed", "aborted", "closed", "parked", "idle"];
     if (state.session_id !== applySessionId || dead.includes(state.status)) {
       if (applySource) applySource.close();
       applySource = null;
@@ -802,6 +830,7 @@ function streamApply(sessionId) {
           "yourself, use Mark applied on the row. Start apply begins a new session. ---"
       );
       loadJobs(currentStamp);
+      followQueue();
     }
   };
   applySource.onerror = () => {
@@ -817,7 +846,7 @@ function streamApply(sessionId) {
       if (applySessionId !== sid || applySource) return;
       try {
         const state = await getJSON("/api/apply/status");
-        const dead = ["applied", "failed", "aborted", "closed", "idle"];
+        const dead = ["applied", "failed", "aborted", "closed", "parked", "idle"];
         if (state.session_id === sid && !dead.includes(state.status)) {
           streamApply(sid);
         } else {
@@ -959,11 +988,149 @@ async function abortApply() {
   }
 }
 
+// ---------------------------------------------------------------- the queue
+// Apply to the ticked jobs one after another. The agent still never submits:
+// every job stops for the candidate to review and submit it themselves. The
+// queue only removes the walk back to the table between jobs.
+
+function refreshQueueButton() {
+  const n = queueTicks.size;
+  const max = queueState.max || 3;
+  const button = $("startqueue");
+  const running = queueState.active || !!applySessionId;
+  button.disabled = n < 1 || n > max || running;
+  button.textContent = n ? `Start queue (${n})` : "Start queue";
+  const hint = $("queuehint");
+  if (running) hint.textContent = "a session is running";
+  else if (n > max) hint.textContent = `at most ${max} at a time - untick ${n - max}`;
+  else if (n) hint.textContent = `${n} of ${max} ticked`;
+  else hint.textContent = "";
+}
+
+function renderQueueStrip() {
+  const strip = $("queuestrip");
+  const { current, pending, parked, done, note } = queueState;
+  const anything = current || pending.length || parked.length || done.length || note;
+  strip.hidden = !anything;
+  if (!anything) return;
+  strip.replaceChildren();
+
+  const chip = (text, cls) => {
+    const span = document.createElement("span");
+    span.className = "qjob" + (cls ? " " + cls : "");
+    span.textContent = text;
+    strip.appendChild(span);
+  };
+  const label = document.createElement("strong");
+  label.textContent = "Queue";
+  strip.appendChild(label);
+
+  done.forEach((job) => chip(`${job.label || job.job_id} - ${job.status}`,
+                             job.status === "applied" ? "was-applied" : ""));
+  parked.forEach((job) => chip(`${job.label || job.job_id} - parked`, "was-parked"));
+  if (current) chip(`${current.label || current.job_id} - now`, "now");
+  pending.forEach((job) => chip(job.label || job.job_id));
+  if (note) {
+    const span = document.createElement("span");
+    span.className = "qnote";
+    span.textContent = note;
+    strip.appendChild(span);
+  }
+  if (pending.length) {
+    const clear = document.createElement("button");
+    clear.textContent = `Clear ${pending.length} queued`;
+    clear.title = "Drop the jobs still waiting. The running one is not touched.";
+    clear.addEventListener("click", async () => {
+      try {
+        queueState = await postJSON("/api/apply/queue/clear", {});
+        renderQueueStrip();
+        refreshQueueButton();
+      } catch (err) {
+        appendApply(`Could not clear the queue: ${err.message}`);
+      }
+    });
+    strip.appendChild(clear);
+  }
+}
+
+async function loadQueue() {
+  try {
+    queueState = await getJSON("/api/apply/queue");
+  } catch {
+    return;
+  }
+  renderQueueStrip();
+  refreshQueueButton();
+}
+
+async function startQueue() {
+  const items = [];
+  queueTicks.forEach((jobId) => {
+    const job = jobsById[jobId];
+    if (job) items.push({ stamp: currentStamp, job_id: jobId, label: `${job.company} ${job.title}`.trim() });
+  });
+  if (!items.length) return;
+  if ("Notification" in window && Notification.permission === "default") {
+    try {
+      Notification.requestPermission();
+    } catch {}
+  }
+  resetApply(`Queue: ${items.length} job(s). Each one stops for you to review and submit.`);
+  try {
+    queueState = await postJSON("/api/apply/queue", { items });
+  } catch (err) {
+    appendApply(`Could not start the queue: ${err.message}`);
+    return;
+  }
+  queueTicks.clear();
+  renderQueueStrip();
+  await attachToCurrentSession();
+  await loadJobs(currentStamp);
+}
+
+async function attachToCurrentSession() {
+  const state = await getJSON("/api/apply/status");
+  const dead = ["applied", "failed", "aborted", "closed", "parked", "idle"];
+  if (state.session_id && !dead.includes(state.status)) {
+    applyJobId = state.job_id || "";
+    setChatEnabled(true);
+    streamApply(state.session_id);
+    return true;
+  }
+  return false;
+}
+
+// After a queued job ends, the NEXT one cannot start until its browser has
+// closed - Chrome allows one instance per profile, and a submitted
+// application keeps the window up for a few seconds so the confirmation page
+// is readable. So the page waits for a new session id rather than assuming
+// one is already there.
+async function followQueue() {
+  await loadQueue();
+  if (!queueState.active) return;
+  appendApply("--- queue: waiting for the browser to close, then opening the next job ---");
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    await new Promise((done) => setTimeout(done, 1000));
+    if (applySessionId) return;                 // something else attached first
+    if (await attachToCurrentSession()) {
+      await loadQueue();
+      await loadJobs(currentStamp);
+      return;
+    }
+    await loadQueue();
+    if (!queueState.active) {
+      appendApply("--- queue: nothing left to open ---");
+      return;
+    }
+  }
+  appendApply("--- queue: the next job did not open; use Start apply on a row ---");
+}
+
 async function resumeActiveApply() {
   const state = await getJSON("/api/apply/status");
   // Only a LIVE session is re-armed; a finished one used to be replayed and
   // its chat re-enabled on every page load.
-  const dead = ["applied", "failed", "aborted", "closed", "idle"];
+  const dead = ["applied", "failed", "aborted", "closed", "parked", "idle"];
   if (state.session_id && !dead.includes(state.status)) {
     applyJobId = state.job_id || "";
     resetApply("");
@@ -1016,6 +1183,14 @@ $("stamp").addEventListener("change", (ev) => loadJobs(ev.target.value));
 $("refresh").addEventListener("click", () => loadStamps(currentStamp));
 $("send").addEventListener("click", sendChat);
 $("abort").addEventListener("click", abortApply);
+$("startqueue").addEventListener("click", startQueue);
+$("park").addEventListener("click", () => {
+  if (!applySessionId) return;
+  fillChat("", "");
+  postJSON(`/api/apply/${applySessionId}/chat`, { text: "park" }).catch((err) =>
+    appendApply(`Could not park: ${err.message}`)
+  );
+});
 $("chat").addEventListener("keydown", (ev) => {
   // Enter sends; Shift+Enter starts a new line, so a paragraph answer can be
   // written without the box swallowing it.
@@ -1034,4 +1209,4 @@ $("redraft").addEventListener("click", () => {
 });
 $("restoredraft").addEventListener("click", () => fillChat(lastDraft));
 
-loadStamps().then(resumeActiveRun).then(resumeActiveApply);
+loadStamps().then(resumeActiveRun).then(resumeActiveApply).then(loadQueue);

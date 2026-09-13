@@ -16,7 +16,7 @@ from src.config import load_env, load_yaml_config
 from src.errors import StepError
 from src.pdf_compile import ensure_pdf
 from src.resume.loader import load_resume
-from src.web import runner, runs
+from src.web import applyqueue, runner, runs
 
 HEARTBEAT_SECONDS = 15
 
@@ -178,12 +178,19 @@ def api_default_resume() -> FileResponse:
 
 @app.post("/api/apply/start")
 def api_apply_start(payload: dict = Body(...)) -> dict:
+    """Apply to one job, started by hand from its row."""
+    return _begin_apply(str(payload.get("stamp") or ""),
+                        str(payload.get("job_id") or "")).snapshot()
+
+
+def _begin_apply(stamp: str, job_id: str, on_released=None):
+    """Open one assisted-apply session. Shared by the single-row Start apply
+    button and by the queue, so a queued job behaves identically to a hand-
+    started one - same prompts, same recording, same refusal to submit."""
     from src.apply import profile as apply_profile
     from src.apply import session as apply_session
     from src.apply import worker as apply_worker
 
-    stamp = str(payload.get("stamp") or "")
-    job_id = str(payload.get("job_id") or "")
     job = _job_or_404(stamp, job_id)
     if not (job.get("apply_url") or job.get("listing_url")):
         raise HTTPException(status_code=422, detail="this job has no apply or listing URL")
@@ -223,7 +230,9 @@ def api_apply_start(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=422, detail=exc.message) from exc
 
     def on_finish(status: str) -> None:
-        runs.save_decision(stamp, job_id, status=status)
+        # "parked" goes back to pending: nothing was submitted, and the job
+        # must stay eligible for a later attempt and a later scrape.
+        runs.save_decision(stamp, job_id, status="pending" if status == "parked" else status)
         if status == "applied":
             history.record(job, "applied", stamp=stamp, note="assisted")
         elif status == "closed":
@@ -240,11 +249,43 @@ def api_apply_start(payload: dict = Body(...)) -> dict:
             on_finish=on_finish,
             resume_options=resume_options,
             out_dir=Path(runs.run_dir(stamp)),
+            on_released=on_released,
         )
     except apply_session.SessionBusy as exc:
         runs.save_decision(stamp, job_id, status="pending")
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return sess.snapshot()
+    return sess
+
+
+@app.post("/api/apply/queue")
+def api_apply_queue_start(payload: dict = Body(...)) -> dict:
+    """Apply to the ticked rows, one after another. The agent still never
+    submits: every job in the queue stops for the candidate to review and
+    submit it themselves."""
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="items must be a list")
+
+    def starter(stamp: str, job_id: str) -> str:
+        sess = _begin_apply(stamp, job_id, on_released=applyqueue.release)
+        return sess.label
+
+    try:
+        return applyqueue.start(items, starter)
+    except applyqueue.QueueFull as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/apply/queue")
+def api_apply_queue_state() -> dict:
+    return applyqueue.state()
+
+
+@app.post("/api/apply/queue/clear")
+def api_apply_queue_clear() -> dict:
+    return applyqueue.clear()
 
 
 @app.get("/api/apply/status")
