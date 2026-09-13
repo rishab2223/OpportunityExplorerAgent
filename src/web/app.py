@@ -62,14 +62,6 @@ def api_run_status() -> dict:
     return runner.status()
 
 
-@app.get("/api/runs/latest")
-def api_latest_run() -> dict:
-    stamp = runs.latest_stamp()
-    if not stamp:
-        raise HTTPException(status_code=404, detail="no runs found under outputs/")
-    return runs.load_run(stamp)
-
-
 @app.get("/api/runs/{stamp}")
 def api_run(stamp: str) -> dict:
     try:

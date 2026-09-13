@@ -123,6 +123,8 @@ def as_prompt_text(profile: dict[str, Any] | None = None) -> str:
     data = profile if profile is not None else load_profile()
     lines = []
     for key, value in data.items():
+        # "learned" is a legacy key: saved answers live in the answer bank now,
+        # and an old profile still holding one must not bloat every prompt.
         if key == "learned" or not value:
             continue
         if key == "jobs" and isinstance(value, list):

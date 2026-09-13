@@ -390,27 +390,27 @@ class FindAdvanceTests(unittest.TestCase):
             {"id": 1, "tag": "button", "type": "submit", "text": "Submit application"},
             {"id": 2, "tag": "button", "type": "", "text": "Next"},
         ]
-        got = _find_advance(fields, set(), {})
+        got = _find_advance(fields, set())
         self.assertEqual(got["id"], 2)
 
     def test_no_advance_on_final_step(self) -> None:
         fields = [{"id": 1, "tag": "button", "type": "submit", "text": "Submit application"}]
-        self.assertIsNone(_find_advance(fields, set(), {}))
+        self.assertIsNone(_find_advance(fields, set()))
 
     def test_handled_advance_not_reclicked(self) -> None:
         fields = [{"id": 2, "tag": "button", "type": "", "text": "Next"}]
-        self.assertIsNone(_find_advance(fields, {"next"}, {}))
+        self.assertIsNone(_find_advance(fields, {"next"}))
 
     def test_word_must_start_the_label(self) -> None:
         # Regression: a careers-page "Code Review" nav link matched \breview\b
         # and was clicked three times in a real session.
         self.assertIsNone(_find_advance(
-            [{"id": 1, "tag": "a", "type": "", "text": "Code Review"}], set(), {}))
+            [{"id": 1, "tag": "a", "type": "", "text": "Code Review"}], set()))
         self.assertIsNone(_find_advance(
-            [{"id": 1, "tag": "a", "type": "", "text": "Overview"}], set(), {}))
+            [{"id": 1, "tag": "a", "type": "", "text": "Overview"}], set()))
         got = _find_advance(
             [{"id": 2, "tag": "button", "type": "", "text": "Review your application"}],
-            set(), {})
+            set())
         self.assertEqual(got["id"], 2)
 
 

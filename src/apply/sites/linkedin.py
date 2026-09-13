@@ -23,6 +23,11 @@ APPLY_RE = re.compile(r"\bapply\b", re.IGNORECASE)
 SIGN_IN_RE = re.compile(r"\b(sign in|join now)\b", re.IGNORECASE)
 # Logged-out LinkedIn bounces clicks to these; never try to drive them.
 LOGIN_URL_RE = re.compile(r"linkedin\.com/(authwall|uas/login|login|checkpoint)", re.IGNORECASE)
+# Deliberately narrower than worker.CLOSED_PAGE_RE, and kept separate from it:
+# a match here records the job closed and ends the session WITHOUT asking,
+# so it may only hold wording LinkedIn itself uses. The broad pattern, which
+# runs on any employer's page, asks the candidate to confirm first. Wording
+# that belongs to both has to be added in both places.
 CLOSED_RE = re.compile(
     r"no longer accepting applications|not (currently |presently )?accepting applications|"
     r"this job is no longer available|job (is|has been) closed|position has been filled|"

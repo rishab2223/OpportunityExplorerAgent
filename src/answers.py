@@ -194,28 +194,3 @@ def entries(limit: int = 40) -> list[dict[str, Any]]:
     finally:
         conn.close()
     return [dict(row) for row in rows]
-
-
-def migrate_learned(learned: dict[str, str]) -> int:
-    """One-time copy of apply_profile.json's old 'learned' map. Copy-only:
-    the JSON is left untouched, and existing bank rows are not overwritten."""
-    count = 0
-    for question, answer in (learned or {}).items():
-        key = question_key(question)
-        if not key or not (answer or "").strip():
-            continue
-        conn = db.connect()
-        try:
-            with conn:
-                cursor = conn.execute(
-                    "INSERT OR IGNORE INTO known_answers"
-                    " (question_key, question, answer, kind, times_used, first_seen)"
-                    " VALUES (?, ?, ?, ?, 0, ?)",
-                    (key, question, answer.strip(),
-                     "sensitive" if key in SENSITIVE_TOPICS else "neutral",
-                     datetime.now(timezone.utc).isoformat()),
-                )
-                count += cursor.rowcount
-        finally:
-            conn.close()
-    return count

@@ -334,7 +334,6 @@ def run_session(
             raise RuntimeError("this job has no apply_url or listing_url")
         invoke = make_invoker(cfg, env, "apply")
         sess.log(f"Model: {describe_provider(cfg, 'apply')}")
-        _migrate_learned_once(sess)
 
         sess.log(f"Opening {url}")
         pw, context, page = browser.launch(url, headless=headless)
@@ -434,7 +433,7 @@ def run_session(
                 # box by hand and clicked Next, then submitted, and neither
                 # the new step nor the "Application Submitted" popup was seen.
                 reply = _ask_watching(
-                    sess, holder, context, page, handled, fields,
+                    sess, holder, page, handled, fields,
                     "I am not making progress on this form. Tell me what to do next, "
                     "paste the form's URL to open it, type done if you already submitted "
                     "the application yourself, or type abort to stop.",
@@ -529,7 +528,7 @@ def run_session(
                         break
                 else:
                     answer = _ask_watching(
-                        sess, holder, context, page, handled, fields,
+                        sess, holder, page, handled, fields,
                         "I cannot see any form fields on this page. Open the form "
                         "yourself and I will pick it up, paste the form's URL, type "
                         "submitted if the application already went through, or type abort."
@@ -586,7 +585,7 @@ def run_session(
 
             unresolved = _unresolved_fields(fields, handled)
             submit_field = next((f for f in fields if _is_submit(f)), None)
-            advance_field = _find_advance(fields, handled, attempts)
+            advance_field = _find_advance(fields, handled)
             # "Add" under Work Experience / Education (Workday's My
             # Experience) is work to do, not decoration: with no empty inputs
             # on that page the agent used to hand off with the sections blank.
@@ -627,7 +626,7 @@ def run_session(
                         # prefilling and clicking Next straight away left no
                         # chance to check anything.
                         reply = _ask_watching(
-                            sess, holder, context, page, handled, fields,
+                            sess, holder, page, handled, fields,
                             (("CHECK YOUR CONTACT DETAILS - " + "; ".join(contact_problems) + ". ")
                              if contact_problems else "")
                             + f"This step is filled in. Review it in the browser, then type next "
@@ -709,7 +708,7 @@ def run_session(
                     limit = 2 if problems else MAX_ATTEMPTS_PER_FIELD
                     if attempts[key] >= limit:
                         reply = _ask_watching(
-                            sess, holder, context, page, handled, fields,
+                            sess, holder, page, handled, fields,
                             f"Clicking '{advance_label}' is not moving the form on"
                             + (f" - the page says: {problems}" if problems else "")
                             + ". Fix the highlighted field(s) yourself and type done, "
@@ -730,7 +729,7 @@ def run_session(
                     # an apply page in a new tab) instead of typing - the wait
                     # ends on its own and the new fields get filled.
                     reply = _ask_watching(
-                        sess, holder, context, page, handled, fields,
+                        sess, holder, page, handled, fields,
                         f"Everything I can fill is done. Review the form and click "
                         f"'{_field_label(submit_field)}' yourself in the browser, then type "
                         "done (or tell me what to fix).",
@@ -1627,7 +1626,7 @@ def _sweep(
                 handled.add(key)
                 continue
         if resolved is None:
-            resolved = resolver.resolve(field, job)
+            resolved = resolver.resolve(field)
         if resolved is None and resolver.is_blank(field):
             where = _entry_location(field, fields, profile.load_profile())
             if where:
@@ -1724,7 +1723,7 @@ def _repair_written(page, fields, written, sess) -> int:
     return fixed
 
 
-def _ask_watching(sess, holder, context, page, handled, fields, question: str,
+def _ask_watching(sess, holder, page, handled, fields, question: str,
                   suggestion: str = "", fields_too: bool = True) -> str | None:
     """sess.ask(), but the page is watched meanwhile: when the user opens a
     form (an Easy Apply popup on the same page, an apply page in a new tab)
@@ -1857,7 +1856,7 @@ def _redo_answer(page, fields, holder, job, attach, sess, reply: str) -> bool:
     if not match or not answered:
         return False
     words = (match.group(2) or "").strip()
-    key, entry = _redo_target(answered, fields, words)
+    key, entry = _redo_target(answered, words)
     if key is None:
         sess.log("Nothing to redo: I have not written an answer to that one.")
         return True
@@ -1881,7 +1880,7 @@ def _redo_answer(page, fields, holder, job, attach, sess, reply: str) -> bool:
     return True
 
 
-def _redo_target(answered: dict[str, Any], fields, words: str):
+def _redo_target(answered: dict[str, Any], words: str):
     """Which earlier answer to reopen: the one the words name, else the most
     recent."""
     if words:
@@ -2196,7 +2195,7 @@ def _run_action(
                     # while a field question is open - after an hour away the
                     # answer was a "check" to a question the page had outlived.
                     answer = _ask_watching(
-                        sess, holder, holder["context"], page, handled, fields, question,
+                        sess, holder, page, handled, fields, question,
                         suggestion=proposed, fields_too=False,
                     )
                     if answer is None:
@@ -2383,9 +2382,7 @@ def _is_advance_button(field: dict[str, Any]) -> bool:
     return False
 
 
-def _find_advance(
-    fields: list[dict[str, Any]], handled: set[str], attempts: dict[str, int]
-) -> dict[str, Any] | None:
+def _find_advance(fields: list[dict[str, Any]], handled: set[str]) -> dict[str, Any] | None:
     """The wizard's next/continue/review button, if any - never a submit."""
     for field in fields:
         if not _is_advance_button(field):
@@ -2438,15 +2435,6 @@ def _maybe_remember(
     company = str(job.get("company") or "")
     if answers.remember(label, answer, group=group, company=company):
         sess.log(f"Saved '{group or label}' for future applications.")
-
-
-def _migrate_learned_once(sess: ApplySession) -> None:
-    learned = profile.load_profile().get("learned") or {}
-    if not learned:
-        return
-    moved = answers.migrate_learned(learned)
-    if moved:
-        sess.log(f"Moved {moved} saved answer(s) from apply_profile.json into the answer bank.")
 
 
 def _dry_run_report(page, context, job, pdf_path: str, sess: ApplySession) -> None:

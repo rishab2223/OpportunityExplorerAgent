@@ -36,11 +36,6 @@ def list_stamps() -> list[str]:
     return sorted(stamps, reverse=True)
 
 
-def latest_stamp() -> str:
-    stamps = list_stamps()
-    return stamps[0] if stamps else ""
-
-
 def run_dir(stamp: str) -> Path:
     if not STAMP_RE.match(stamp or ""):
         raise RunNotFound(f"invalid run id: {stamp}")

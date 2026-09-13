@@ -108,17 +108,6 @@ class RememberRecallTests(BankTestCase):
         self.assertEqual(len(rows), 2)
 
 
-class MigrationTests(BankTestCase):
-    def test_learned_map_migrates_once(self) -> None:
-        learned = {"notice period": "45 days", "github": "https://github.com/x", "": "junk"}
-        self.assertEqual(answers.migrate_learned(learned), 2)
-        self.assertEqual(answers.recall("Notice Period")["answer"], "45 days")
-        # Idempotent, and never overwrites a newer bank entry.
-        answers.remember("notice period", "30 days")
-        self.assertEqual(answers.migrate_learned(learned), 0)
-        self.assertEqual(answers.recall("notice period")["answer"], "30 days")
-
-
 class PhoneTopicScopeTests(unittest.TestCase):
     def test_phone_topic_is_the_plain_question_only(self) -> None:
         from src.answers import question_key

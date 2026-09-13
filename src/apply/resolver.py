@@ -743,7 +743,7 @@ def _select_value(value: str, field: dict[str, Any]) -> str:
     return value if len(options) >= CAPTURED_OPTIONS else ""
 
 
-def resolve(field: dict[str, Any], job: dict[str, Any] | None = None) -> tuple[str, str] | None:
+def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
     """(value, source) for a field the script can fill without the model, else None.
 
     source is 'profile', 'saved', or 'resume' (file inputs), for the log line.

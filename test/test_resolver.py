@@ -514,7 +514,7 @@ class WorkEntryResolveTests(ResolverTestCase):
         got = {}
         for f in fields:
             if f.get("work_entry") == 1:
-                out = resolver.resolve(f, {})
+                out = resolver.resolve(f)
                 if out:
                     got.setdefault(f["label"], []).append(out[0])
         self.assertEqual(got["Job Title*"], ["Engineer Intern"])
@@ -526,7 +526,7 @@ class WorkEntryResolveTests(ResolverTestCase):
 
     def test_a_whole_date_box_takes_the_whole_date(self) -> None:
         fields = self._with_jobs(esko_fields())
-        starts = [resolver.resolve(f, {}) for f in fields if f["label"] == "From*"]
+        starts = [resolver.resolve(f) for f in fields if f["label"] == "From*"]
         self.assertEqual([s[0] for s in starts], ["07/2020", "06/2019"])
 
     def test_the_currently_here_checkbox_is_reachable_at_last(self) -> None:
@@ -538,15 +538,15 @@ class WorkEntryResolveTests(ResolverTestCase):
         fields = workday_fields()
         resolver.tag_work_entries(fields, resolver.profile_jobs(data))
         boxes = [f for f in fields if f["label"] == "I currently work here"]
-        self.assertEqual(resolver.resolve(boxes[0], {}), ("yes", "profile"))
+        self.assertEqual(resolver.resolve(boxes[0]), ("yes", "profile"))
         # Only the current job, and never a tick that is already there.
-        self.assertIsNone(resolver.resolve(boxes[1], {}))
-        self.assertIsNone(resolver.resolve(dict(boxes[0], checked=True), {}))
+        self.assertIsNone(resolver.resolve(boxes[1]))
+        self.assertIsNone(resolver.resolve(dict(boxes[0], checked=True)))
 
     def test_a_radio_in_a_work_entry_is_still_the_models(self) -> None:
         fields = self._with_jobs(workday_fields())
         radio = dict(fields[4], type="radio", label="Employment type", checked=False)
-        self.assertIsNone(resolver.resolve(radio, {}))
+        self.assertIsNone(resolver.resolve(radio))
 
     def test_an_entry_naming_a_job_the_profile_lacks_is_left_alone(self) -> None:
         fields = workday_fields()
@@ -558,7 +558,7 @@ class WorkEntryResolveTests(ResolverTestCase):
         self._with_jobs(fields)
         second = [f for f in fields if f.get("work_pos") == 1]
         self.assertTrue(all(f["work_entry"] == -1 for f in second))
-        self.assertTrue(all(resolver.resolve(f, {}) is None for f in second))
+        self.assertTrue(all(resolver.resolve(f) is None for f in second))
 
     def test_two_jobs_at_one_employer_are_told_apart_by_title(self) -> None:
         # The real profile has exactly this: two roles at the same company.
@@ -578,12 +578,12 @@ class WorkEntryResolveTests(ResolverTestCase):
             field(id=99, label="Job Title*", section="Work History (Optional) 3"),
         ])
         spare = next(f for f in fields if f.get("section", "").endswith("3"))
-        self.assertIsNone(resolver.resolve(spare, {}))
+        self.assertIsNone(resolver.resolve(spare))
 
     def test_without_jobs_in_the_profile_nothing_is_filled(self) -> None:
         fields = workday_fields()
         resolver.tag_work_entries(fields, [])
-        self.assertTrue(all(resolver.resolve(f, {}) is None
+        self.assertTrue(all(resolver.resolve(f) is None
                             for f in fields if f.get("work_entry") is not None))
 
     def test_an_entry_the_site_already_filled_is_not_overwritten(self) -> None:
@@ -595,7 +595,7 @@ class WorkEntryResolveTests(ResolverTestCase):
                 f["value"] = "Northwind Systems"
         self._with_jobs(fields)
         held = next(f for f in fields if f["label"] == "Job Title*")
-        self.assertIsNone(resolver.resolve(held, {}))
+        self.assertIsNone(resolver.resolve(held))
 
 
 class WorkSlotTests(ResolverTestCase):
