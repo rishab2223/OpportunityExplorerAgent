@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import unittest.mock
@@ -790,7 +791,7 @@ class WorkSectionAddTests(TempDbTestCase):
         from src.apply import profile
         import json as _json
         profile.PROFILE_PATH.write_text(
-            _json.dumps({"full_name": "T", **extra}), encoding="utf-8")
+            json.dumps({"full_name": "T", **extra}), encoding="utf-8")
 
     def _page(self, clicks):
         class Locator:
@@ -1940,3 +1941,64 @@ class EntryLocationTests(TempDbTestCase):
         self.assertIsNone(worker._entry_location(fields[3], fields, data))   # another employer
         self.assertIsNone(worker._entry_location(fields[4], fields, data))   # not a job entry
         self.assertIsNone(worker._entry_location(fields[1], fields, {"current_company": "Cadence Design Systems"}))
+
+
+class PromptFieldTrimTests(TempDbTestCase):
+    """The form-field JSON is the biggest part of an apply prompt, and a
+    quarter of it was empty keys. Dropping them is only safe while every
+    meaningful zero survives: ordinal 0 is the FIRST entry of a repeating
+    section, and checked false is a box that is not ticked."""
+
+    def _fields(self):
+        return [
+            {"id": 0, "tag": "input", "type": "text", "role": "", "haspopup": "",
+             "autocomplete": "", "path": "html>body>input", "section": "", "ordinal": 0,
+             "group": "", "label": "Full name", "name": "", "accept": "", "elid": "",
+             "required": True, "value": "", "text": "", "maxlength": 0},
+            {"id": 1, "tag": "input", "type": "checkbox", "role": "", "haspopup": "",
+             "autocomplete": "", "path": "html>body>input", "section": "Work Experience",
+             "ordinal": 0, "group": "Consent", "label": "I currently work here",
+             "name": "", "accept": "", "elid": "", "required": False, "value": "on",
+             "text": "", "maxlength": 0, "checked": False},
+        ]
+
+    def _sent(self, handled=None):
+        from src.apply import worker
+
+        page = type("P", (), {"url": "https://x/apply"})()
+        with unittest.mock.patch.object(worker.browser, "page_text", lambda *a, **k: "page"):
+            prompt = worker._build_prompt(
+                {"title": "SWE", "company": "X", "description": "d"}, "resume",
+                self._fields(), page, [], [], handled or set())
+        blob = prompt.split("FORM FIELDS:\n", 1)[1].split("\n\nALREADY DONE:")[0]
+        return json.loads(blob)
+
+    def test_empty_keys_are_not_sent(self) -> None:
+        sent = self._sent()
+        for gone in ("role", "haspopup", "autocomplete", "name", "accept", "elid", "text"):
+            self.assertNotIn(gone, sent[0], gone)
+        self.assertNotIn("path", sent[0])          # never sent, empty or not
+
+    def test_meaningful_zeroes_survive(self) -> None:
+        sent = self._sent()
+        self.assertEqual(sent[0]["id"], 0)         # the model addresses fields by id
+        self.assertEqual(sent[0]["ordinal"], 0)    # the first entry, not "no entry"
+        self.assertIs(sent[1]["checked"], False)   # an unticked box, not a missing one
+        self.assertIs(sent[1]["required"], False)
+
+    def test_what_the_model_needs_is_still_there(self) -> None:
+        sent = self._sent()
+        self.assertEqual(sent[0]["label"], "Full name")
+        self.assertEqual(sent[0]["type"], "text")
+        self.assertEqual(sent[1]["section"], "Work Experience")
+        self.assertEqual(sent[1]["group"], "Consent")
+        self.assertEqual(sent[1]["value"], "on")
+
+    def test_a_handled_field_is_still_marked(self) -> None:
+        key = _field_key(self._fields()[0], "Full name")
+        sent = self._sent(handled={key})
+        self.assertTrue(sent[0].get("already_handled"))
+
+    def test_the_json_actually_got_smaller(self) -> None:
+        fat = json.dumps([{k: v for k, v in f.items() if k != "path"} for f in self._fields()])
+        self.assertLess(len(json.dumps(self._sent())), len(fat) * 0.75)

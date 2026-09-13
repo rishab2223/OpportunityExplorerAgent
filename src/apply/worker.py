@@ -2554,7 +2554,15 @@ def _build_prompt(
 ) -> str:
     annotated = []
     for field in fields:
-        item = {k: v for k, v in field.items() if k != "path"}
+        # The field JSON is the largest part of this prompt by a distance, and
+        # a quarter of it was empty keys: every plain text input shipped
+        # "role": "", "haspopup": "", "autocomplete": "", "accept": "",
+        # "elid": "", "name": "". An absent key reads the same as an empty one
+        # - SYSTEM describes what each key MEANS when set, and never promises
+        # they are all there. 0 and False do mean something (ordinal 0 is the
+        # first entry, checked false is an unticked box), so they stay.
+        item = {k: v for k, v in field.items()
+                if k != "path" and v != "" and v is not None and v != []}
         if _field_key(field, _field_label(field)) in handled:
             item["already_handled"] = True
         annotated.append(item)
