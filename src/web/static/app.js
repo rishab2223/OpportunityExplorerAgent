@@ -177,7 +177,11 @@ function appendApply(text, at) {
       }
       line.appendChild(document.createTextNode(piece.slice(tag.length + verb.length)));
     } else {
-      line.textContent = piece;
+      // appendChild, not textContent: assigning textContent replaces every
+      // child the line already has, which silently deleted the elapsed stamp
+      // on exactly the lines with no [tag] or verb to shout - questions,
+      // answers, and every plain sentence.
+      line.appendChild(document.createTextNode(piece));
     }
     if (piece.length > 160) line.title = piece;
     box.appendChild(line);

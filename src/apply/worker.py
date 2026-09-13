@@ -508,6 +508,13 @@ def run_session(
             for attempt in range(DIALOG_LOAD_RETRIES):
                 if not browser.dialog_pending(page):
                     break
+                # A dialog with no form controls is what a SUBMITTED
+                # application looks like too: LinkedIn's "Your application was
+                # sent" card is a modal with nothing to fill. Waiting six
+                # seconds for its form to arrive is waiting for something that
+                # is never coming, and it happened after every application.
+                if _looks_submitted(browser.page_text(page)):
+                    break
                 if attempt == 0:
                     sess.log("A dialog is open but its form is still loading; waiting…")
                 page.wait_for_timeout(1500)
@@ -783,10 +790,22 @@ def run_session(
             # A confirmation page often keeps a control or two (Done, "view
             # your application"), so it never reached the no-fields branch
             # that recognises it. The session then paid a whole model round
-            # trip to be told what the page says in plain English. Nothing
-            # left to fill plus a page that says it went through IS the
-            # answer.
-            if not unresolved and not pending_adds and _looks_submitted(browser.page_text(page)):
+            # trip to be told what the page says in plain English.
+            #
+            # This used to require that nothing was left unresolved, which is
+            # a condition a confirmation page routinely fails: LinkedIn's
+            # "Your application was sent" card keeps a follow-up question and
+            # the job page's own controls behind it. A real session spent six
+            # seconds asking the model about one field on a page that had
+            # already said, in English, that the application was sent - and
+            # got back zero actions, because there was nothing to do.
+            #
+            # SUBMITTED_PAGE_RE only matches a page SAYING the application
+            # went through ("was sent", "thank you for applying"); a form that
+            # has yet to be submitted does not carry that wording, and the
+            # phrase on its own button ("Submit application") is the other
+            # word order and does not match.
+            if _looks_submitted(browser.page_text(page)):
                 outcome, outcome_text = "applied", "confirmed by the page"
                 break
 
