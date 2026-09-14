@@ -170,6 +170,13 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      re.compile(r"^(name of )?(university|college|school|institute|institution)$"
                 r"|\bname of (your |the )?(university|college|school|institut\w+)"
                 r"|\b(university|college|school|institut\w+) name\b")),
+    ("degree_recognized_by", (),
+     re.compile(r"^degree[_ ]?recognized[_ ]?by$"),
+     # "My degree was awarded by an institution recognized by:" - a dropdown
+     # of accrediting bodies (UGC, AICTE, ...), constant for a candidate and
+     # asked by every Indian form, so it is a profile fact, not a model guess.
+     re.compile(r"\brecogni[sz]ed by\b|\bdegree was awarded\b"
+                r"|\baccredit(ed|ing) (body|authority)\b")),
     ("highest_education_level", (),
      re.compile(r"^(degree|qualification|education[_ ]?level|highest[_ ]?qualification)$"),
      re.compile(r"\b(highest )?(degree|qualification)\b|\beducation level\b"
@@ -773,6 +780,39 @@ def _select_value(value: str, field: dict[str, Any]) -> str:
     return value if len(options) >= CAPTURED_OPTIONS else ""
 
 
+# Radio groups answered from the profile. The pattern matches the group's
+# QUESTION - never an option's own text - and the stored answer must then name
+# this very option. Everything else about radios is unchanged: they stay the
+# model's to decide, and a legal declaration is refused before this is reached.
+_RADIO_GROUP_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("college_tier", re.compile(r"\bcollege tier\b|\binstitute tier\b"
+                                r"|\btier does your (institute|college)\b")),
+)
+
+
+def _radio_from_profile(field: dict[str, Any]) -> tuple[str, str] | None:
+    """Tick one option of a known group, or nothing at all.
+
+    Returns "yes" rather than the option text: a radio is ticked, not typed,
+    and only the option the profile actually names is ever ticked. A group we
+    recognise whose stored answer matches no option picks nothing - better an
+    unanswered question than a confidently wrong box.
+    """
+    question = profile.fingerprint(str(field.get("group") or ""))
+    option = str(field.get("label") or "").strip()
+    if not question or not option or field.get("checked"):
+        return None
+    data = profile.load_profile()
+    for key, question_re in _RADIO_GROUP_RULES:
+        if not question_re.search(question):
+            continue
+        stored = str(data.get(key) or "").strip()
+        if stored and stored.casefold() == option.casefold():
+            return "yes", "profile"
+        return None
+    return None
+
+
 def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
     """(value, source) for a field the script can fill without the model, else None.
 
@@ -791,7 +831,9 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
         # resume PDF silently).
         return ("", "resume") if wants_resume(field) else None
     listbox = is_listbox_button(field)
-    if tag not in ("input", "textarea", "select") and not listbox:
+    # A styled radio is a div, so the tag says nothing; what it acts as does.
+    if tag not in ("input", "textarea", "select") and not listbox \
+            and field_type not in ("radio", "checkbox"):
         return None
     if in_repeating_section(field):
         # Languages, Websites, Education and Work Experience entries come
@@ -816,6 +858,10 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
         if listbox or tag in ("input", "textarea"):
             return value, "profile"
         return None
+    if not listbox and field_type == "radio":
+        picked = _radio_from_profile(field)
+        if picked is not None:
+            return picked
     # A dropdown button is type="button" - it must not fall to this guard.
     if not listbox and field_type in ("checkbox", "radio", "submit", "button", "reset", "image", "password"):
         return None

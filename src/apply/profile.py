@@ -71,6 +71,11 @@ TEMPLATE: dict[str, Any] = {
     "highest_education_level": "",
     "field_of_study": "",
     "graduation_year": "",
+    # Indian forms ask both, and neither changes between applications:
+    # the accrediting body ("UGC", "AICTE") and where the employer's own
+    # tier list puts the college ("Tier 1", "Tier 2", "Other/Not Listed").
+    "degree_recognized_by": "",
+    "college_tier": "",
     # One line per school, separated by ";" or a newline, for the forms that
     # want the whole thing in one box:
     #   "Example University - Bachelors, Computer Science, 2015-2019"

@@ -129,6 +129,33 @@ with sync_playwright() as pw:
         check("the college box gets the university",
               bool(got) and got[0] == PROFILE["university"], repr(got))
 
+    print("\nthe accrediting-body dropdown answers itself")
+    degree = labelled(fields, "degree was awarded")
+    if degree:
+        got = resolver.resolve(degree[0])
+        check("it comes from the profile, not a model guess",
+              bool(got) and got[0] == PROFILE["degree_recognized_by"], repr(got))
+
+    print("\nthe tier group answers itself, and only the right option")
+    by_label = {str(f.get("label")): f for f in tiers}
+    if len(tiers) == 3:
+        chosen = resolver.resolve(by_label["Other/Not Listed"])
+        check("the stored tier is ticked", chosen == ("yes", "profile"), repr(chosen))
+        for wrong in ("Tier 1", "Tier 2"):
+            got = resolver.resolve(by_label[wrong])
+            check(f"and {wrong} is left alone", got is None, repr(got))
+        # A group we know, with an answer naming none of its options, must
+        # pick nothing rather than the nearest thing. Tested on the option
+        # that WOULD have been ticked a moment ago, so the None means the
+        # stored answer stopped matching - not that this option never matched.
+        profile.PROFILE_PATH.write_text(
+            json.dumps({**PROFILE, "college_tier": "Tier 9"}), encoding="utf-8")
+        got = resolver.resolve(by_label["Other/Not Listed"])
+        check("an answer matching no option picks nothing", got is None, repr(got))
+        profile.PROFILE_PATH.write_text(json.dumps(PROFILE), encoding="utf-8")
+        check("and it ticks again once the answer fits",
+              resolver.resolve(by_label["Other/Not Listed"]) == ("yes", "profile"))
+
     print("\nticking a styled radio really ticks the native one")
     if len(tiers) == 3:
         other = next(f for f in tiers if f["label"] == "Other/Not Listed")
