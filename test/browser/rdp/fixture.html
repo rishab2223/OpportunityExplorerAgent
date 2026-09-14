@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>react-datepicker, as Esko/Phenom uses it</title>
+  <link rel="stylesheet" href="react-datepicker.css">
+  <script src="react.js"></script>
+  <script src="react-dom.js"></script>
+  <script src="prop-types.js"></script>
+  <script src="classnames.js"></script>
+  <script src="popper.js"></script>
+  <script src="react-popper.js"></script>
+  <script src="react-onclickoutside.js"></script>
+  <style>label { display:block; margin-top:12px; } .form-control { width: 260px; padding: 6px; }</style>
+</head>
+<body>
+  <h3>Work Experience :</h3>
+  <label class="control-label" for="experienceData[0].fromTo.startDate">From*</label>
+  <div id="from"></div>
+  <label class="control-label" for="experienceData[0].fromTo.endDate">To*</label>
+  <div id="to"></div>
+  <h3>Esko-style (the host form ignores typed text)</h3>
+  <label class="control-label" for="strict.startDate">From*</label>
+  <div id="strict"></div>
+  <label for="after">Role description</label>
+  <textarea id="after" rows="2"></textarea>
+  <div id="status">loading…</div>
+  <script type="module">
+    // react-datepicker's UMD wants every date-fns function as its own global.
+    const dateFns = await import("https://cdn.jsdelivr.net/npm/date-fns@2.30.0/+esm");
+    for (const [name, value] of Object.entries(dateFns)) window[name] = value;
+    window.isValidDate = dateFns.isValid;
+    window.dfIsEqual = dateFns.isEqual;
+    window.dfIsSameDay = dateFns.isSameDay;
+    window.dfIsSameMonth = dateFns.isSameMonth;
+    window.dfIsSameYear = dateFns.isSameYear;
+    window.dfIsSameQuarter = dateFns.isSameQuarter;
+    window.onClickOutside = window.onClickOutside || window.reactOnclickoutside;
+
+    await new Promise((done, fail) => {
+      const s = document.createElement('script');
+      s.src = 'react-datepicker.js';
+      s.onload = done; s.onerror = fail;
+      document.head.appendChild(s);
+    });
+
+    const DP = window.DatePicker.default || window.DatePicker;
+    // Esko shows MM/yyyy and a month grid - the shape its DOM dump has.
+    function Field(props) {
+      const [date, setDate] = React.useState(null);
+      return React.createElement(DP, {
+        selected: date,
+        onChange: setDate,
+        dateFormat: "MM/yyyy",
+        showMonthYearPicker: true,
+        id: props.id,
+        className: "form-control",
+        autoComplete: "off",
+      });
+    }
+    ReactDOM.createRoot(document.getElementById('from'))
+      .render(React.createElement(Field, { id: "experienceData[0].fromTo.startDate" }));
+    ReactDOM.createRoot(document.getElementById('to'))
+      .render(React.createElement(Field, { id: "experienceData[0].fromTo.endDate" }));
+
+    // Esko wraps the picker in its own form layer, which only accepts a date
+    // the CALENDAR produced: typed text shows while the box has focus and is
+    // wiped the moment the picker closes (react-datepicker sets inputValue
+    // back to null on close, and `selected` was never set).
+    function StrictField(props) {
+      const [date, setDate] = React.useState(null);
+      return React.createElement(DP, {
+        selected: date,
+        onChange: (value, event) => { if (!event || event.type !== "change") setDate(value); },
+        dateFormat: "MM/yyyy",
+        showMonthYearPicker: true,
+        id: props.id,
+        className: "form-control",
+        autoComplete: "off",
+      });
+    }
+    ReactDOM.createRoot(document.getElementById('strict'))
+      .render(React.createElement(StrictField, { id: "strict.startDate" }));
+    document.getElementById('status').textContent = 'ready';
+  </script>
+</body>
+</html>

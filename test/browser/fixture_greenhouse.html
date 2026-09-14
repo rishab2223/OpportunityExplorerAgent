@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head><title>Greenhouse-style apply fixture</title></head>
+<body>
+  <h1>Apply for this job</h1>
+  <label>Full name <input type="text" name="full_name"></label><br><br>
+  <!-- Mirrors the real job-boards.greenhouse.io DOM: the heading is a
+       div.label (not a <label>), the file input is VISIBLE, has no name, and
+       its id ("resume" / "cover_letter") is the only thing naming it; the
+       "Attach" button and input share a <label>, so both read "Attach". -->
+  <div class="file-upload__wrapper">
+    <div class="label upload-label">Resume/CV <span>*</span></div>
+    <div class="button-container">
+      <div class="secondary-button"><div>
+        <label><button type="button">Attach</button>
+        <input type="file" id="resume" accept=".pdf,.doc,.docx,.txt,.rtf"></label>
+      </div></div>
+      <button type="button">Dropbox</button>
+      <button type="button">Enter manually</button>
+    </div>
+  </div>
+  <div class="file-upload__wrapper">
+    <div class="label upload-label">Cover Letter</div>
+    <div class="button-container">
+      <div class="secondary-button"><div>
+        <label><button type="button">Attach</button>
+        <input type="file" id="cover_letter" accept=".pdf,.doc,.docx,.txt,.rtf"></label>
+      </div></div>
+      <button type="button">Dropbox</button>
+    </div>
+  </div>
+  <br>
+  <button type="submit">Submit application</button>
+</body>
+</html>

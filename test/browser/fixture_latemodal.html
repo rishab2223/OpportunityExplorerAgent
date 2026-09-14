@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head><title>Late-loading modal fixture</title></head>
+<body>
+  <!-- LinkedIn Easy Apply shape: the modal shell (title + close button) is
+       up at once, its fields render ~2.5s later. Behind it: a search box and
+       an "Easy Apply to this job" button the overlay would block. -->
+  <input type="search" placeholder="I'm looking for..." name="search">
+  <button type="button" aria-label="Easy Apply to this job">Easy Apply</button>
+  <button type="button">Save</button>
+  <div role="dialog" style="position:fixed; top:40px; left:40px; width:700px; height:500px; background:#fff; border:1px solid #888; padding:20px">
+    <h2>Apply to DummyCo</h2>
+    <button type="button" aria-label="Dismiss">X</button>
+    <div id="body">Loading…</div>
+  </div>
+  <script>
+    setTimeout(() => {
+      document.getElementById('body').innerHTML =
+        '<label>Full name <input type="text" name="full_name"></label><br>' +
+        '<button type="submit">Submit application</button>';
+    }, 2500);
+  </script>
+</body>
+</html>

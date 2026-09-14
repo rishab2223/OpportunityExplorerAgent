@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head><title>Apply-choice fixture</title></head>
+<body>
+  <!-- Workday's first screen: three ways to apply. The candidate picks (the
+       model used to click "Apply Manually" on its own). Autofill leads to
+       the resume step with a hidden file input. -->
+  <div id="choose">
+    <h2>Start Your Application</h2>
+    <a href="#" role="button" onclick="pick(event, 'autofill')">Autofill with Resume</a>
+    <a href="#" role="button" onclick="pick(event, 'manual')">Apply Manually</a>
+    <a href="#" role="button" onclick="pick(event, 'last')">Use My Last Application</a>
+  </div>
+  <div id="upload" style="display:none">
+    <h2>Upload your resume</h2>
+    <input type="file" style="display:none" id="hidden-file">
+    <button type="button" onclick="document.getElementById('hidden-file').click()">Select file</button>
+    <p id="uploaded"></p>
+    <button type="button" onclick="show('review')">Next</button>
+  </div>
+  <div id="manual" style="display:none">
+    <h2>Manual entry</h2>
+    <label>Full name <input type="text" name="full_name"></label>
+    <button type="button" onclick="show('review')">Next</button>
+  </div>
+  <div id="review" style="display:none">
+    <button type="submit">Submit application</button>
+  </div>
+  <script>
+    window.path = '';
+    function show(id) { for (const s of ['choose', 'upload', 'manual', 'review']) document.getElementById(s).style.display = s === id ? 'block' : 'none'; }
+    function pick(e, which) { e.preventDefault(); window.path = which; show(which === 'autofill' ? 'upload' : 'manual'); }
+    document.getElementById('hidden-file').addEventListener('change', (e) => {
+      document.getElementById('uploaded').textContent = 'Uploaded: ' + (e.target.files[0] ? e.target.files[0].name : '');
+    });
+  </script>
+</body>
+</html>

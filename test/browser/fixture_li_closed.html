@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Software Engineer | DummyCo | LinkedIn</title></head>
+<body>
+<nav><a href="#jobs">Jobs</a><a href="#feed">Feed</a></nav>
+<h1>Software Engineer</h1>
+<h2>DummyCo &middot; Bangalore, India</h2>
+<script>
+  // LinkedIn builds the card client-side, after domcontentloaded. The banner
+  // and the (dead) apply button arrive late, which is exactly the timing the
+  // "type done when it has loaded" prompt used to paper over.
+  setTimeout(function () {
+    var card = document.createElement("div");
+    card.innerHTML =
+      '<p id="banner">No longer accepting applications</p>' +
+      '<button type="button" disabled>Apply</button>';
+    document.body.appendChild(card);
+  }, 900);
+</script>
+</body>
+</html>

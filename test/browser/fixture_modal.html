@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head><title>Modal apply fixture</title></head>
+<body>
+  <h1>Job page with an Easy-Apply-style modal</h1>
+  <div id="bg"></div>
+  <div role="dialog" aria-modal="true"
+       style="position:fixed;top:10%;left:30%;width:420px;height:320px;background:#fff;border:2px solid #333;padding:16px">
+    <h2>Apply for this job</h2>
+    <label>Full name <input type="text" name="full_name"></label><br><br>
+    <button type="submit">Submit application</button>
+  </div>
+  <!-- A cookie-consent-style shell: role=dialog, big enough, but its real
+       content is in an iframe. It stacks AFTER the form dialog and must NOT
+       hijack the scan (this exact shape hid a SuccessFactors form). -->
+  <div role="dialog" aria-modal="true"
+       style="position:fixed;bottom:0;left:20%;width:500px;height:180px;background:#eee">
+    <iframe title="consent" style="width:100%;height:100%;border:0"></iframe>
+  </div>
+  <script>
+    // 70 background controls, more than the snapshot's MAX_FIELDS budget:
+    // without dialog scoping these drown out the modal's own fields.
+    const bg = document.getElementById('bg');
+    for (let i = 1; i <= 70; i++) {
+      const b = document.createElement('button');
+      b.textContent = 'Junk ' + i;
+      bg.appendChild(b);
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head><title>My Experience fixture</title></head>
+<body>
+  <!-- Workday "My Experience": an Add button per section; the entry's fields
+       appear on click. A job's Location must come from the resume (model),
+       never from the profile. Date parts are "Month"/"Year" inside a named
+       group. -->
+  <h1>My Experience</h1>
+  <section>
+    <div class="css-sectionTitle" data-automation-id="sectionTitle">Work Experience</div>
+    <button type="button" id="add-work" onclick="reveal()">Add</button>
+    <div id="entry" style="display:none">
+      <label>Job Title* <input type="text" id="jt"></label><br>
+      <label>Company* <input type="text" id="co"></label><br>
+      <label>Location <input type="text" id="loc"></label><br>
+      <label><input type="checkbox" id="cur"> I currently work here</label><br>
+      <div role="group" aria-label="From">
+        <label>From*</label>
+        <input type="text" aria-label="Month" id="fm"> <input type="text" aria-label="Year" id="fy">
+      </div>
+      <label>Role Description <textarea id="desc"></textarea></label><br>
+      <button type="button">Add Another</button>
+    </div>
+  </section>
+  <section id="langs">
+    <div class="css-sectionTitle">Languages</div>
+    <button type="button" onclick="addLang()">Add</button>
+    <div id="lang-entries"></div>
+  </section>
+  <section id="sites">
+    <div class="css-sectionTitle">Websites</div>
+    <p>Add any relevant websites.</p>
+    <button type="button" onclick="addSite()">Add</button>
+    <div id="site-entries"></div>
+  </section>
+  <section>
+    <h3>Contact</h3>
+    <label>Location <input type="text" name="location"></label>
+  </section>
+  <button type="submit">Submit application</button>
+  <script>
+    function reveal() { document.getElementById('entry').style.display = 'block'; }
+    let langCount = 0;
+    function addLang() {
+      langCount += 1;
+      const box = document.createElement('div');
+      box.innerHTML = '<div class="css-sectionTitle">Languages ' + langCount + '</div>' +
+        '<label>Language* <select class="lang"><option value="">Select One</option><option>English</option><option>Hindi</option></select></label> ' +
+        '<label>Overall* <select class="level"><option value="">Select One</option><option>Intermediate</option><option>Fluent</option></select></label>';
+      document.getElementById('lang-entries').appendChild(box);
+      // the section's button turns into "Add Another" once an entry exists
+      document.querySelector('#langs > button').textContent = 'Add Another';
+    }
+    let siteCount = 0;
+    function addSite() {
+      siteCount += 1;
+      const box = document.createElement('div');
+      box.innerHTML = '<div class="css-sectionTitle">Websites ' + siteCount + '</div><label>URL* <input type="text" class="url"></label>';
+      document.getElementById('site-entries').appendChild(box);
+      document.querySelector('#sites > button').textContent = 'Add Another';
+    }
+  </script>
+</body>
+</html>

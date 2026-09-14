@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head><title>Work history replicas</title></head>
+<body>
+<h1>Work history</h1>
+
+<!-- WORKDAY shape, taken from the real dump: numbered section titles, the
+     Delete button BEFORE the Job Title, and Month/Year boxes whose nearest
+     heading is "From*"/"To*" rather than the work section. -->
+<section>
+  <div class="css-sectionTitle" data-automation-id="sectionTitle">Work History (Optional) 1</div>
+  <button type="button" id="del1">Delete</button>
+  <label>Job Title* <input type="text" id="wd-jt1"></label><br>
+  <label>Company* <input type="text" id="wd-co1"></label><br>
+  <label>Location <input type="text" id="wd-loc1"></label><br>
+  <label><input type="checkbox" id="wd-cur1" value="on"> I currently work here</label><br>
+  <div class="css-sectionTitle">From*</div>
+  <input type="text" aria-label="Month" id="wd-fm1"> <input type="text" aria-label="Year" id="wd-fy1">
+  <div class="css-sectionTitle">To*</div>
+  <input type="text" aria-label="Month" id="wd-tm1"> <input type="text" aria-label="Year" id="wd-ty1">
+  <label>Role Description <textarea id="wd-desc1"></textarea></label>
+</section>
+
+<section>
+  <div class="css-sectionTitle" data-automation-id="sectionTitle">Work History (Optional) 2</div>
+  <button type="button" id="del2">Delete</button>
+  <label>Job Title* <input type="text" id="wd-jt2"></label><br>
+  <label>Company* <input type="text" id="wd-co2"></label><br>
+  <label>Location <input type="text" id="wd-loc2"></label><br>
+  <label><input type="checkbox" id="wd-cur2" value="on"> I currently work here</label><br>
+  <div class="css-sectionTitle">From*</div>
+  <input type="text" aria-label="Month" id="wd-fm2"> <input type="text" aria-label="Year" id="wd-fy2">
+  <div class="css-sectionTitle">To*</div>
+  <input type="text" aria-label="Month" id="wd-tm2"> <input type="text" aria-label="Year" id="wd-ty2">
+  <label>Role Description <textarea id="wd-desc2"></textarea></label>
+  <button type="button" id="addmore">Add Another</button>
+</section>
+
+<section>
+  <div class="css-sectionTitle" data-automation-id="sectionTitle">Education (Optional) 1</div>
+  <label>School or University* <input type="text" id="edu-school"></label>
+  <label>Location <input type="text" id="edu-loc"></label>
+</section>
+</body>
+</html>

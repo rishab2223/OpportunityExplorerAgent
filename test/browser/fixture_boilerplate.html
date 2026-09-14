@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Apply - Acme</title></head>
+<body>
+<h1>Senior Software Engineer</h1>
+
+<!-- The wording that means "submitted" is on this page from the moment it
+     loads - in the job description, where Indian postings put it as a matter
+     of course - and again in the form's own instructions. A check that scans
+     the whole page for that wording and records the job as applied would
+     fire here on the FIRST read, before a single box was filled, and close
+     the browser with a history row saying the candidate had applied. -->
+<section id="description">
+  <p>We are hiring a senior engineer for our platform team.</p>
+  <p>Thank you for your application, shortlisted candidates will be contacted
+     within five working days.</p>
+</section>
+
+<form onsubmit="return false">
+  <p class="hint">Once your application has been submitted you will not be able
+     to edit it, so please check every field.</p>
+  <label for="name">Full name *</label>
+  <input id="name" name="name" autocomplete="name" required>
+  <label for="email">Email *</label>
+  <input id="email" name="email" type="email" autocomplete="email" required>
+  <button type="submit">Submit application</button>
+</form>
+
+<!-- The real confirmation, arriving after the candidate presses Submit (a
+     timer stands in for that). THIS is the sentence that must be seen. -->
+<div id="sent"></div>
+<script>
+  setTimeout(function () {
+    document.getElementById("sent").innerHTML =
+      '<div role="dialog" aria-label="Application sent" ' +
+      'style="width:420px;height:200px;border:1px solid #6a6;background:#dfd">' +
+      '<h2>Your application was sent to Acme!</h2>' +
+      '<p>You can track it in My Jobs.</p></div>';
+  }, 3500);
+</script>
+</body>
+</html>

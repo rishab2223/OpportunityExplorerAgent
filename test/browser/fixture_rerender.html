@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head><title>Re-render wipe fixture</title></head>
+<body>
+  <!-- Workday's address block: picking State re-renders the section and
+       drops City/Postal Code values that were not committed. The agent must
+       notice and fill them again, and "Filled" must mean the value stuck. -->
+  <h3>Address</h3>
+  <div id="block">
+    <label>City* <input type="text" id="city"></label><br>
+    <label>Postal Code* <input type="text" id="postal"></label><br>
+    <label for="state">State*</label>
+    <button type="button" id="state" aria-haspopup="listbox" onclick="toggle()">Select One</button>
+    <ul id="state-list" role="listbox" style="display:none">
+      <li role="option" onclick="pick(this)">Karnātaka</li>
+      <li role="option" onclick="pick(this)">Kerala</li>
+    </ul>
+    <button type="button" onclick="next()">Next</button>
+  </div>
+  <div id="step2" style="display:none"><button type="submit">Submit application</button></div>
+  <script>
+    window.wipes = 0; window.nextCalls = 0;
+    function toggle() { const l = document.getElementById('state-list'); l.style.display = l.style.display === 'none' ? 'block' : 'none'; }
+    function pick(li) {
+      document.getElementById('state').textContent = li.textContent;
+      document.getElementById('state-list').style.display = 'none';
+      // the "re-render": values typed before the selection are lost
+      document.getElementById('city').value = '';
+      document.getElementById('postal').value = '';
+      window.wipes += 1;
+    }
+    function next() {
+      window.nextCalls += 1;
+      if (!document.getElementById('city').value || !document.getElementById('postal').value) return;
+      document.getElementById('block').style.display = 'none';
+      document.getElementById('step2').style.display = 'block';
+    }
+  </script>
+</body>
+</html>

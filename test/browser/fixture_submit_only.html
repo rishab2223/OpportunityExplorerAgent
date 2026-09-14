@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Apply - Airblack</title></head>
+<body>
+<h1>Lead Backend Engineer (Consumer AI)</h1>
+
+<!-- A ONE-PAGE form: a Submit button and no Next step. That is what makes
+     this fixture matter. "llm: <question>" was only wired into the "type next
+     to click Continue" prompt, so on a form like this one - which never shows
+     that prompt - the request was filed as a note for a model call that never
+     came, and the candidate got the same review prompt back twice.
+
+     Everything here is either filled from the profile or already answered, so
+     the session reaches the submit prompt, which is where the candidate is
+     standing when they read the rest of the form and want help with it. -->
+<form onsubmit="return false">
+  <label for="name">Name *</label>
+  <input id="name" name="name" autocomplete="name" required>
+
+  <label for="email">Email *</label>
+  <input id="email" name="email" type="email" autocomplete="email" required>
+
+  <!-- Already answered: nothing unresolved is what brings up the submit
+       prompt. It is also why the question the candidate asks about cannot be
+       matched to a box - _field_for_question only offers EMPTY ones. -->
+  <label for="why">Why do you want to join us?</label>
+  <textarea id="why" name="why" rows="3">Because the product is interesting.</textarea>
+
+  <button type="submit" id="send">Submit application</button>
+</form>
+</body>
+</html>

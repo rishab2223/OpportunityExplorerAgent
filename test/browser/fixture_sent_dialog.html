@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Senior Software Engineer | UbiqEdge</title></head>
+<body>
+<h1>Senior Software Engineer</h1>
+
+<!-- What a SUBMITTED LinkedIn Easy Apply leaves on screen, in the order it
+     happens: a form the agent fills, a hand-off while the candidate presses
+     Submit (a timer stands in for that), and then the confirmation - a
+     role=dialog with NO form controls, over a page that has grown controls
+     of its own (LinkedIn's follow-up question and its search boxes).
+
+     Two costs that state used to carry, both now caught before they start:
+     a dialog with no controls looks like a modal whose form has not loaded,
+     so the loop waited 4 x 1.5s for a form that was never coming; and the
+     controls behind the card meant "nothing left unresolved" was false, so a
+     model call was spent on a page that had already said it was sent. -->
+<form onsubmit="return false">
+  <label for="name">Full name *</label>
+  <input id="name" name="name" autocomplete="name" required>
+  <label for="email">Email *</label>
+  <input id="email" name="email" type="email" autocomplete="email" required>
+  <button type="submit">Submit application</button>
+</form>
+
+<div id="after"></div>
+<script>
+  setTimeout(function () {
+    document.getElementById("after").innerHTML =
+      // Sized: the snapshot only treats a role=dialog as a modal at 260x120
+      // or more, which is what makes it own the scan and set the pending flag.
+      '<div role="dialog" aria-label="Application sent" ' +
+      'style="width:420px;height:220px;border:1px solid #ccc">' +
+      '<h2>Your application was sent to UbiqEdge</h2>' +
+      '<p>You can track it from My Jobs.</p></div>' +
+      '<div id="behind">' +
+      '<label for="q1">How did you hear about this role?</label>' +
+      '<input id="q1" name="source" type="text">' +
+      '<label for="q2">Search jobs</label><input id="q2" name="keywords" type="text">' +
+      '<label for="q3">Location</label><input id="q3" name="location" type="text">' +
+      '</div>';
+  }, 3000);
+</script>
+</body>
+</html>

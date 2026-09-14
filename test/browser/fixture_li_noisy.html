@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Senior Software Engineer | UbiqEdge | LinkedIn</title><style>
+  @keyframes drift { from { transform: translateY(0); } to { transform: translateY(14px); } }
+  .drifting { animation: drift 0.35s infinite alternate; display: inline-block; }
+</style>
+</head>
+<body>
+<nav><a href="#jobs">Jobs</a></nav>
+<h1>Senior Software Engineer</h1>
+<h2>UbiqEdge &middot; Remote</h2>
+
+<!-- LinkedIn job pages carry overlays of their own: a messaging bubble, a
+     cookie strip. This one is a VISIBLE role=dialog from the moment the page
+     loads. Testing for a dialog's presence read it as an open apply flow. -->
+<div role="dialog" aria-label="Messaging" id="messaging">
+  <strong>Messaging</strong>
+  <input type="text" placeholder="Search messages">
+</div>
+
+<div id="card"></div>
+
+<div id="applymodal" role="dialog" aria-label="Easy Apply" style="display:none">
+  <h3>Apply to UbiqEdge</h3>
+  <label for="fullname">Full name</label>
+  <input id="fullname" name="name" autocomplete="name">
+  <label for="mail">Email address</label>
+  <input id="mail" name="email" type="email" autocomplete="email">
+  <button type="button" id="sub">Submit application</button>
+</div>
+
+<!-- Lazy panels: the page keeps growing controls on its own, with no click
+     involved. A rise in the control count was read as the apply form
+     arriving, which is the other half of the false positive. -->
+<div id="panels"></div>
+
+<script>
+  var panels = document.getElementById("panels");
+  var added = 0;
+  var grow = setInterval(function () {
+    if (added++ >= 12) { clearInterval(grow); return; }
+    var i = document.createElement("input");
+    i.type = "text";
+    i.placeholder = "similar job filter " + added;
+    panels.appendChild(i);
+  }, 200);
+
+  // The apply button, built the way the real card builds it: it arrives
+  // animating (so Playwright will not call it stable), is thrown away and
+  // rebuilt once, and only then settles. A click on the first node is
+  // dispatched onto something React has already discarded - it opens
+  // nothing and raises nothing, which is the failure the pre-existing
+  // dialog above used to hide.
+  function buildApply(moving) {
+    var a = document.createElement("a");
+    a.href = "#apply";
+    a.setAttribute("aria-label", "Easy Apply to this job");
+    a.textContent = "Easy Apply";
+    if (moving) a.className = "drifting";
+    a.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      document.getElementById("applymodal").style.display = "block";
+    });
+    return a;
+  }
+
+  // Two more things the page does to itself, both of which the SECOND
+  // version of the check read as the apply flow opening:
+  //
+  //  - an overlay that mounts LATE, so counting dialogs by increase rises
+  //    with no click involved. It carries a text box, so "has a control"
+  //    does not separate it from the apply modal either - only its name does.
+  //  - the card rewriting its own query string as it hydrates, which a
+  //    whole-URL comparison read as a navigation.
+  setTimeout(function () {
+    var d = document.createElement("div");
+    d.setAttribute("role", "dialog");
+    d.setAttribute("aria-label", "Messaging");
+    d.innerHTML = '<strong>Messages</strong><input type="text" placeholder="Search">';
+    document.body.appendChild(d);
+  }, 900);
+  setTimeout(function () {
+    history.replaceState({}, "", location.pathname + "?refId=abc123&trackingId=def456");
+  }, 700);
+
+  var card = document.getElementById("card");
+  setTimeout(function () { card.appendChild(buildApply(true)); }, 400);
+  setTimeout(function () { card.replaceChildren(buildApply(true)); }, 2400);
+  setTimeout(function () { card.replaceChildren(buildApply(false)); }, 4200);
+</script>
+</body>
+</html>

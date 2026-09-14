@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head><title>Submitted-confirmation fixture</title></head>
+<body>
+  <!-- LinkedIn after the user clicks Submit: the confirmation appears in the
+       same shadow root as the modal. A timer stands in for the user's click,
+       3s after load, while the agent waits at the hand-off. -->
+  <label>Full name <input type="text" name="full_name"></label><br>
+  <button type="submit">Submit application</button>
+  <div id="interop-outlet"></div>
+  <script>
+    setTimeout(() => {
+      const root = document.getElementById('interop-outlet').attachShadow({mode: 'open'});
+      root.innerHTML = '<div role="dialog" style="position:fixed; top:40px; left:40px; width:600px; height:300px; background:#fff; border:1px solid #888; padding:20px">' +
+        '<h2>Your application was sent to DummyCo!</h2>' +
+        '<p>You can keep track of your application in the "Applied" tab of My Jobs</p>' +
+        '<button type="button">Not now</button><button type="button">Update profile</button></div>';
+    }, 3000);
+  </script>
+</body>
+</html>

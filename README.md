@@ -157,6 +157,21 @@ python test/test_linkedin_apify.py
 
 They write JSON under `test/output/`.
 
+### Browser checks
+
+The unit suite never runs the apply loop, so it cannot catch a mistake inside it. `test/browser/` does: each script drives a real Chromium against a local fixture and asserts what the agent did. `run_e2e.py` is the main one — 19 scenarios through the real `run_session`, about 110 seconds.
+
+No model is called by any of it. The harness swaps in a scripted stand-in, which is why every scenario asserts an exact model-call count; the unit suite has no route to a model at all. A full run costs time and nothing else.
+
+```powershell
+python check.py            # only the groups your working tree touches
+python check.py sites      # one group by name
+python check.py all        # everything
+python check.py --list     # the groups and what is in them
+```
+
+`check.py` always includes the unit suite — at ten seconds there is nothing to gain by skipping it — and picks the browser groups from which files you changed. See [test/browser/README.md](test/browser/README.md) for what each group covers and the rules for adding to it.
+
 ## Outputs
 
 Each run uses a timestamp folder, e.g. `outputs/20260823T140406/`:

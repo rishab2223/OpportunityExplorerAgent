@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Application submitted</title></head>
+<body>
+<h1>Application status: Application submitted</h1>
+<p>Your application was sent to Katapult.</p>
+
+<!-- The reason this fixture exists: a confirmation page is not an EMPTY
+     page. LinkedIn leaves a Done button and a couple of links on it, so the
+     session never reached the no-fields branch that recognises a submission,
+     and paid a whole model round trip to be told what this heading says. -->
+<button type="button" id="done">Done</button>
+<a href="#app">View your application</a>
+<a href="#jobs">Back to jobs</a>
+</body>
+</html>

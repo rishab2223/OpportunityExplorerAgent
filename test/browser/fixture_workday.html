@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head><title>Workday-shaped apply fixture</title></head>
+<body>
+  <!-- Step 1: Workday's "Autofill with Resume" upload step - a bare "Select
+       file" button fronting a display:none file input. Step 2: dropdown
+       BUTTONS (haspopup=listbox) showing "Select One". Step 3: submit. -->
+  <div id="step1">
+    <h2>Upload your resume</h2>
+    <p>Autofill with Resume - drop your file here or</p>
+    <input type="file" style="display:none" id="hidden-file">
+    <button type="button" id="input-4" onclick="document.getElementById('hidden-file').click()">Select file</button>
+    <p id="uploaded"></p>
+    <button type="button" onclick="next(1)">Next</button>
+  </div>
+  <div id="step2" style="display:none">
+    <label>Given Name(s)* <input type="text" name="given"></label><br>
+    <label>Family Name* <input type="text" name="family"></label><br>
+    <label for="country">Country*</label>
+    <button type="button" id="country" aria-haspopup="listbox" aria-controls="country-list" onclick="toggle('country')">Select One</button>
+    <ul id="country-list" role="listbox" style="display:none">
+      <li role="option" onclick="pick('country', this)">British Indian Ocean Territory</li>
+      <li role="option" onclick="pick('country', this)">India</li>
+      <li role="option" onclick="pick('country', this)">Indonesia</li>
+    </ul><br>
+    <label for="code">Country Phone Code*</label>
+    <button type="button" id="code" aria-haspopup="listbox" aria-controls="code-list" onclick="toggle('code')">Select One</button>
+    <ul id="code-list" role="listbox" style="display:none">
+      <li role="option" onclick="pick('code', this)">British Indian Ocean Territory (+246)</li>
+      <li role="option" onclick="pick('code', this)">India (+91)</li>
+    </ul><br>
+    <label for="device">Phone Device Type*</label>
+    <button type="button" id="device" aria-haspopup="listbox" aria-controls="device-list" onclick="toggle('device')">Select One</button>
+    <ul id="device-list" role="listbox" style="display:none">
+      <li role="option" onclick="pick('device', this)">Home</li>
+      <li role="option" onclick="pick('device', this)">Mobile</li>
+      <li role="option" onclick="pick('device', this)">Work</li>
+    </ul><br>
+    <div id="err" role="alert" style="display:none">Error: Phone Device Type is required</div>
+    <section>
+      <h3>Certifications</h3>
+      <button type="button">Add</button>
+    </section>
+    <section>
+      <h3>Resume/CV</h3>
+      <p>Upload a file (5MB max)*</p>
+      <input type="file" style="display:none" id="hidden-file-2">
+      <p>Drop files here or <button type="button" onclick="document.getElementById('hidden-file-2').click()">Select files</button></p>
+      <p id="uploaded2"></p>
+    </section>
+    <button type="button" onclick="next(2)">Next</button>
+  </div>
+  <div id="step3" style="display:none">
+    <h2>Review</h2>
+    <button type="submit">Submit application</button>
+  </div>
+  <script>
+    window.picked = {};
+    window.uploadedName = '';
+    document.getElementById('hidden-file-2').addEventListener('change', (e) => {
+      window.uploadedName2 = e.target.files[0] ? e.target.files[0].name : '';
+      document.getElementById('uploaded2').textContent = 'Uploaded: ' + window.uploadedName2;
+    });
+    document.getElementById('hidden-file').addEventListener('change', (e) => {
+      window.uploadedName = e.target.files[0] ? e.target.files[0].name : '';
+      document.getElementById('uploaded').textContent = 'Uploaded: ' + window.uploadedName;
+    });
+    function toggle(id) { const l = document.getElementById(id + '-list'); l.style.display = l.style.display === 'none' ? 'block' : 'none'; }
+    function pick(id, li) { window.picked[id] = li.textContent; document.getElementById(id).textContent = li.textContent; document.getElementById(id + '-list').style.display = 'none'; }
+    function next(step) {
+      if (step === 1) { document.getElementById('step1').style.display = 'none'; document.getElementById('step2').style.display = 'block'; return; }
+      if (!window.picked.device) { document.getElementById('err').style.display = 'block'; return; }
+      document.getElementById('step2').style.display = 'none'; document.getElementById('step3').style.display = 'block';
+    }
+  </script>
+</body>
+</html>

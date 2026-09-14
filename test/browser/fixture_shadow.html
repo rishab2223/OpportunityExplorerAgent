@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head><title>Shadow-root modal fixture</title></head>
+<body>
+  <!-- LinkedIn's new Easy Apply: the modal is rendered inside an OPEN shadow
+       root on a host div. Behind it: the page's search box and its own
+       "Easy Apply to this job" button, which the overlay blocks. -->
+  <input type="search" placeholder="I'm looking for..." name="search">
+  <button type="button" aria-label="Easy Apply to this job">Easy Apply</button>
+  <button type="button">Save</button>
+  <div id="interop-outlet"></div>
+  <script>
+    const host = document.getElementById('interop-outlet');
+    const root = host.attachShadow({mode: 'open'});
+    root.innerHTML = `
+      <div role="dialog" style="position:fixed; top:40px; left:40px; width:744px; height:528px; background:#fff; border:1px solid #888; padding:20px">
+        <h2>Apply to DummyCo</h2>
+        <button type="button" aria-label="Dismiss">X</button>
+        <label for="fe-1">Full name</label><input id="fe-1" type="text"><br>
+        <label for="fe-2">Location (city)</label><input id="fe-2" type="text"><br>
+        <label for="fe-3">Phone country code</label>
+        <select id="fe-3"><option value="">Select an option</option><option>India (+91)</option><option>United States (+1)</option></select><br>
+        <button type="submit">Submit application</button>
+      </div>`;
+  </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Verify - Airblack</title></head>
+<body>
+<h1>Lead Backend Engineer (Consumer AI)</h1>
+
+<!-- What a real site put in front of a candidate AFTER they had submitted:
+     the form is gone and a verification step has taken its place. Only they
+     have the code, so the model asks - and at a question about one box every
+     reply is typed into that box, so "done" would have been typed into the
+     code field. Abort was the only other exit, and it records nothing. -->
+<form onsubmit="return false">
+  <label for="name">Name *</label>
+  <input id="name" name="name" autocomplete="name" required>
+
+  <label for="otp">Enter the 6-digit confirmation code sent to your email *</label>
+  <input id="otp" name="confirmation_code" inputmode="numeric" required>
+</form>
+</body>
+</html>

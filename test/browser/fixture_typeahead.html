@@ -1,0 +1,130 @@
+<!doctype html>
+<html>
+<head><title>Typeahead and date-part fixture</title>
+<style>
+  .multi { border: 1px solid #888; width: 320px; padding: 2px; }
+  .multi ul { list-style: none; margin: 0; padding: 0; display: flex; gap: 4px; }
+  .multi ul [role=option] { border: 1px solid #aaa; padding: 0 4px; }
+  .prompt { position: absolute; border: 1px solid #888; background: #fff; width: 320px; }
+</style>
+</head>
+<body>
+  <!-- Workday moniker widgets, shaped like the dentsu DOM dump (Sep 2026):
+       - the search runs on Enter; typing alone shows "No Items.";
+       - a result row is div[role=option] > promptLeafNode > (checkbox) + div[promptOption],
+         so a naive option scan sees every row twice;
+       - a multi-select adds a chip (selectedItem: role=option with an inner promptOption)
+         to a listbox INSIDE the widget on the click and keeps the list open; Escape closes it;
+       - text that was not picked is dropped on blur;
+       - date segments (Month / Year) move focus on by themselves. -->
+  <h3>Source</h3>
+  <label for="hear">How Did You Hear About Us?*</label>
+  <!-- a search with exactly one hit is taken as the choice: no list, the pill just appears -->
+  <div class="multi">
+    <ul role="listbox" data-automation-id="selectedItemList" aria-label="items selected" id="hear-chips"></ul>
+    <input type="text" id="hear" data-autoselect="1" data-options="LinkedIn corporate page|Job Fair|Campus Campaign">
+  </div>
+  <br>
+  <h3>Contact</h3>
+  <label for="cpc">Country Phone Code*</label>
+  <div class="multi"><input type="text" id="cpc" data-options="India (+91)|Canada (+1)|Indonesia (+62)|British Indian Ocean Territory (+246)"></div>
+  <br>
+  <h3>Education</h3>
+  <label for="fos">Field of Study</label>
+  <div class="multi"><input type="text" id="fos" data-options="Computer and Information Science|Computer Engineering|Information Systems"></div>
+  <br>
+  <h3>Skills</h3>
+  <label for="skills">Type to Add Skills</label>
+  <div class="multi">
+    <ul role="listbox" data-automation-id="selectedItemList" aria-label="items selected" id="skills-chips"></ul>
+    <input type="text" id="skills" data-multi="1" data-options="JavaScript|Java|JavaScript API|Node.js|Python|PostgreSQL|AWS VPN|Amazon Web Services (AWS)|AWS SDK|AWS Glue">
+  </div>
+  <br>
+  <h3>Work Experience</h3>
+  <div role="group" aria-label="From" style="position:relative; width:220px">
+    <label>From*</label><br>
+    <input type="text" aria-label="Month" id="fm" maxlength="2" placeholder="MM">
+    <input type="text" aria-label="Year" id="fy" maxlength="4" placeholder="YYYY">
+    <!-- Workday: a click here opens the month picker, so the inputs are
+         never "clickable"; they are focusable and typeable. -->
+    <div id="picker-trigger" style="position:absolute; left:0; top:18px; width:220px; height:30px; background:transparent" onclick="alert('picker')"></div>
+  </div>
+  <div id="prompt" class="prompt" style="display:none"></div>
+  <button type="submit">Submit application</button>
+  <script>
+    window.picked = {};
+    const prompt = document.getElementById('prompt');
+    let owner = null;
+    const close = () => { prompt.style.display = 'none'; prompt.innerHTML = ''; owner = null; };
+    const chip = (inp, o) => {
+      (window.picked[inp.id] = window.picked[inp.id] || []).push(o);
+      const list = document.getElementById(inp.id + '-chips');
+      if (list) {
+        const li = document.createElement('li'); li.setAttribute('role', 'presentation');
+        const item = document.createElement('div'); item.setAttribute('role', 'option');
+        item.setAttribute('data-automation-id', 'selectedItem');
+        item.setAttribute('aria-label', o + ', press delete to clear value.');
+        const p = document.createElement('p'); p.setAttribute('data-automation-id', 'promptOption'); p.textContent = o;
+        item.appendChild(p); li.appendChild(item); list.appendChild(li);
+      } else {
+        const span = document.createElement('span'); span.textContent = '[' + o + '] ';
+        inp.parentElement.appendChild(span);
+      }
+    };
+    for (const inp of document.querySelectorAll('input[data-options]')) {
+      const opts = inp.dataset.options.split('|');
+      const search = () => {
+        const q = inp.value.toLowerCase();
+        // like Workday's search: letters only ("+91" finds nothing, "India" does)
+        const words = q.split(/\s+/).map(w => w.replace(/^[^a-z]+|[^a-z]+$/g, '')).filter(w => w.length >= 3);
+        const hits = q ? opts.filter(o => words.some(w => o.toLowerCase().includes(w))) : [];
+        prompt.innerHTML = '';
+        if (inp.dataset.autoselect && hits.length === 1) { chip(inp, hits[0]); inp.value = ''; close(); return; }
+        const rect = inp.getBoundingClientRect();
+        prompt.style.left = (rect.left + window.scrollX) + 'px';
+        prompt.style.top = (rect.bottom + window.scrollY) + 'px';
+        const list = document.createElement('div');
+        list.setAttribute('role', 'listbox'); list.setAttribute('data-automation-id', 'activeListContainer');
+        for (const o of hits) {
+          const row = document.createElement('div');
+          row.setAttribute('role', 'option'); row.setAttribute('data-automation-id', 'menuItem');
+          row.setAttribute('aria-label', o + ' not checked');
+          const leaf = document.createElement('div'); leaf.setAttribute('data-automation-id', 'promptLeafNode');
+          let cb = null;
+          if (inp.dataset.multi) { cb = document.createElement('input'); cb.type = 'checkbox'; cb.tabIndex = -1; leaf.appendChild(cb); }
+          const text = document.createElement('div'); text.setAttribute('data-automation-id', 'promptOption'); text.textContent = o;
+          leaf.appendChild(text); row.appendChild(leaf);
+          row.addEventListener('mousedown', (e) => e.preventDefault());
+          row.addEventListener('click', () => {
+            if (inp.dataset.multi) {
+              // the chip appears on the click; the list stays open
+              cb.checked = !cb.checked;
+              if (cb.checked) chip(inp, o);
+            } else {
+              chip(inp, o); inp.value = ''; close();
+            }
+          });
+          list.appendChild(row);
+        }
+        prompt.appendChild(list);
+        prompt.style.display = hits.length ? 'block' : 'none';
+        owner = inp;
+      };
+      // Workday: typing shows only "No Items."; the search runs on Enter.
+      inp.addEventListener('input', () => {
+        prompt.innerHTML = '';
+        const wait = document.createElement('div'); wait.setAttribute('data-automation-id', 'promptOption'); wait.textContent = 'No Items.';
+        prompt.appendChild(wait); prompt.style.display = inp.value ? 'block' : 'none'; owner = inp;
+      });
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); setTimeout(search, 300); }
+        if (e.key === 'Escape') close();
+      });
+      // like Workday: text that was not picked is dropped on blur
+      inp.addEventListener('blur', () => { inp.value = ''; if (owner === inp) close(); });
+    }
+    // date segments: the month moves focus to the year after two digits
+    document.getElementById('fm').addEventListener('input', (e) => { if (e.target.value.length === 2) document.getElementById('fy').focus(); });
+  </script>
+</body>
+</html>

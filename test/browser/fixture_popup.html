@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head><title>Popup apply fixture</title></head>
+<body>
+  <h1>Back-end Software Development Engineer</h1>
+  <p>Job Code: JPC - IND - 5990</p>
+  <!-- The user clicks Easy Apply themselves; here a timer stands in for
+       that click, 3s after load, while the agent waits at the hand-off. -->
+  <button type="submit">Apply Now</button>
+  <a href="#" id="easy" onclick="event.preventDefault(); openModal()">Easy Apply</a>
+  <div id="modal" role="dialog" style="display:none; position:fixed; top:40px; left:40px; width:700px; height:400px; background:#fff; border:1px solid #888; padding:20px">
+    <h2>Apply for Job</h2>
+    <label>Full name <input type="text" name="full_name"></label><br>
+    <label>City <input type="text" name="city"></label><br>
+    <button type="submit">Submit application</button>
+  </div>
+  <script>
+    function openModal() { document.getElementById('modal').style.display = 'block'; }
+    setTimeout(openModal, 3000);
+  </script>
+</body>
+</html>

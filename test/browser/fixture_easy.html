@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Dummy Easy Apply</title></head>
+<body>
+<h1>Apply to DummyCo - Software Engineer</h1>
+
+<div id="step1">
+  <h2>Contact info</h2>
+  <label>Full name <input type="text" name="full_name" autocomplete="name"></label>
+  <label>Email address <input type="email" name="email" autocomplete="email"></label>
+  <label>Mobile phone number <input type="tel" name="phone" autocomplete="tel"></label>
+  <button type="button" onclick="show(2)">Next</button>
+</div>
+
+<div id="step2" style="display:none">
+  <h2>Resume</h2>
+  <label>Upload resume <input type="file" name="resume"></label>
+  <button type="button" onclick="show(3)">Next</button>
+</div>
+
+<div id="step3" style="display:none">
+  <h2>Additional questions</h2>
+  <label>Cover letter <textarea name="cover_letter" rows="4"></textarea></label>
+  <label>Favourite programming language <input type="text" name="fav_lang"></label>
+  <fieldset>
+    <legend>Do you require visa sponsorship?</legend>
+    <label><input type="radio" name="sponsorship" value="yes">Yes</label>
+    <label><input type="radio" name="sponsorship" value="no">No</label>
+  </fieldset>
+  <button type="button" onclick="show(4)">Review</button>
+</div>
+
+<div id="step4" style="display:none">
+  <h2>Review</h2>
+  <p>Check your answers, then submit.</p>
+  <button type="button" onclick="document.title='SUBMITTED'">Submit application</button>
+</div>
+
+<script>
+function show(n) {
+  for (let i = 1; i <= 4; i++) {
+    document.getElementById('step' + i).style.display = (i === n) ? '' : 'none';
+  }
+}
+</script>
+</body>
+</html>

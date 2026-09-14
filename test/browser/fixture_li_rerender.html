@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><title>Junior Backend Developer | Katapult | LinkedIn</title>
+<style>
+  /* An element that never stops moving is one Playwright will never call
+     stable: it compares the bounding box across animation frames. A real
+     LinkedIn card does this while its lazy panels push the layout around. */
+  @keyframes drift { from { transform: translateY(0); } to { transform: translateY(14px); } }
+  .drifting { animation: drift 0.35s infinite alternate; display: inline-block; }
+</style>
+</head>
+<body>
+<nav><a href="#jobs">Jobs</a></nav>
+<h1>Junior Backend Developer</h1>
+<h2>Katapult &middot; Remote</h2>
+<div id="card"></div>
+
+<div id="applydialog" role="dialog" style="display:none">
+  <h3>Submit your application</h3>
+  <label for="fullname">Full name</label>
+  <input id="fullname" name="name" autocomplete="name">
+  <label for="mail">Email address</label>
+  <input id="mail" name="email" type="email" autocomplete="email">
+  <button type="button" id="sub">Submit application</button>
+</div>
+
+<script>
+  var card = document.getElementById("card");
+
+  function buildApply(moving) {
+    var a = document.createElement("a");
+    a.href = "#apply";
+    a.setAttribute("aria-label", "Easy Apply to this job");
+    a.textContent = "Easy Apply";
+    if (moving) a.className = "drifting";
+    a.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      document.getElementById("applydialog").style.display = "block";
+    });
+    return a;
+  }
+
+  // 1. The card appears with an apply button that is still animating, so a
+  //    click on it waits for stability and never gets it.
+  setTimeout(function () { card.appendChild(buildApply(true)); }, 300);
+
+  // 2. Then that node is thrown away and rebuilt - "element was detached
+  //    from the DOM, retrying" - which is where the real session gave up.
+  setTimeout(function () { card.replaceChildren(buildApply(true)); }, 2500);
+
+  // 3. Finally the card settles. A session that re-reads the page instead of
+  //    waiting on the node it first saw gets its click in here.
+  setTimeout(function () { card.replaceChildren(buildApply(false)); }, 4200);
+</script>
+</body>
+</html>

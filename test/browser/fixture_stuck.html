@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head><title>Stuck Next fixture</title></head>
+<body>
+  <!-- Next refuses to move on (a validation error the agent cannot see) until
+       "the user fixes it" - a timer 3s after load. The agent must stop
+       clicking after three tries and ask, quoting the error. -->
+  <div id="step1">
+    <label>Full name <input type="text" name="full_name"></label><br>
+    <div id="err" data-automation-id="errorMessage" class="css-error-text" style="display:none">Error: Work Authorization is required</div>
+    <button type="button" onclick="next()">Next</button>
+  </div>
+  <div id="step2" style="display:none">
+    <button type="submit">Submit application</button>
+  </div>
+  <script>
+    // Deterministic stand-in for "the user fixed it after being asked": the
+    // first three clicks fail, the fourth (after the prompt) moves on.
+    window.clicks = 0;
+    function next() {
+      window.clicks += 1;
+      if (window.clicks < 3) { document.getElementById('err').style.display = 'block'; return; }
+      document.getElementById('step1').style.display = 'none';
+      document.getElementById('step2').style.display = 'block';
+    }
+  </script>
+</body>
+</html>

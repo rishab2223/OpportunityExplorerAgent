@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head><title>Hydrating form replica</title></head>
+<body>
+<!-- SourcingXPress (Next.js): the form is still hydrating when the sweep
+     fills it. fill() sets the value, the read-back passes, and then the
+     framework renders again from its own empty state and wipes it. The
+     transcript said "Filled" for three boxes the candidate saw empty.
+
+     Replicated here: a controlled input that accepts a programmatic value
+     but reverts it on the next render tick, while real keystrokes update
+     the "state" and therefore survive. -->
+<h1>Contact Details</h1>
+<label>First Name* <input id="firstName" placeholder="John"></label><br>
+<label>Last Name* <input id="lastName" placeholder="Doe"></label><br>
+<label>Phone Number* <input id="phoneNumber" type="tel" placeholder="9876543210"></label><br>
+<button type="button" id="next">Next</button>
+
+<script>
+  // "React state": only real typing updates it.
+  const state = {};
+  const controlled = ["firstName", "lastName", "phoneNumber"];
+  for (const id of controlled) {
+    const el = document.getElementById(id);
+    state[id] = "";
+    el.addEventListener("keydown", () => { el.dataset.typed = "1"; });
+    el.addEventListener("input", () => {
+      if (el.dataset.typed) state[id] = el.value;    // a keystroke is real
+    });
+  }
+  // The hydration render: anything not in state is wiped. Runs once, a
+  // moment after load, exactly like a late hydration pass.
+  setTimeout(() => {
+    for (const id of controlled) {
+      const el = document.getElementById(id);
+      if (el.value !== state[id]) el.value = state[id];
+    }
+    window.__hydrated = true;
+  }, 700);
+</script>
+</body>
+</html>

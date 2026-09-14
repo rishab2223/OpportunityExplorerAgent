@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head><title>Submitted while a question is open</title></head>
+<body>
+  <!-- The agent asks about a field; the candidate answers the form by hand
+       and submits instead (a timer stands in for that, 4s after load). The
+       open question must end on the confirmation and the job be applied. -->
+  <label>Full name <input type="text" name="full_name"></label><br>
+  <label>Favourite editor <input type="text" name="editor"></label><br>
+  <button type="submit">Submit application</button>
+  <div id="interop-outlet"></div>
+  <script>
+    setTimeout(() => {
+      const root = document.getElementById('interop-outlet').attachShadow({mode: 'open'});
+      root.innerHTML = '<div role="dialog" style="position:fixed; top:40px; left:40px; width:600px; height:300px; background:#fff; border:1px solid #888; padding:20px">' +
+        '<h2>Your application was sent to DummyCo!</h2><button type="button">Not now</button></div>';
+    }, 4000);
+  </script>
+</body>
+</html>

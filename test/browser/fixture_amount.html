@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head><title>Auto-formatting amount boxes</title></head>
+<body>
+<!-- SourcingXPress formats a salary box as you type, inserting its own
+     commas. Typing the already-formatted "30,00,000" one character at a
+     time therefore produced "3,00,00,000" - three crore instead of thirty
+     lakh - on a real application. And "35 LPA" was dropped outright,
+     because the box keeps digits only. -->
+<h1>Compensation</h1>
+<label>Enter current salary <input type="text" id="current"></label><br>
+<label>Enter expected salary <input type="text" id="expected"></label>
+
+<script>
+  // Indian grouping, reapplied on every input event, caret to the end.
+  function group(digits) {
+    if (digits.length <= 3) return digits;
+    const last3 = digits.slice(-3);
+    let rest = digits.slice(0, -3), out = "";
+    while (rest.length > 2) { out = "," + rest.slice(-2) + out; rest = rest.slice(0, -2); }
+    return (rest ? rest : "") + out + "," + last3;
+  }
+  for (const id of ["current", "expected"]) {
+    const el = document.getElementById(id);
+    el.addEventListener("input", () => {
+      const digits = el.value.replace(/\D/g, "");   // anything but digits is dropped
+      el.value = digits ? group(digits) : "";
+    });
+  }
+</script>
+</body>
+</html>

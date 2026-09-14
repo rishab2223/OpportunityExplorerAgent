@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head><title>Radix form replica</title>
+<style>
+  .hidden-mirror { position: absolute; border: 0; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+  .radix-mirror { position: absolute; pointer-events: none; opacity: 0; margin: 0;
+    transform: translateX(-100%); width: 16px; height: 16px; }
+  [role=option] { padding: 4px 8px; cursor: pointer; }
+  .popup { border: 1px solid #999; display: none; }
+  .popup[data-open] { display: block; }
+  button[role=radio][data-state=checked], button[role=checkbox][data-state=checked] { background: #333; }
+</style>
+</head>
+<body>
+<!-- SourcingXPress is Radix UI (shadcn). EVERY control is a pair: a styled
+     BUTTON that carries the real label and takes no typing, plus a hidden
+     native control that mirrors it for form submission. The hidden one is
+     aria-hidden and tabindex=-1, and its accessible name is the option text,
+     so it was snapshotted as a phantom field labelled "Hybrid On-site Remote".
+     The button carries role=combobox but NO aria-haspopup, so it was not
+     recognised as a dropdown and fill() was attempted on it. -->
+<h1>Professional details</h1>
+
+<label>Current Work Type</label>
+<button type="button" id="workTypeBtn" role="combobox" aria-expanded="false"
+        data-state="closed" onclick="openPopup('workTypePopup', this)">Select</button>
+<select class="hidden-mirror" aria-hidden="true" tabindex="-1" id="workTypeSel">
+  <option value=""></option><option>Hybrid</option><option>On-site</option><option>Remote</option>
+</select>
+<div class="popup" id="workTypePopup" role="listbox">
+  <div role="option" onclick="pick('workTypeBtn','workTypeSel',this)">Hybrid</div>
+  <div role="option" onclick="pick('workTypeBtn','workTypeSel',this)">On-site</div>
+  <div role="option" onclick="pick('workTypeBtn','workTypeSel',this)">Remote</div>
+</div>
+
+<label>Notice Period</label>
+<button type="button" id="noticeBtn" role="combobox" aria-expanded="false"
+        data-state="closed" onclick="openPopup('noticePopup', this)">Select</button>
+<select class="hidden-mirror" aria-hidden="true" tabindex="-1" id="noticeSel">
+  <option value=""></option><option>Immediate</option><option>15 Days</option><option>1 Month</option>
+</select>
+<div class="popup" id="noticePopup" role="listbox">
+  <div role="option" onclick="pick('noticeBtn','noticeSel',this)">Immediate</div>
+  <div role="option" onclick="pick('noticeBtn','noticeSel',this)">15 Days</div>
+  <div role="option" onclick="pick('noticeBtn','noticeSel',this)">1 Month</div>
+</div>
+
+<p>Are you willing to relocate to Bangalore?</p>
+<button type="button" id="relocYes" role="radio" aria-checked="false" data-state="unchecked"
+        value="true" onclick="setRadio(this,'relocYesIn')">Yes</button>
+<input class="radix-mirror" aria-hidden="true" tabindex="-1" type="radio" name="reloc" value="true" id="relocYesIn">
+<button type="button" id="relocNo" role="radio" aria-checked="false" data-state="unchecked"
+        value="false" onclick="setRadio(this,'relocNoIn')">No</button>
+<input class="radix-mirror" aria-hidden="true" tabindex="-1" type="radio" name="reloc" value="false" id="relocNoIn">
+
+<p>
+<button type="button" id="consent" role="checkbox" aria-checked="false" data-state="unchecked"
+        value="on" onclick="setCheck(this,'consentIn')"></button>
+<input class="radix-mirror" aria-hidden="true" tabindex="-1" type="checkbox" value="on" id="consentIn">
+<label for="consent">I consent that all the information provided is accurate</label>
+</p>
+
+<button type="submit" id="submit">Submit Application</button>
+
+<script>
+  function openPopup(id, btn) {
+    const p = document.getElementById(id);
+    const open = p.hasAttribute('data-open');
+    document.querySelectorAll('.popup').forEach(x => x.removeAttribute('data-open'));
+    if (!open) { p.setAttribute('data-open', '1'); btn.setAttribute('aria-expanded', 'true'); }
+  }
+  function pick(btnId, selId, row) {
+    document.getElementById(btnId).textContent = row.textContent;
+    document.getElementById(btnId).setAttribute('aria-expanded', 'false');
+    document.getElementById(selId).value = row.textContent;
+    row.closest('.popup').removeAttribute('data-open');
+  }
+  function setRadio(btn, mirrorId) {
+    document.querySelectorAll('button[role=radio]').forEach(b => {
+      b.setAttribute('aria-checked', 'false'); b.setAttribute('data-state', 'unchecked');
+    });
+    document.querySelectorAll('input[name=reloc]').forEach(i => { i.checked = false; });
+    btn.setAttribute('aria-checked', 'true'); btn.setAttribute('data-state', 'checked');
+    document.getElementById(mirrorId).checked = true;
+  }
+  function setCheck(btn, mirrorId) {
+    const on = btn.getAttribute('aria-checked') !== 'true';
+    btn.setAttribute('aria-checked', on ? 'true' : 'false');
+    btn.setAttribute('data-state', on ? 'checked' : 'unchecked');
+    document.getElementById(mirrorId).checked = on;
+  }
+</script>
+</body>
+</html>
