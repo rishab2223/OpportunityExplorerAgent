@@ -177,6 +177,30 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
 ]
 
 
+# A parenthesised instruction is guidance for the human, not the question, and
+# fingerprint() strips the brackets that mark it as an aside - so its words
+# join the label and can be matched as if they were the subject.
+#
+# "Education (use this format: course-institute-year of passing)" is a box for
+# a whole education entry. Its hint mentions a year of passing, the graduation
+# rule matched that, and the box was filled with 2019. Only hints that
+# announce themselves as instructions are removed; "Notice period (in days)"
+# and "Experience (in years)" keep every word, because there the bracket IS
+# the question.
+_FORMAT_HINT_RE = re.compile(
+    r"\([^()]*\b(?:use this format|in this format|format|e\s*\.?\s*g|eg|"
+    r"i\s*\.?\s*e|for example|example|sample)\b[^()]*\)",
+    re.IGNORECASE,
+)
+
+
+def _without_format_hint(label: str) -> str:
+    trimmed = _FORMAT_HINT_RE.sub(" ", label or "")
+    # A label that was ONLY a hint keeps its text: better to match on it than
+    # on nothing at all.
+    return trimmed if trimmed.strip() else (label or "")
+
+
 _FILLABLE_TYPES = ("", "text", "email", "tel", "url", "number", "search")
 # Sections that repeat per resume entry (Workday "My Experience"): the
 # profile's location/company/title would be wrong for a past job, so these
@@ -808,7 +832,7 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
     label = field.get("label") or ""
     name = (field.get("name") or "").strip().lower()
     autocomplete = (field.get("autocomplete") or "").strip().lower()
-    norm_label = profile.fingerprint(label)
+    norm_label = profile.fingerprint(_without_format_hint(label))
     if profile.is_secret(f"{label} {name}"):
         return None
     if answers.classify(label, str(field.get("group") or "")) == "sensitive":

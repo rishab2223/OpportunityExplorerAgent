@@ -27,13 +27,44 @@ from typing import Any
 from src import db
 from src.apply import profile
 
-# Curated topics: slug -> pattern over the normalized question text.
-# Order matters only for readability; keys are checked in definition order.
-TOPICS: dict[str, re.Pattern[str]] = {
+# Every word that can appear in a question about someone's TOTAL experience.
+# Anything else in the question names a SKILL, and the answer belongs to that
+# skill alone.
+#
+# This is a word list rather than a pattern because the shapes are endless
+# ("total years of experience", "experience in years", "how many years of work
+# experience do you have") while the vocabulary is tiny - and because the
+# pattern that was here matched every skill-specific question LinkedIn asks.
+# "How many years of Travel Arrangements experience do you have?" answered 0,
+# correctly, was stored as this candidate's total experience and replayed into
+# nineteen later applications, including a "Years of work experience *" box on
+# a profile that says six.
+#
+# "relevant" is deliberately absent: relevant experience is a different
+# question and gets its own entry in the bank rather than overwriting this one.
+_TOTAL_EXPERIENCE_WORDS = frozenset("""
+a and do enter experience for has have how in is many much number of overall
+combined cumulative please s specify the total what with work working
+professional industry year years yr yrs you your
+""".split())
+_YEAR_WORDS = frozenset(("year", "years", "yr", "yrs"))
+
+
+def _is_total_experience(text: str) -> bool:
+    words = text.split()
+    if "experience" not in words or not _YEAR_WORDS.intersection(words):
+        return False
+    return all(word in _TOTAL_EXPERIENCE_WORDS for word in words)
+
+
+# Curated topics: slug -> a pattern over the normalized question text, or a
+# predicate taking that text. Order matters only for readability; keys are
+# checked in definition order.
+TOPICS: dict[str, Any] = {
     "notice_period": re.compile(r"\bnotice\b"),
     "current_ctc": re.compile(r"\b(current|present)\b.*\b(ctc|salary|compensation|pay)\b"),
     "expected_ctc": re.compile(r"\b(expected|desired)\b.*\b(ctc|salary|compensation|pay)\b"),
-    "total_experience": re.compile(r"\b(years?|yrs?)\b.*\bexperience\b|\bexperience\b.*\b(years?|yrs?)\b"),
+    "total_experience": lambda text: _is_total_experience(text),
     "work_authorization": re.compile(r"\b(authori[sz]ed?|authori[sz]ation|legally|eligib\w*)\b.*\bwork\b|\bwork\b.*\b(authori[sz]ed?|authori[sz]ation|permit)\b"),
     "sponsorship": re.compile(r"\bsponsor\w*\b|\bvisa\b"),
     "relocation": re.compile(r"\brelocat\w*\b"),
@@ -75,8 +106,8 @@ def question_key(label: str, group: str = "") -> str:
     text = profile.fingerprint(f"{label or ''} {group or ''}")
     if not text:
         return ""
-    for slug, pattern in TOPICS.items():
-        if pattern.search(text):
+    for slug, test in TOPICS.items():
+        if test(text) if callable(test) else test.search(text):
             return slug
     return text
 

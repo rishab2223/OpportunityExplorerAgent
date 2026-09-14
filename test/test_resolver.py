@@ -790,3 +790,42 @@ class ProfileTemplateTests(unittest.TestCase):
                     "citizenship", "gender", "ethnicity", "disability_status",
                     "veteran_status"):
             self.assertNotIn(key, profile.TEMPLATE)
+
+
+class FormatHintTests(ResolverTestCase):
+    """A parenthesised instruction is guidance for the human, not the question.
+
+    fingerprint() strips the brackets that mark it as an aside, so its words
+    join the label. A real application filled "Education (use this format:
+    course-institute-year of passing)" with 2019, because the graduation-year
+    rule matched the hint.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        profile.PROFILE_PATH.write_text(json.dumps({
+            "graduation_year": "2019",
+            "education": "NorthCap University - Bachelors, Computer Science, 2015-2019",
+            "notice_period": "Immediate Joiner",
+            "total_experience_years": "6",
+        }), encoding="utf-8")
+
+    def _field(self, label: str) -> dict:
+        return {"label": label, "tag": "input", "type": "text", "name": "", "id": 1,
+                "value": "", "autocomplete": "", "role": "", "section": "", "group": ""}
+
+    def test_a_hint_naming_a_year_does_not_make_it_a_year_box(self) -> None:
+        got = resolver.resolve(self._field(
+            "Education (use this format: course-institute-year of passing)"))
+        self.assertIsNone(got, "the box wants a whole education entry, not 2019")
+
+    def test_a_real_year_box_still_resolves(self) -> None:
+        for label in ("Year of passing", "Graduation year *", "Year of passing (e.g. 2019)"):
+            self.assertEqual(resolver.resolve(self._field(label)),
+                             ("2019", "profile"), label)
+
+    def test_a_bracket_that_is_the_question_keeps_its_words(self) -> None:
+        # Only hints announcing themselves as instructions are removed.
+        self.assertEqual(
+            resolver.resolve(self._field("Notice period (in days)")),
+            ("Immediate Joiner", "profile"))

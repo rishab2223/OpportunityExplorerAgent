@@ -122,3 +122,49 @@ class PhoneTopicScopeTests(unittest.TestCase):
         self.assertNotEqual(question_key("Phone Extension"), "phone")
         self.assertEqual(question_key("Email address"), "email")
         self.assertNotEqual(question_key("Email preferences"), "email")
+
+
+class TotalExperienceScopeTests(unittest.TestCase):
+    """One skill's experience must never be stored as the whole career's.
+
+    LinkedIn Easy Apply asks the same question per skill. "How many years of
+    Travel Arrangements experience do you have?", answered 0 - correctly - was
+    saved under the total_experience topic and replayed into nineteen later
+    applications, including a "Years of work experience *" box on a profile
+    that says six years.
+    """
+
+    def test_a_question_about_the_whole_career(self) -> None:
+        from src.answers import question_key
+
+        for label in ("Years of work experience *",
+                      "How many years of work experience do you have?",
+                      "Total experience in years",
+                      "Experience (in years)",
+                      "Total years of professional experience",
+                      "How much work experience do you have in years"):
+            self.assertEqual(question_key(label), "total_experience", label)
+
+    def test_a_question_about_one_skill_is_its_own_question(self) -> None:
+        from src.answers import question_key
+
+        for label in ("How many years of Travel Arrangements experience do you have?",
+                      "How many years of work experience do you have with Python?",
+                      "How many years of work experience do you have with Kubernetes?",
+                      "Years of experience in embedded systems"):
+            self.assertNotEqual(question_key(label), "total_experience", label)
+
+    def test_two_skills_do_not_share_an_answer(self) -> None:
+        from src.answers import question_key
+
+        self.assertNotEqual(
+            question_key("How many years of work experience do you have with Python?"),
+            question_key("How many years of work experience do you have with Java?"),
+        )
+
+    def test_relevant_experience_is_not_total_experience(self) -> None:
+        # A different question, and it must not overwrite the total.
+        from src.answers import question_key
+
+        self.assertNotEqual(question_key("Years of relevant experience"),
+                            "total_experience")
