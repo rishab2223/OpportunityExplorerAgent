@@ -2182,6 +2182,40 @@ class TileClickPickerTests(unittest.TestCase):
         self.assertTrue(any("nothing on it says" in s for s in self.sess.logs))
 
 
+class CloseOpenedTests(unittest.TestCase):
+    """Escape closes what the agent's own click put up - and nothing else.
+
+    Jobvite's upload menu is a role=dialog, and leaving it open hides the
+    whole form from the next read. But Escape at a LinkedIn Easy Apply modal
+    discards the application, so it is pressed only when the click itself
+    added a dialog.
+    """
+
+    def _page(self, pressed):
+        return types.SimpleNamespace(
+            keyboard=types.SimpleNamespace(press=pressed.append),
+            wait_for_timeout=lambda ms: None,
+        )
+
+    def test_a_dialog_the_click_opened_is_closed(self) -> None:
+        pressed: list[str] = []
+        with unittest.mock.patch.object(worker, "_visible_dialogs", return_value=2):
+            worker._close_opened(self._page(pressed), 1)
+        self.assertEqual(pressed, ["Escape"])
+
+    def test_a_dialog_that_was_already_there_is_left_alone(self) -> None:
+        pressed: list[str] = []
+        with unittest.mock.patch.object(worker, "_visible_dialogs", return_value=1):
+            worker._close_opened(self._page(pressed), 1)
+        self.assertEqual(pressed, [])
+
+    def test_a_dialog_that_closed_itself_needs_nothing(self) -> None:
+        pressed: list[str] = []
+        with unittest.mock.patch.object(worker, "_visible_dialogs", return_value=0):
+            worker._close_opened(self._page(pressed), 1)
+        self.assertEqual(pressed, [])
+
+
 class SiteSearchGuardTests(unittest.TestCase):
     """The site's own job search is not part of any application.
 

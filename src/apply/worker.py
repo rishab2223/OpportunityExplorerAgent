@@ -1596,7 +1596,7 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
                         return True
                     except Exception as exc:
                         sess.log(f"Direct upload behind '{label}' failed ({_short(exc)}); use the button.")
-                if _click_upload_tile(page, field, attach, sess, "resume", label):
+                if _click_upload_tile(page, field, attach, sess, "resume", label, path):
                     attach.resume_attached = True
                     return True
                 _arm_file_chooser(page, attach, sess)
@@ -1620,7 +1620,7 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
                     return True
                 except Exception as exc:
                     sess.log(f"Direct upload behind '{label}' failed ({_short(exc)}); use the button.")
-            if _click_upload_tile(page, field, attach, sess, "letter", label):
+            if _click_upload_tile(page, field, attach, sess, "letter", label, attach.letter_pdf):
                 attach.letter_attached = True
                 return True
             _arm_file_chooser(page, attach, sess)
@@ -1749,28 +1749,105 @@ def _arm_file_chooser(page, attach, sess) -> None:
         pass
 
 
-# How long a click on an upload tile is given to produce its picker. The
-# chooser arrives over the same connection as everything else, so this is a
-# poll of short waits rather than one long block.
+# How long a click on an upload tile is given to produce a picker or a menu.
+# Both arrive over the same connection as everything else, so this is a poll
+# of short waits rather than one long block.
 PICKER_OPEN_WAIT_MS = 4000
+# How long the picker gets before a revealed file box is considered.
+MENU_GRACE_MS = 600
+
+# Jobvite's "Select" opens a source MENU - Dropbox / File / Type or Paste
+# Resume - rather than a picker, and the box to fill is the file input inside
+# it. The page carries one such menu per upload button, each a role=dialog
+# holding one input, and every one of those inputs is in the DOM from the
+# start: on Barracuda's form there were two before a single click. So what
+# marks the right one is not that it is NEW, it is that it sits in the menu
+# the click just opened.
+PRE_UPLOAD_ATTR = "data-oea-preupload"
+PRE_UPLOAD_DIALOG = "data-oea-preupload-dialog"
+UPLOAD_TARGET_ATTR = "data-oea-uploadtarget"
+
+STAMP_UPLOAD_STATE_JS = f"""
+() => {{
+  document.querySelectorAll('input[type=file]').forEach(
+      el => el.setAttribute('{PRE_UPLOAD_ATTR}', '1'));
+  document.querySelectorAll('[role=dialog]').forEach(el => {{
+      const box = el.getBoundingClientRect();
+      if (box.width > 0 && box.height > 0) el.setAttribute('{PRE_UPLOAD_DIALOG}', '1');
+  }});
+}}
+"""
+
+# One candidate, or none: a menu holding two file boxes says nothing about
+# which is the resume, and guessing there sends the wrong file.
+PICK_UPLOAD_TARGET_JS = f"""
+() => {{
+  document.querySelectorAll('[{UPLOAD_TARGET_ATTR}]').forEach(
+      el => el.removeAttribute('{UPLOAD_TARGET_ATTR}'));
+  const shown = el => {{
+    const box = el.getBoundingClientRect();
+    return box.width > 0 && box.height > 0;
+  }};
+  const found = [];
+  document.querySelectorAll('input[type=file]').forEach(el => {{
+    const built = !el.hasAttribute('{PRE_UPLOAD_ATTR}');
+    // Up NOW and not up before. The page keeps every menu in the DOM, so
+    // "unstamped" alone matches the ones still closed as well.
+    const menu = el.closest('[role=dialog]:not([{PRE_UPLOAD_DIALOG}])');
+    if (built || (menu && shown(menu))) found.push(el);
+  }});
+  if (found.length !== 1) return found.length;
+  found[0].setAttribute('{UPLOAD_TARGET_ATTR}', '1');
+  return 1;
+}}
+"""
 
 
-def _click_upload_tile(page, field, attach, sess, wants: str, label: str) -> bool:
-    """Click an upload button ourselves so the armed handler fills the picker
-    it opens. True when a file actually went in.
+def _visible_dialogs(page) -> int:
+    """How many dialogs are up. Only what a click OPENS may be closed again -
+    pressing Escape at a LinkedIn Easy Apply modal discards the application."""
+    try:
+        return browser.target(page).locator("[role=dialog]:visible").count()
+    except Exception:
+        return 0
 
-    Jobvite's "Select" fronts a file input that its cover-letter button shares,
-    so `_sole_hidden_file_input` cannot tell the two apart and returns nothing -
-    and the candidate was then asked to click the button by hand on a form the
+
+def _revealed_file_input(page):
+    """The one file box the click opened the way to, or None."""
+    try:
+        target = browser.target(page)
+        if target.evaluate(PICK_UPLOAD_TARGET_JS) != 1:
+            return None
+        return target.locator(f"input[{UPLOAD_TARGET_ATTR}]").first
+    except Exception:
+        return None
+
+
+def _click_upload_tile(page, field, attach, sess, wants: str, label: str, path: str) -> bool:
+    """Click an upload button ourselves and fill whatever it opens. True when
+    the file actually went in.
+
+    Jobvite's buttons front no file input at all, so `_sole_hidden_file_input`
+    finds nothing and the candidate was asked to click by hand on a form the
     agent was otherwise filling for them. Clicking it is how a person does it,
-    and the picker never reaches the desktop: Playwright intercepts it.
+    and it lands one of two ways:
+
+    - a file picker, which Playwright intercepts and the armed handler fills
+      (the picker never reaches the desktop);
+    - a source menu with the real input inside it, which is filled directly.
+
+    When it is neither, whatever opened is closed again before handing back,
+    because Jobvite's menu is a role=dialog and the next snapshot would scope
+    to it and lose the rest of the form.
     """
     _arm_file_chooser(page, attach, sess)
     try:
         page._oea_chooser_filled = ""
         page._oea_chooser_want = wants
+        browser.target(page).evaluate(STAMP_UPLOAD_STATE_JS)
     except Exception:
-        return False
+        pass
+    dialogs = _visible_dialogs(page)
     try:
         browser.click(
             browser.locate(page, field["id"], str(field.get("elid") or "")),
@@ -1781,17 +1858,44 @@ def _click_upload_tile(page, field, attach, sess, wants: str, label: str) -> boo
         sess.log(f"Could not click '{label}' to open its picker: {_short(exc)}")
         page._oea_chooser_want = ""
         return False
+
     waited = 0
     while waited < PICKER_OPEN_WAIT_MS:
         if getattr(page, "_oea_chooser_filled", ""):
             page._oea_chooser_want = ""
             return True
+        # A picker gets a head start: a page that opens one often builds the
+        # input first, and racing it fills the file twice and logs the wrong
+        # reason for what happened.
+        fresh = _revealed_file_input(page) if waited >= MENU_GRACE_MS else None
+        if fresh is not None:
+            page._oea_chooser_want = ""
+            try:
+                fresh.set_input_files(path, timeout=20000)
+                sess.log(f"'{label}' opened a menu rather than a picker; put "
+                         f"{Path(path).name} in the file box it revealed.")
+                _close_opened(page, dialogs)
+                return True
+            except Exception as exc:
+                sess.log(f"Could not fill the box '{label}' revealed: {_short(exc)}")
+                break
         page.wait_for_timeout(100)
         waited += 100
-    # The click opened no picker: it was not the button we took it for, so the
-    # candidate is told rather than left watching nothing happen.
+
     page._oea_chooser_want = ""
+    _close_opened(page, dialogs)
     return False
+
+
+def _close_opened(page, dialogs_before: int) -> None:
+    """Escape, but only if the click put a dialog up that is still there."""
+    if _visible_dialogs(page) <= dialogs_before:
+        return
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+    except Exception:
+        pass
 
 
 def _manual_attachment(reply: str, attach, page, sess, notes) -> bool:
