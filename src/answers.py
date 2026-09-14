@@ -80,10 +80,22 @@ TOPICS: dict[str, Any] = {
     # salary quoted as their expectation, and guessing wrong in that direction
     # costs them money. The model reads it in context instead.
     "current_ctc": re.compile(
-        r"\b(current|present)\b.*\b(ctc|salary|compensation|pay)\b|\bcctc\b"),
+        r"\b(current|present)\b.*\b(ctc|salary|compensation|pay)\b|\bcctc\b"
+        # The same word order the expected pattern needs: "Salary paid by your
+        # current employer" names the noun first and was read as a question of
+        # its own, so the profile could not answer it.
+        r"|\b(ctc|salary|compensation|pay|package|remuneration)\b"
+        r".*\b(current|present|currently|today|now)\b"),
     "expected_ctc": re.compile(
         # "E-CTC" fingerprints to "e ctc": punctuation is stripped, not joined.
         r"\b(expected|desired)\b.*\b(ctc|salary|compensation|pay)\b"
+        # ...and the other word order, which is the commoner one in prose:
+        # "What are your overall compensation expectations?", "Salary
+        # expectations", "What are your salary requirements?". Asking for the
+        # qualifier FIRST missed every one of them, so no estimate ran and the
+        # saved figure went in unchanged, whatever the job was worth.
+        r"|\b(ctc|salary|compensation|pay|package|remuneration)\b"
+        r".*\b(expectation|expectations|expected|requirement|requirements)\b"
         r"|\bectc\b|\bexp ctc\b|\be ctc\b"),
     "total_experience": lambda text: _is_total_experience(text),
     "work_authorization": re.compile(r"\b(authori[sz]ed?|authori[sz]ation|legally|eligib\w*)\b.*\bwork\b|\bwork\b.*\b(authori[sz]ed?|authori[sz]ation|permit)\b"),

@@ -308,7 +308,11 @@ logs6 = "\n".join(s6.logs)
 assert s6.choices == ["resume", "cover_letter"], s6.choices
 assert "[resume] Uploaded dummy_resume.pdf to Attach" in logs6, logs6
 assert "Now click 'Attach'" not in logs6, logs6
-assert "Type cover letter if you want one" in logs6, logs6
+# Skipped once is skipped for the form: the tile must not turn round
+# and offer to draft the letter that was just turned down.
+assert "Cover letter skipped" in logs6, logs6
+assert logs6.count("Drafting a cover letter") == 1, logs6
+assert s6.choices.count("cover_letter") == 1, s6.choices
 assert "[profile] Filled Full name = Test User" in logs6, logs6
 
 # Ceipal-style Easy Apply: the page shows only Apply Now / Easy Apply; the

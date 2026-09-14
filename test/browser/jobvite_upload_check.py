@@ -135,11 +135,32 @@ class Attach:
         self.letter_pdf = str(LETTER)
         self.resume_attached = False
         self.letter_attached = False
+        self.letter_declined = False
 
     def resume(self):
         return self.resume_path
 
     def cover_letter(self, for_upload=False):
+        return self.letter_pdf
+
+
+class NoLetter(Attach):
+    """Nothing written yet, which is the state a real form starts in. The
+    letter has to be drafted BECAUSE the form asked for one - hinting instead
+    meant it was written only if the candidate remembered the command."""
+
+    def __init__(self, approve=True):
+        super().__init__()
+        self.letter_pdf = ""
+        self.approve = approve
+        self.drafted = 0
+
+    def cover_letter(self, for_upload=False):
+        self.drafted += 1
+        if not self.approve:
+            self.letter_declined = True      # what the modal's Skip does
+            return ""
+        self.letter_pdf = str(LETTER)
         return self.letter_pdf
 
 
@@ -220,6 +241,35 @@ with sync_playwright() as pw:
           repr(page2.locator("#lname").inner_text()))
     check("and the resume slot still holds the resume",
           page2.locator("#rname").inner_text() == RESUME.name)
+
+    print("\n== a cover-letter tile with nothing written yet ==")
+    page3 = b.new_page(viewport={"width": 1280, "height": 900})
+    page3.goto(MENU_FIXTURE.as_uri())
+    page3.wait_for_timeout(200)
+    sess3, attach3, handled3, notes3 = Sess(), NoLetter(), set(), []
+    for _ in range(2):                       # resume tile, then the letter one
+        worker._handle_attachments(page3, browser.snapshot(page3), handled3,
+                                   attach3, sess3, notes3)
+    check("the letter was drafted because the form asked for one",
+          attach3.drafted == 1, f"drafted {attach3.drafted}x")
+    check("and it was uploaded, not merely offered",
+          page3.locator("#lname").inner_text() == LETTER.name,
+          repr(page3.locator("#lname").inner_text()))
+
+    print("\n== and Skip is remembered ==")
+    page4 = b.new_page(viewport={"width": 1280, "height": 900})
+    page4.goto(MENU_FIXTURE.as_uri())
+    page4.wait_for_timeout(200)
+    sess4, attach4, handled4, notes4 = Sess(), NoLetter(approve=False), set(), []
+    for _ in range(3):
+        worker._handle_attachments(page4, browser.snapshot(page4), handled4,
+                                   attach4, sess4, notes4)
+    check("it is asked once, not once per turn",
+          attach4.drafted == 1, f"drafted {attach4.drafted}x")
+    check("nothing was uploaded to the letter slot",
+          page4.locator("#lname").inner_text() == "")
+    check("and the resume still went in",
+          page4.locator("#rname").inner_text() == RESUME.name)
 
     print("\n== a picker the CANDIDATE opens still gets read from the page ==")
     # The override must not leak: with no tile click in flight, the handler

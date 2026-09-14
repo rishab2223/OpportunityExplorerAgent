@@ -1152,6 +1152,10 @@ class Attachments:
         # a matching tile button is left alone instead of nagging to click it.
         self.resume_attached = False
         self.letter_attached = False
+        # The candidate said no to the letter on this form. A cover-letter
+        # upload button must then stay quiet rather than offering to draft
+        # the one they have just turned down.
+        self.letter_declined = False
         self.calls = 0
         self._salary: int | None = None   # expected pay, rupees/year, once per session
         self._salary_tried = False
@@ -1337,6 +1341,7 @@ class Attachments:
             lowered = reply.strip().lower()
             if lowered in SKIP_WORDS or lowered == "skip":
                 self.sess.log("Cover letter skipped.")
+                self.letter_declined = True
                 return ""
             if reply.startswith(REVISE_SENTINEL):
                 instruction = reply[len(REVISE_SENTINEL):].strip()
@@ -1610,6 +1615,15 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
             return True
         if attach.letter_attached:
             continue
+        if not attach.letter_pdf and not attach.letter_declined:
+            # Write it. A hint here meant the letter was only ever written if
+            # the candidate remembered the command, so a form with a
+            # cover-letter slot went out without one - twice on Jobvite. The
+            # decision is still theirs: this drafts one and opens it for
+            # review, where Skip is a click away and is remembered.
+            if not attach.cover_letter(for_upload=True):
+                notes.append(f"the candidate skipped the cover letter for '{label}'")
+                return True
         if attach.letter_pdf:
             hidden = _sole_hidden_file_input(page, field)
             if hidden is not None:
@@ -1626,12 +1640,9 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
             _arm_file_chooser(page, attach, sess)
             sess.log(f"Click '{label}' - the picker gets the cover letter PDF.")
         else:
-            # A letter costs a model call and is usually optional: hint,
-            # never auto-draft from a tile.
-            sess.log(
-                f"This form has a '{label}' button. Type cover letter if "
-                "you want one - the PDF then fills the picker when you click it."
-            )
+            # Turned down: the button is left alone. "cover letter" still
+            # reopens the draft if they change their mind.
+            notes.append(f"the candidate wants no cover letter for '{label}'")
     return False
 
 

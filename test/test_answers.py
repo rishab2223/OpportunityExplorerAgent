@@ -24,6 +24,32 @@ class QuestionKeyTests(BankTestCase):
                          "Notice Period (in days)", "notice"):
             self.assertEqual(answers.question_key(phrasing), "notice_period", phrasing)
 
+    def test_pay_questions_that_name_the_noun_first(self) -> None:
+        """Barracuda asked "What are your overall compensation expectations?".
+
+        The pattern wanted the qualifier first ("expected salary"), so the
+        commoner prose order matched nothing: no salary estimate ran for the
+        job, and the saved figure was typed in whatever the role was worth.
+        """
+        for phrasing in ("What are your overall compensation expectations?",
+                         "Salary expectations",
+                         "What are your salary requirements?",
+                         "Compensation expectation (annual)",
+                         "Remuneration expected",
+                         "Expected CTC", "Desired salary"):
+            self.assertEqual(answers.question_key(phrasing), "expected_ctc", phrasing)
+        # The mirror image, which missed the same way.
+        for phrasing in ("Salary paid by your current employer",
+                         "What is your compensation today?",
+                         "Current CTC"):
+            self.assertEqual(answers.question_key(phrasing), "current_ctc", phrasing)
+
+    def test_pay_questions_stay_apart(self) -> None:
+        # Widening one must not swallow the other, or an expected-pay answer
+        # goes into a current-pay box.
+        self.assertNotEqual(answers.question_key("Current salary"), "expected_ctc")
+        self.assertNotEqual(answers.question_key("Expected salary"), "current_ctc")
+
     def test_work_authorization_variants(self) -> None:
         for phrasing in ("Are you legally authorized to work in India?",
                          "Are you authorised to work in the United States?",
