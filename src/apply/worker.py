@@ -692,7 +692,7 @@ def run_session(
                             # "llm: <question>" at the review prompt: draft an
                             # answer for the box that question belongs to.
                             _answer_on_request(
-                                page, fields, handled, reply, job, attach, sess, notes, holder
+                                page, fields, handled, reply, job, attach, sess, holder
                             )
                             attempts.pop(key, None)
                             last_llm_sig = ""
@@ -778,6 +778,21 @@ def run_session(
                     # The attach commands must work here too - typing "cover
                     # letter" at this prompt used to loop it forever.
                     if _manual_attachment(reply, attach, page, sess, notes):
+                        continue
+                    # And so must redo and llm:, which until now only worked at
+                    # the "type next" prompt. A single-page form never shows
+                    # that prompt - it goes straight to this one - so on one
+                    # the candidate typed "llm: <the question>" twice and got
+                    # this same line back both times, the request having been
+                    # filed as a note for a model call that never came. The
+                    # prompt says "or tell me what to fix"; these are how.
+                    if _redo_answer(page, fields, holder, job, attach, sess, reply):
+                        continue
+                    if _llm_instruction(reply) is not None:
+                        _answer_on_request(
+                            page, fields, handled, reply, job, attach, sess, holder
+                        )
+                        last_llm_sig = ""
                         continue
                     notes.append(f"guidance from the candidate: {reply}")
                     # Force the next model call: an unchanged page would
@@ -1993,26 +2008,41 @@ def _unanswered_questions(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _answer_on_request(page, fields, handled, reply: str, job, attach, sess, notes,
+def _answer_on_request(page, fields, handled, reply: str, job, attach, sess,
                        holder=None) -> None:
-    """'llm: <question>' at the review prompt: draft an answer for the box
-    that question names, show it for editing, then write it in."""
+    """'llm: <question>' at a review prompt: draft an answer for the box that
+    question names, show it for editing, then write it in.
+
+    When no box matches, the answer is still drafted and handed back to read.
+    _field_for_question only considers EMPTY OPTIONAL boxes, so a required one,
+    or one the candidate is looking at on a part of the page we did not
+    snapshot, finds nothing - and a request for help is not worth refusing
+    just because we cannot type the result in ourselves.
+    """
     instruction = (_llm_instruction(reply) or "").strip()
     field = _field_for_question(fields, instruction)
-    if field is None:
-        notes.append(f"guidance from the candidate: {reply}")
-        sess.log("I could not tell which box that question is; passing it to the model instead.")
-        return
-    label = _field_label(field)
+    label = _field_label(field) if field is not None else instruction
     if attach is None or attach.invoke is None:
         sess.log("No model is available to draft an answer here.")
         return
+    if field is None:
+        sess.log("I could not find that box on the page; drafting an answer for you to paste.")
     sess.log(f"Drafting an answer for '{_brief(label, LOG_LABEL)}'…")
     try:
         draft = _draft_answer(attach.invoke, job, attach.resume_text, label, "", instruction)
         attach.calls += 1
     except Exception as exc:
         sess.log(f"Could not draft an answer: {_short(exc)}")
+        return
+    if field is None:
+        answer = _settle_draft(
+            sess, attach, job, label, draft,
+            "I cannot type this one in - copy it from the box below into the form. "
+            "Send it to keep it in the transcript, 'llm: <what to change>' to "
+            "redraft, or skip.",
+        )
+        if answer:
+            sess.log(f"[llm] Drafted (paste it yourself): {answer}")
         return
     answer = _settle_draft(
         sess, attach, job, label, draft,
