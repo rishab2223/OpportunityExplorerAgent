@@ -205,3 +205,40 @@ class SubmittedCommandTests(unittest.TestCase):
         # run_session catches all three separately and finishes differently.
         self.assertFalse(issubclass(apply_session.Submitted, apply_session.Aborted))
         self.assertFalse(issubclass(apply_session.Submitted, apply_session.Parked))
+
+
+class ParkWhileBusyTests(unittest.TestCase):
+    """Park must work while the worker is mid-model-call.
+
+    From a real queue: "Could not park: the agent is busy right now - wait for
+    its next question, then answer". Park went through the chat endpoint,
+    which refuses input unless the session is waiting - correctly, since a
+    queued reply would be read as the answer to the next question. So the
+    candidate could not leave a job until the model round finished.
+    """
+
+    def _session(self) -> apply_session.ApplySession:
+        return apply_session.ApplySession("20260913T120000", "job1", "Company 1")
+
+    def test_park_set_while_busy_is_seen_at_the_next_prompt(self) -> None:
+        sess = self._session()
+        sess.status = "running"          # mid-model-call: not waiting for anyone
+        sess.park()
+        self.assertTrue(sess.parked())
+        with self.assertRaises(apply_session.Parked):
+            sess.ask("anything?")
+
+    def test_park_queues_no_answer_to_be_eaten_later(self) -> None:
+        # abort() pushes a word into the answer queue; park must not, or a
+        # missed park would land in whatever field is asked about next.
+        sess = self._session()
+        sess.park()
+        self.assertTrue(sess._answers.empty())
+
+    def test_park_is_not_an_abort(self) -> None:
+        sess = self._session()
+        sess.park()
+        self.assertFalse(sess.aborted())
+
+    def test_a_session_nobody_parked_is_not_parked(self) -> None:
+        self.assertFalse(self._session().parked())

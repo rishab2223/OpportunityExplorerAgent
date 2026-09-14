@@ -2062,3 +2062,82 @@ class SubmittedBaselineTests(unittest.TestCase):
     def test_marks_tell_sentences_apart_by_what_follows(self) -> None:
         marks = worker._submitted_marks(self.CONFIRMED)
         self.assertEqual(len(marks), 2, marks)
+
+
+class FilePickerChoiceTests(unittest.TestCase):
+    """Which of the two attachments a file picker gets.
+
+    Reading only the input's own attributes sent the resume to a Jobvite
+    "Add Cover Letter" button three times in a row: the input behind that
+    button has no name, id or label, so the cover-letter branch could not
+    match and the resume branch - which only required NOT matching cover
+    letter - always did. The candidate parked the job.
+    """
+
+    def test_the_inputs_own_attributes_win(self) -> None:
+        self.assertEqual(worker._picker_wants({"own": "coverLetterFile", "around": []}), "letter")
+        self.assertEqual(worker._picker_wants({"own": "resume_upload", "around": []}), "resume")
+
+    def test_an_anonymous_input_reads_what_is_around_it(self) -> None:
+        self.assertEqual(
+            worker._picker_wants({"own": " ", "around": ["Add Cover Letter", "Apply to this job"]}),
+            "letter")
+        self.assertEqual(
+            worker._picker_wants({"own": "", "around": ["Attach Resume", "Apply to this job"]}),
+            "resume")
+
+    def test_the_nearest_container_that_names_one_decides(self) -> None:
+        # Far enough up, everything holds the whole form and names both.
+        context = {"own": "", "around": ["Add Cover Letter",
+                                         "Attach Resume Add Cover Letter Send Application"]}
+        self.assertEqual(worker._picker_wants(context), "letter")
+
+    def test_a_container_naming_both_settles_nothing(self) -> None:
+        self.assertEqual(
+            worker._picker_wants({"own": "", "around": ["Attach Resume Add Cover Letter"]}), "")
+
+    def test_nothing_at_all_is_not_a_guess(self) -> None:
+        # The caller asks rather than picking: the wrong file in a
+        # cover-letter slot is an application sent with two resumes.
+        self.assertEqual(worker._picker_wants({"own": "", "around": ["Upload", "Apply"]}), "")
+        self.assertEqual(worker._picker_wants({}), "")
+
+
+class SiteSearchGuardTests(unittest.TestCase):
+    """The site's own job search is not part of any application.
+
+    On an iCIMS login flow with no form in front of it, the model typed the
+    job title into "Start your job search here", which navigates - losing
+    whatever the candidate had open. The candidate parked the job.
+    """
+
+    def _field(self, **kw) -> dict:
+        base = {"label": "", "name": "", "elid": "", "placeholder": "", "text": "",
+                "tag": "input", "type": "text", "id": 1}
+        base.update(kw)
+        return base
+
+    def test_a_job_search_box_is_recognised(self) -> None:
+        for label in ("Start your job search here",
+                      "Search jobs",
+                      "Search for a job",
+                      "Job search",
+                      "Search open positions",
+                      "Search careers",
+                      "Search by keyword"):
+            self.assertTrue(worker._is_site_search(self._field(label=label)), label)
+
+    def test_a_form_field_that_merely_says_search_is_not(self) -> None:
+        # A Workday skills picker is <input type=search>, and a "Research"
+        # label contains the word. The wording is read, never the input type.
+        for label in ("Type to Add Skills", "Research interests", "Search Committee",
+                      "Where did you search for this role?"):
+            self.assertFalse(worker._is_site_search(self._field(label=label)), label)
+
+    def test_the_type_alone_never_decides(self) -> None:
+        self.assertFalse(worker._is_site_search(
+            self._field(label="Skills", type="search")))
+
+    def test_the_name_counts_too(self) -> None:
+        self.assertTrue(worker._is_site_search(
+            self._field(label="", name="job_search_keyword")))

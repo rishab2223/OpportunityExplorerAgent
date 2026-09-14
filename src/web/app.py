@@ -321,6 +321,16 @@ def api_apply_chat(session_id: str, payload: dict = Body(...)) -> dict:
     return sess.snapshot()
 
 
+@app.post("/api/apply/{session_id}/park")
+def api_apply_park(session_id: str) -> dict:
+    """Leave this application for later. Its own endpoint, like abort: going
+    through the chat endpoint meant a park during a model call was refused
+    with "the agent is busy right now"."""
+    sess = _session_or_404(session_id)
+    sess.park()
+    return sess.snapshot()
+
+
 @app.post("/api/apply/{session_id}/abort")
 def api_apply_abort(session_id: str) -> dict:
     sess = _session_or_404(session_id)

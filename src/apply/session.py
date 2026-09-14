@@ -86,6 +86,13 @@ class ApplySession:
         self._answers: Queue = Queue()
         self._lock = threading.Lock()
         self._abort = threading.Event()
+        # Park has its own flag for the same reason abort does: both have to
+        # work while the worker is mid-model-call, when the chat endpoint
+        # refuses input because a queued reply would be consumed as the answer
+        # to the NEXT question. Sending "park" through chat returned "the
+        # agent is busy right now" on a real session, and the candidate had to
+        # wait for a model round to finish before they could leave the job.
+        self._park = threading.Event()
         # Runs with the final status BEFORE the done event is emitted, so the
         # UI's reload on "done" already sees the recorded outcome (history row,
         # per-run status). Consumed once.
@@ -125,6 +132,8 @@ class ApplySession:
     def _wait(self, question: str, event_type: str, extra: dict[str, Any]) -> str:
         if self._abort.is_set():
             raise Aborted("session aborted")
+        if self._park.is_set():
+            raise Parked("parked by the candidate")
         self.status = "waiting_for_user"
         self.pending_question = question
         self.emit(event_type, question, **extra)
@@ -134,6 +143,8 @@ class ApplySession:
             except Empty:
                 if self._abort.is_set():
                     raise Aborted("session aborted")
+                if self._park.is_set():
+                    raise Parked("parked by the candidate")
                 # Sync Playwright only delivers page events (a file picker the
                 # user just opened) while the worker is talking to the browser;
                 # the worker installs a tick so those are serviced mid-wait.
@@ -184,6 +195,14 @@ class ApplySession:
 
     def aborted(self) -> bool:
         return self._abort.is_set()
+
+    def park(self) -> None:
+        # No reply is queued, unlike abort: a queued word would be read as the
+        # answer to whatever is asked next if the park were somehow missed.
+        self._park.set()
+
+    def parked(self) -> bool:
+        return self._park.is_set()
 
     def finish(self, status: str, text: str = "") -> None:
         self.status = status

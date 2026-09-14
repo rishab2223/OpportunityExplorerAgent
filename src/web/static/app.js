@@ -403,6 +403,7 @@ function tickCell(job) {
     else queueTicks.delete(job.job_id);
     box.closest("tr").classList.toggle("queued", box.checked);
     refreshQueueButton();
+    refreshSelectAll();
   });
   cell.appendChild(box);
   return cell;
@@ -417,6 +418,33 @@ function linksCell(job) {
   if (listingLink) links.appendChild(listingLink);
   links.addEventListener("click", (ev) => ev.stopPropagation());
   return links;
+}
+
+// ------------------------------------------------- select all on this page
+// The rows currently rendered, so the header box knows what "this page"
+// means after paging or filtering.
+let pageJobs = [];
+
+// Only PENDING jobs. A queue of jobs already applied to would apply to them
+// again, and "closed" ones cannot be applied to at all - so the box ticks
+// what is still worth applying to and says how many that is, rather than
+// ticking everything and leaving you to untick the rest.
+function queueableOnPage() {
+  return pageJobs.filter((job) => statusKey(job) === "pending");
+}
+
+function refreshSelectAll() {
+  const box = $("tickall");
+  if (!box) return;
+  const able = queueableOnPage();
+  const ticked = able.filter((job) => queueTicks.has(job.job_id));
+  box.disabled = !able.length;
+  box.checked = able.length > 0 && ticked.length === able.length;
+  // Some but not all: neither a tick nor an empty box is true, and a dash is.
+  box.indeterminate = ticked.length > 0 && ticked.length < able.length;
+  box.title = able.length
+    ? `Queue the ${able.length} pending job(s) on this page`
+    : "No pending jobs on this page";
 }
 
 // ------------------------------------------------- column filters
@@ -599,6 +627,8 @@ function renderShortlist(allJobs) {
     renderJobs(lastJobs);
   });
   if (!jobs.length) {
+    pageJobs = [];
+    refreshSelectAll();
     // Say which of the two empties this is: a run with nothing left in it
     // looks exactly like a filter that matches nothing.
     emptyRow(body, 10, activeFilters().length
@@ -607,7 +637,9 @@ function renderShortlist(allJobs) {
     return;
   }
   const start = shortlistPage * PAGE_SIZE;
-  jobs.slice(start, start + PAGE_SIZE).forEach((job) => {
+  pageJobs = jobs.slice(start, start + PAGE_SIZE);
+  refreshSelectAll();
+  pageJobs.forEach((job) => {
     const row = document.createElement("tr");
     row.dataset.jobId = job.job_id;
     if (queueTicks.has(job.job_id)) row.classList.add("queued");
@@ -1386,6 +1418,15 @@ $("stamp").addEventListener("change", (ev) => loadJobs(ev.target.value));
 $("refresh").addEventListener("click", () => loadStamps(currentStamp));
 $("send").addEventListener("click", sendChat);
 $("abort").addEventListener("click", abortApply);
+$("tickall").addEventListener("change", (event) => {
+  // Only this page's pending rows, either way: unticking must not silently
+  // drop ticks made on a page you are not looking at.
+  queueableOnPage().forEach((job) => {
+    if (event.target.checked) queueTicks.add(job.job_id);
+    else queueTicks.delete(job.job_id);
+  });
+  renderJobs(lastJobs);
+});
 act("startqueue").forEach((b) => b.addEventListener("click", startQueue));
 act("jobinfo").forEach((b) => b.addEventListener("click", toggleJobInfo));
 $("markapplied").addEventListener("click", () => {
@@ -1399,7 +1440,10 @@ $("markapplied").addEventListener("click", () => {
 $("park").addEventListener("click", () => {
   if (!applySessionId) return;
   fillChat("", "");
-  postJSON(`/api/apply/${applySessionId}/chat`, { text: "park" }).catch((err) =>
+  // Its own endpoint, not the chat one: a park sent as chat during a model
+  // call came back "the agent is busy right now", and the candidate had to
+  // wait for the round to finish before they could leave the job.
+  postJSON(`/api/apply/${applySessionId}/park`, {}).catch((err) =>
     appendApply(`Could not park: ${err.message}`)
   );
 });

@@ -344,6 +344,33 @@ class SubmitBlocked(Exception):
     prompt."""
 
 
+class SearchBoxBlocked(Exception):
+    """Raised when anything tries to type into the site's own job search.
+    Typing there navigates away, and no application is ever advanced by it."""
+
+
+# The site's own job search, not a search-styled widget inside a form: a
+# Workday skills picker is <input type=search> too, and refusing that would
+# break the skills box. So this reads the wording, never the input type.
+SITE_SEARCH_RE = re.compile(
+    r"\bsearch\b[^.]{0,24}\b(job|jobs|opening|openings|career|careers|position|positions)\b"
+    r"|\b(job|jobs|career|careers)\b[^.]{0,24}\bsearch\b"
+    r"|\bsearch (this )?site\b|\bsite search\b|\bsearch by keyword\b",
+    re.IGNORECASE,
+)
+
+
+def _is_site_search(field: dict[str, Any]) -> bool:
+    haystack = " ".join(
+        str(field.get(key) or "")
+        for key in ("label", "name", "elid", "placeholder", "aria-label", "text")
+    )
+    # "job_search_keyword" has no word boundary between "job" and "search":
+    # an underscore is a word character. Names are written that way far more
+    # often than labels are.
+    return bool(SITE_SEARCH_RE.search(re.sub(r"[_\-]+", " ", haystack)))
+
+
 class StaleField(Exception):
     """The planned element no longer exists (the page moved on mid-plan)."""
 
@@ -501,6 +528,11 @@ def run_session(
         for _step in range(1, MAX_STEPS + 1):
             if sess.aborted():
                 raise Aborted("user aborted")
+            if sess.parked():
+                # Pressed while the model was thinking: the wait it would
+                # normally interrupt was not running, so this is where it
+                # lands.
+                raise Parked("parked by the candidate")
             if errors_in_a_row >= MAX_CONSECUTIVE_ERRORS:
                 raise RuntimeError(f"{MAX_CONSECUTIVE_ERRORS} browser actions failed in a row")
 
@@ -1597,38 +1629,100 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
     return False
 
 
+# What the picker reads to tell a resume slot from a cover-letter slot: the
+# input's own attributes first, then the text of the handful of elements
+# around it. A hidden input is usually anonymous - Jobvite's "Add Cover
+# Letter" opens an input with no name, id, class or label at all - and the
+# only thing on the page that says what it is for is the button the candidate
+# clicked, which sits beside it.
+PICKER_CONTEXT_JS = """
+e => {
+  const own = [e.name, e.id, e.className, e.getAttribute('aria-label'),
+               e.getAttribute('data-qa'), e.getAttribute('title'),
+               (e.labels && e.labels[0] ? e.labels[0].innerText : '')].join(' ');
+  // Nearest first, and capped: far enough up, every container holds the whole
+  // form and mentions both kinds of upload.
+  const around = [];
+  let node = e.parentElement;
+  for (let i = 0; i < 4 && node; i++, node = node.parentElement) {
+    around.push((node.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 300));
+  }
+  return JSON.stringify({own: own, around: around});
+}
+"""
+
+
+def _picker_wants(context: dict[str, Any]) -> str:
+    """'letter', 'resume' or '' for a file input, and why it is neither when
+    it cannot tell.
+
+    The input's own attributes win. Failing those, the nearest enclosing
+    element that names ONE of the two decides - a container naming both is
+    the form itself and settles nothing, so the search moves outward only
+    until something is specific.
+    """
+    own = context.get("own") or ""
+    if cover_letter.COVER_LETTER_RE.search(own):
+        return "letter"
+    if RESUME_FIELD_RE.search(own):
+        return "resume"
+    for text in context.get("around") or []:
+        letter = bool(cover_letter.COVER_LETTER_RE.search(text))
+        resume = bool(RESUME_FIELD_RE.search(text))
+        if letter != resume:
+            return "letter" if letter else "resume"
+    return ""
+
+
 def _arm_file_chooser(page, attach, sess) -> None:
     """Fill file pickers the user opens with the VETTED attachment.
 
     Tile-style uploads (SuccessFactors' "Upload a CV") hide the real file
     input, so the normal upload path never sees it. Armed only after the user
-    approved a file in its modal - nothing unvetted is ever supplied. The
-    input's own attributes decide resume vs cover letter."""
+    approved a file in its modal - nothing unvetted is ever supplied.
+
+    Which of the two it supplies is read from the input AND from what is
+    around it. Reading only the input's own attributes sent the resume to a
+    Jobvite "Add Cover Letter" button three times in a row, because the input
+    behind that button carries no name, id or label - so the cover-letter
+    branch could not match and the resume branch, which only required NOT
+    matching cover letter, always did.
+    """
     if getattr(page, "_oea_chooser_armed", False):
         return
 
     def handler(chooser) -> None:
         try:
-            desc = chooser.element.evaluate(
-                "e => [e.name, e.id, e.className, e.getAttribute('aria-label'),"
-                " (e.labels && e.labels[0] ? e.labels[0].innerText : '')].join(' ')"
-            )
+            context = json.loads(chooser.element.evaluate(PICKER_CONTEXT_JS))
         except Exception:
-            desc = ""
-        path = ""
-        if attach.letter_pdf and cover_letter.COVER_LETTER_RE.search(desc or ""):
-            path = attach.letter_pdf
-        elif attach.resume_path and not cover_letter.COVER_LETTER_RE.search(desc or ""):
-            path = attach.resume_path
+            context = {}
+        wants = _picker_wants(context)
+        # Nothing on the page says which it is. One attachment prepared is
+        # then the answer; both prepared and no way to choose is a question,
+        # not a coin toss - the wrong file in a cover-letter slot is an
+        # application sent with the resume attached twice.
+        if not wants:
+            prepared = [k for k, v in (("letter", attach.letter_pdf),
+                                       ("resume", attach.resume_path)) if v]
+            if len(prepared) != 1:
+                sess.log(
+                    "A file picker opened and nothing on it says whether it wants "
+                    "the resume or the cover letter. Pick the file in the browser "
+                    "yourself this once."
+                )
+                return
+            wants = prepared[0]
+        path = attach.letter_pdf if wants == "letter" else attach.resume_path
         if not path:
             sess.log(
-                "A file picker opened but that attachment is not prepared yet - "
-                "type 'attach resume' or 'cover letter' first, then click again."
+                f"A file picker opened for the {wants}, which is not prepared yet - "
+                f"type '{'cover letter' if wants == 'letter' else 'attach resume'}' "
+                "first, then click again."
             )
             return
         try:
             chooser.set_files(path)
-            sess.log(f"Supplied {Path(path).name} to the file picker.")
+            sess.log(f"Supplied {Path(path).name} to the file picker (it asks for the {wants}).")
         except Exception as exc:
             sess.log(f"Could not fill the file picker: {_short(exc)}")
 
@@ -2535,6 +2629,12 @@ def _guarded_execute(
     except SubmitBlocked:
         notes.append(f"'{label}' is the submit button; the candidate clicks it, not you")
         return "skipped"
+    except SearchBoxBlocked:
+        sess.log(f"Left '{_brief(label, LOG_LABEL)}' alone - it is the site's job "
+                 "search, and typing in it would navigate away from the form.")
+        notes.append(f"'{label}' is the site's job search, not part of the application; "
+                     "do not type in it. If there is no form on this page, say so.")
+        return "skipped"
     except Exception as exc:
         sess.log(f"Could not {action.action} {label}: {_short(exc)}")
         notes.append(f"{action.action} on '{label}' failed: {_short(exc)}")
@@ -2829,6 +2929,12 @@ def _execute(
 ) -> None:
     if action.action == "click" and _is_submit(field):
         raise SubmitBlocked(_field_label(field))
+    if action.action in ("fill", "type") and _is_site_search(field):
+        # An application is never advanced by searching the site. On an iCIMS
+        # login flow the model, with no form in front of it, typed the job
+        # title into "Start your job search here" - which navigates, losing
+        # whatever the candidate had open.
+        raise SearchBoxBlocked(_field_label(field))
     locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
     if locator.count() == 0:
         raise StaleField(_field_label(field))
@@ -4569,7 +4675,12 @@ def _field_by_id(fields: list[dict[str, Any]], field_id: int) -> dict[str, Any] 
 
 
 def _field_label(field: dict[str, Any]) -> str:
-    return field.get("label") or field.get("text") or field.get("name") or f"#{field.get('id')}"
+    """What to call this field in the transcript. The group is the last
+    resort before an id: a consent checkbox often has no label of its own and
+    its question lives in the legend above it, and "Checked #16" in the log
+    tells the candidate nothing about what they just agreed to."""
+    return (field.get("label") or field.get("text") or field.get("name")
+            or field.get("group") or f"#{field.get('id')}")
 
 
 def _safe_url(page) -> str:
