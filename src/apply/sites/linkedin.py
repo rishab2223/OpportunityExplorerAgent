@@ -139,6 +139,19 @@ NEW_DIALOG_SELECTOR = f"div[role=dialog]:not([{PRE_DIALOG_ATTR}]):visible"
 APPLY_DIALOG_RE = re.compile(
     r"\bapply\b|\bapplication\b|contact info|\bresume\b", re.IGNORECASE
 )
+# Only what the dialog calls itself is read - its label and headings - never
+# its body. The messaging overlay's body is recruiters' messages, and those
+# say "apply", "application" and "resume" in nearly every one.
+DIALOG_HEADINGS = "h1, h2, h3"
+
+
+def _dialog_name(dialog) -> str:
+    parts = [dialog.get_attribute("aria-label") or ""]
+    try:
+        parts.extend(dialog.locator(DIALOG_HEADINGS).all_inner_texts()[:3])
+    except Exception:
+        pass
+    return " ".join(parts)
 
 
 def _url_key(url: str) -> str:
@@ -156,9 +169,7 @@ def _new_apply_dialog(page) -> bool:
     try:
         dialogs = page.locator(NEW_DIALOG_SELECTOR)
         for i in range(dialogs.count()):
-            dialog = dialogs.nth(i)
-            text = f"{dialog.get_attribute('aria-label') or ''} {dialog.inner_text() or ''}"
-            if APPLY_DIALOG_RE.search(text):
+            if APPLY_DIALOG_RE.search(_dialog_name(dialogs.nth(i))):
                 return True
     except Exception:
         return False

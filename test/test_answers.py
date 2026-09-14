@@ -168,3 +168,14 @@ class TotalExperienceScopeTests(unittest.TestCase):
 
         self.assertNotEqual(question_key("Years of relevant experience"),
                             "total_experience")
+
+
+class TotalExperienceLabelShapesTests(unittest.TestCase):
+    def test_common_decorations_still_mean_the_whole_career(self) -> None:
+        from src.answers import question_key
+
+        for label in ("Years of experience (required)",
+                      "Total experience till date",
+                      "Total work experience, including internships",
+                      "Years of full time experience *"):
+            self.assertEqual(question_key(label), "total_experience", label)

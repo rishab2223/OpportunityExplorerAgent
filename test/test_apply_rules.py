@@ -7,7 +7,7 @@ import unittest.mock
 from pathlib import Path
 
 from src import answers, history
-from src.apply import profile
+from src.apply import profile, worker
 from src.apply.worker import (
     ApplyAction,
     SubmitBlocked,
@@ -587,9 +587,11 @@ class PageWatchTests(unittest.TestCase):
             # LinkedIn's confirmation, rendered after the user's own submit.
             with mock.patch.object(browser, "page_text", return_value="Your application was sent to X!"):
                 self.assertEqual(worker._page_grew(None, page, watch), "submitted")
-            # ...but not when the page already read that way at the prompt.
+            # ...but not when the page already read that way at the prompt:
+            # the baseline is the set of sentences seen, not a yes/no.
+            seen = worker._submitted_marks("Your application was sent to X!")
             with mock.patch.object(browser, "page_text", return_value="Your application was sent to X!"),                     mock.patch.object(browser, "snapshot", return_value=base_fields):
-                self.assertEqual(worker._page_grew(None, page, {**watch, "submitted": True}), "")
+                self.assertEqual(worker._page_grew(None, page, {**watch, "submitted_seen": seen}), "")
         other = Page()
         with mock.patch.object(browser, "current_page", return_value=other):
             self.assertEqual(worker._page_grew(None, page, watch), "tab")
@@ -2002,3 +2004,61 @@ class PromptFieldTrimTests(TempDbTestCase):
     def test_the_json_actually_got_smaller(self) -> None:
         fat = json.dumps([{k: v for k, v in f.items() if k != "path"} for f in self._fields()])
         self.assertLess(len(json.dumps(self._sent())), len(fat) * 0.75)
+
+
+class SubmittedBaselineTests(unittest.TestCase):
+    """Only wording that was NOT on the page at the first read may record an
+    application as applied.
+
+    Scanning the whole page for "thank you for your application" and acting
+    on a match would have recorded a job as applied on the first read of a
+    form whose DESCRIPTION ends with that sentence, and closed the browser on
+    a form the candidate had not touched.
+    """
+
+    DESCRIPTION = ("Senior Engineer. Thank you for your application, shortlisted "
+                   "candidates will be contacted within five days.")
+    CONFIRMED = DESCRIPTION + " Your application was sent to Acme! Track it in My Jobs."
+    FORM = [{"tag": "input", "type": "text", "label": "Full name", "id": 1}]
+    BUTTONS_ONLY = [{"tag": "button", "type": "button", "text": "Done", "id": 1}]
+
+    def _page_saying(self, text: str):
+        from src.apply import browser
+
+        self.addCleanup(setattr, browser, "full_page_text", browser.full_page_text)
+        browser.full_page_text = lambda page: text
+        return object()
+
+    def test_boilerplate_at_the_first_read_is_not_a_confirmation(self) -> None:
+        holder = {}
+        page = self._page_saying(self.DESCRIPTION)
+        worker._take_submitted_baseline(page, self.FORM, holder)
+        self.assertEqual(worker._newly_submitted(page, holder), "")
+
+    def test_a_confirmation_that_arrives_later_is(self) -> None:
+        holder = {}
+        worker._take_submitted_baseline(self._page_saying(self.DESCRIPTION), self.FORM, holder)
+        found = worker._newly_submitted(self._page_saying(self.CONFIRMED), holder)
+        self.assertIn("application was sent to acme", found)
+
+    def test_the_same_sentence_again_is_not_new(self) -> None:
+        # The description repeated verbatim (a re-render) must not count.
+        holder = {}
+        worker._take_submitted_baseline(self._page_saying(self.DESCRIPTION), self.FORM, holder)
+        self.assertEqual(worker._newly_submitted(
+            self._page_saying(self.DESCRIPTION + " " + self.DESCRIPTION), holder), "")
+
+    def test_a_page_with_nothing_fillable_is_taken_at_its_word(self) -> None:
+        # An apply link that bounced to "you already applied": buttons and
+        # links only, so the wording IS the page's meaning.
+        holder = {}
+        page = self._page_saying("Your application has been submitted. Back to listings")
+        worker._take_submitted_baseline(page, self.BUTTONS_ONLY, holder)
+        self.assertTrue(worker._newly_submitted(page, holder))
+
+    def test_no_baseline_means_no_verdict(self) -> None:
+        self.assertEqual(worker._newly_submitted(self._page_saying(self.CONFIRMED), {}), "")
+
+    def test_marks_tell_sentences_apart_by_what_follows(self) -> None:
+        marks = worker._submitted_marks(self.CONFIRMED)
+        self.assertEqual(len(marks), 2, marks)

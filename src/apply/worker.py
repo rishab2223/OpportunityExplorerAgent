@@ -230,6 +230,72 @@ def _looks_submitted(page_text: str) -> bool:
     return bool(SUBMITTED_PAGE_RE.search(page_text or ""))
 
 
+# How much of what follows a match is kept to tell one sentence from another:
+# "Thank you for your application, shortlisted candidates will be contacted"
+# in a job description is not "Thank you for your application! It was sent
+# to Acme" in a confirmation card.
+_MARK_CONTEXT = 60
+
+
+def _submitted_marks(page_text: str) -> frozenset[str]:
+    """Every place the page says an application went through, as short
+    normalised snippets, so that two readings of the page can be compared."""
+    text = page_text or ""
+    marks = set()
+    for match in SUBMITTED_PAGE_RE.finditer(text):
+        snippet = text[match.start(): match.end() + _MARK_CONTEXT]
+        marks.add(re.sub(r"\s+", " ", snippet).strip().lower())
+    return frozenset(marks)
+
+
+def _has_fillable(fields: list[dict[str, Any]]) -> bool:
+    """Whether the page has anything a candidate could type or pick into. A
+    confirmation page keeps buttons and links; a form keeps boxes."""
+    for field in fields:
+        tag = field.get("tag")
+        if tag in ("textarea", "select"):
+            return True
+        if tag == "input" and (field.get("type") or "").lower() not in (
+            "button", "submit", "reset", "hidden", "image"
+        ):
+            return True
+    return False
+
+
+def _newly_submitted(page, holder: dict[str, Any]) -> str:
+    """The sentence that says the application went through and was NOT on the
+    page when the form was first read, or '' when there is none.
+
+    A page that has always said it is not evidence of anything: job
+    descriptions end with "Thank you for your application, shortlisted
+    candidates will be contacted", and forms say "once your application has
+    been submitted you cannot edit it". Scanning the whole page for those
+    phrases and recording the job as applied on the strength of one - which
+    is what an un-gated check over the full text did - would have closed the
+    browser on a form the candidate had not touched, with a history row
+    saying they had applied. So the phrases present at the first read are the
+    baseline, and only a new one counts.
+
+    The one exception is a page that has nothing fillable on it at all at the
+    first read: that IS a confirmation page (an apply link that bounced to
+    "you already applied", a job reopened after applying), and it is taken at
+    its word.
+    """
+    seen = holder.get("submitted_seen")
+    if seen is None:
+        return ""   # the baseline is taken by the loop, before anything is typed
+    for mark in _submitted_marks(browser.full_page_text(page)) - seen:
+        return mark
+    return ""
+
+
+def _take_submitted_baseline(page, fields: list[dict[str, Any]], holder: dict[str, Any]) -> None:
+    if holder.get("submitted_seen") is not None:
+        return
+    marks = _submitted_marks(browser.full_page_text(page))
+    holder["submitted_seen"] = marks if _has_fillable(fields) else frozenset()
+
+
 def _looks_closed(page_text: str) -> bool:
     return bool(CLOSED_PAGE_RE.search(page_text or ""))
 
@@ -506,8 +572,16 @@ def run_session(
             # looks like work to do: a real session re-typed the candidate's
             # name, e-mail and phone into the empty boxes of a form whose
             # application had already gone through. Nothing may be written to
-            # a page that says the application is in.
-            if _looks_submitted(browser.full_page_text(page)):
+            # a page that says the application is in - and nothing may be
+            # recorded on the strength of wording that was there all along,
+            # which is what _newly_submitted is for.
+            _take_submitted_baseline(page, fields, holder)
+            confirmation = _newly_submitted(page, holder)
+            if confirmation:
+                # The sentence is logged so that a wrong match is visible in
+                # the transcript rather than silently recorded.
+                sess.log(f"The page confirms the application was sent: "
+                         f"'{_brief(confirmation, 80)}'")
                 outcome, outcome_text = "applied", "confirmed by the page"
                 break
             # An open modal still loading its form (LinkedIn Easy Apply) is
@@ -522,7 +596,7 @@ def run_session(
                 # sent" card is a modal with nothing to fill. Waiting six
                 # seconds for its form to arrive is waiting for something that
                 # is never coming, and it happened after every application.
-                if _looks_submitted(browser.full_page_text(page)):
+                if _newly_submitted(page, holder):
                     break
                 if attempt == 0:
                     sess.log("A dialog is open but its form is still loading; waiting…")
@@ -828,8 +902,12 @@ def run_session(
             # went through ("was sent", "thank you for applying"); a form that
             # has yet to be submitted does not carry that wording, and the
             # phrase on its own button ("Submit application") is the other
-            # word order and does not match.
-            if _looks_submitted(browser.full_page_text(page)):
+            # word order and does not match. And only wording that was not
+            # there at the first read counts - see _newly_submitted.
+            confirmation = _newly_submitted(page, holder)
+            if confirmation:
+                sess.log(f"The page confirms the application was sent: "
+                         f"'{_brief(confirmation, 80)}'")
                 outcome, outcome_text = "applied", "confirmed by the page"
                 break
 
@@ -1831,8 +1909,15 @@ def _ask_watching(sess, holder, page, handled, fields, question: str,
     holder["watch"] = {
         "keys": baseline, "handled": handled, "url": _safe_url(page), "ticks": 0,
         "fields_too": fields_too,
-        # A page that already read as submitted must not re-trigger.
-        "submitted": _looks_submitted(browser.full_page_text(page)),
+        # Wording that was on the page before must not re-trigger - and the
+        # session's baseline, not a fresh one, so that a job description
+        # ending "thank you for your application" does not switch detection
+        # off for the whole session the way a plain yes/no baseline did.
+        "submitted_seen": (
+            holder.get("submitted_seen")
+            if holder.get("submitted_seen") is not None
+            else _submitted_marks(browser.full_page_text(page))
+        ),
     }
     holder["changed"] = ""
     try:
@@ -1840,7 +1925,11 @@ def _ask_watching(sess, holder, page, handled, fields, question: str,
     except session.PageChanged as exc:
         holder["changed"] = exc.reason
         if exc.reason == "submitted":
-            sess.log("The page confirms the application was sent.")
+            # Which sentence, so that a wrong match is visible in the
+            # transcript rather than silently recorded.
+            sentence = (holder.get("watch") or {}).get("confirmation") or ""
+            sess.log("The page confirms the application was sent"
+                     + (f": '{_brief(sentence, 80)}'" if sentence else "."))
         else:
             sess.log("The page changed (a form opened or a new page loaded); reading it.")
         return None
@@ -1858,7 +1947,9 @@ def _page_grew(context, page, watch: dict[str, Any]) -> str:
         return "tab"
     if _safe_url(page) != watch["url"]:
         return "url"
-    if not watch.get("submitted") and _looks_submitted(browser.full_page_text(page)):
+    new_marks = _submitted_marks(browser.full_page_text(page)) - watch.get("submitted_seen", frozenset())
+    if new_marks:
+        watch["confirmation"] = sorted(new_marks)[0]   # for the transcript
         return "submitted"
     if not watch.get("fields_too", True):
         return ""
@@ -2043,6 +2134,11 @@ def _answer_on_request(page, fields, handled, reply: str, job, attach, sess,
     """
     instruction = (_llm_instruction(reply) or "").strip()
     field = _field_for_question(fields, instruction)
+    if field is None and not instruction:
+        # A bare "llm:" with nothing to pin it to. Drafting against an empty
+        # question produces confident nonsense; ask for the question instead.
+        sess.log("Tell me which question: llm: <the question, or enough of it to find it>.")
+        return
     label = _field_label(field) if field is not None else instruction
     if attach is None or attach.invoke is None:
         sess.log("No model is available to draft an answer here.")

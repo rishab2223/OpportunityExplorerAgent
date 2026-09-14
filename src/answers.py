@@ -43,16 +43,23 @@ from src.apply import profile
 # "relevant" is deliberately absent: relevant experience is a different
 # question and gets its own entry in the bank rather than overwriting this one.
 _TOTAL_EXPERIENCE_WORDS = frozenset("""
-a and do enter experience for has have how in is many much number of overall
-combined cumulative please s specify the total what with work working
-professional industry year years yr yrs you your
+a an and any applicable as at be do date enter experience for full has have how
+if in including industry internship internships is it many much must number of
+only optional overall combined cumulative please required mandatory s specify
+the till time to total what with work working professional year years yr yrs
+you your
 """.split())
 _YEAR_WORDS = frozenset(("year", "years", "yr", "yrs"))
+# "Total experience till date" asks for the whole career without saying
+# "years"; a bare "Experience" does not say enough to be sure.
+_WHOLE_WORDS = frozenset(("total", "overall", "cumulative", "combined"))
 
 
 def _is_total_experience(text: str) -> bool:
     words = text.split()
-    if "experience" not in words or not _YEAR_WORDS.intersection(words):
+    if "experience" not in words:
+        return False
+    if not (_YEAR_WORDS.intersection(words) or _WHOLE_WORDS.intersection(words)):
         return False
     return all(word in _TOTAL_EXPERIENCE_WORDS for word in words)
 

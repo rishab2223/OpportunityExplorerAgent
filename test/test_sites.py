@@ -160,20 +160,27 @@ class WaitForPageTests(unittest.TestCase):
 
 
 class FakeDialog:
-    """A dialog element: what it is called is what tells the apply modal apart
-    from LinkedIn's messaging bubble, and whether it was stamped is what tells
-    one the click opened from one that was already there."""
+    """A dialog element: what it is CALLED is what tells the apply modal apart
+    from LinkedIn's messaging bubble - never what it contains, since the
+    messaging bubble contains recruiters' messages and those say "apply" in
+    nearly every one. Whether it was stamped is what tells one the click
+    opened from one that was already there."""
 
-    def __init__(self, label: str, visible: bool = True):
+    def __init__(self, label: str, visible: bool = True, body: str = ""):
         self.label = label
         self.visible = visible
+        self.body = body
         self.stamped = False
 
     def get_attribute(self, name: str) -> str:
         return self.label if name == "aria-label" else ""
 
     def inner_text(self) -> str:
-        return self.label
+        return f"{self.label} {self.body}"
+
+    def locator(self, selector: str):
+        # Headings repeat the label; the body is not a heading.
+        return FakeLocator([self.label]) if "h1" in selector else FakeLocator([])
 
 
 class FakeLocator:
@@ -185,6 +192,9 @@ class FakeLocator:
 
     def nth(self, index: int):
         return self.matches[index]
+
+    def all_inner_texts(self) -> list:
+        return [m if isinstance(m, str) else m.inner_text() for m in self.matches]
 
     def evaluate_all(self, script: str) -> None:
         for dialog in self.matches:
@@ -213,8 +223,8 @@ class FakePage:
         return FakeLocator(found)
 
     # --- things the page does, which the checks have to notice or ignore ---
-    def open_dialog(self, label: str) -> None:
-        self.dialogs.append(FakeDialog(label))
+    def open_dialog(self, label: str, body: str = "") -> None:
+        self.dialogs.append(FakeDialog(label, body=body))
 
     def reveal(self, label: str) -> None:
         """Show a dialog that was in the markup all along, hidden."""
@@ -386,6 +396,17 @@ class ClickApplyTests(unittest.TestCase):
         self.assertEqual(linkedin._flow_opened(page, before), "")
         page.reveal("Easy Apply")
         self.assertEqual(linkedin._flow_opened(page, before), "dialog")
+
+    def test_a_recruiter_message_mentioning_apply_is_not_an_apply_dialog(self) -> None:
+        # The messaging overlay mounts late and its body is recruiters'
+        # messages: "please apply through our portal and attach your resume".
+        # Reading the dialog's whole text called that the apply modal. Only
+        # what the dialog calls itself - its label and headings - is read.
+        page = FakePage()
+        before = linkedin._baseline(page)
+        page.open_dialog("Messaging",
+                         body="Hi Rishab, please apply on our portal and attach your resume.")
+        self.assertEqual(linkedin._flow_opened(page, before), "")
 
     def test_linkedins_own_tracking_parameters_are_not_a_navigation(self) -> None:
         # The job card rewrites its own query string as it hydrates. Comparing

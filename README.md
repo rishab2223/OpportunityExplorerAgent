@@ -315,10 +315,11 @@ Two limits: `redo` only reaches boxes still on the step in front of you (once yo
 | Type | What happens |
 | --- | --- |
 | `next` / `auto next` | click the wizard's Next for you; `auto next` stops it asking for the rest of the session |
-| `done` | the page is ready, or you submitted it yourself (`applied`, `submitted`, `finished`, `ok`, `continue`, `ready`) |
+| `done` | the page is ready, or you submitted it yourself (`applied`, `submitted`, `finished`, `ok`, `continue`, `ready`) — at a hand-off prompt only; at a question about one box, a reply is typed into that box |
+| `i submitted` | record the application as applied and end the session, **from any prompt** — the way out when a site asks for an emailed code after the form has gone in, where `done` would be typed into the code box (`i applied`, `mark applied`, `already applied`, or the **I submitted it** button) |
 | `skip` | leave the current field empty (`leave it`, `leave blank`, `ignore`, `no answer`) |
 | `yes` / `no` | confirm or refuse a click, checkbox or radio the agent proposes — short replies only, so a sentence containing "yes" is guidance, never consent |
-| `llm: <instruction>` | draft or redraft the answer to the question being asked; at the review prompt, `llm: <question>` answers an optional question left empty |
+| `llm: <instruction>` | draft or redraft the answer to the question being asked; at either review prompt ("This step is filled in" or "click Submit yourself"), `llm: <question>` drafts an answer to a question the form asked — into the box when it can be found, otherwise handed back for you to paste |
 | `redo` / `redo <words>` | reopen an answer you already gave, pre-filled, to edit or redraft |
 | `attach resume` / `cover letter` | start either attachment flow by hand (same as the buttons) |
 | `dump` / `dump 10` | save the page as it is (DOM, fields, screenshot) under `outputs/dom/` and keep waiting; `dump 10` waits ten seconds first so you can open a widget |
