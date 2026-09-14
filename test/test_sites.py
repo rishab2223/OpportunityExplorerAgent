@@ -405,7 +405,7 @@ class ClickApplyTests(unittest.TestCase):
         page = FakePage()
         before = linkedin._baseline(page)
         page.open_dialog("Messaging",
-                         body="Hi Rishab, please apply on our portal and attach your resume.")
+                         body="Hi, please apply on our portal and attach your resume.")
         self.assertEqual(linkedin._flow_opened(page, before), "")
 
     def test_linkedins_own_tracking_parameters_are_not_a_navigation(self) -> None:

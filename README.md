@@ -74,7 +74,7 @@ Every tailored `.tex` is given two packages before it compiles, if your source d
 \usepackage[T1]{fontenc}
 ```
 
-`fontenc` is what makes an underscore in an email address survive PDF text extraction — without it, a site that parses your uploaded resume reads `rishab_arora@…` as `rishabarora@…` and fills the wrong address into its own form. But `[T1]{fontenc}` **alone** switches the document to EC fonts, which ship only as bitmaps: the text stays correct and becomes visibly soft and grey, and the PDF carries Type 3 fonts. `lmodern` supplies the same shapes as real Type 1 vectors, so you get the encoding without the blur. Both lines, or neither — one on its own is the worst of the three.
+`fontenc` is what makes an underscore in an email address survive PDF text extraction — without it, a site that parses your uploaded resume reads `a_candidate@…` as `acandidate@…` and fills the wrong address into its own form. But `[T1]{fontenc}` **alone** switches the document to EC fonts, which ship only as bitmaps: the text stays correct and becomes visibly soft and grey, and the PDF carries Type 3 fonts. `lmodern` supplies the same shapes as real Type 1 vectors, so you get the encoding without the blur. Both lines, or neither — one on its own is the worst of the three.
 
 If you hand-write a `.tex`, put both in your preamble. The pair is added idempotently, so a source that already has them is left byte-identical.
 
