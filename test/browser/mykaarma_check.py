@@ -33,7 +33,7 @@ HERE = Path(__file__).resolve().parent
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 from src import history  # noqa: E402
-from src.apply import browser, cover_letter, profile, resolver  # noqa: E402
+from src.apply import browser, cover_letter, profile, resolver, worker  # noqa: E402
 
 TMP = tempfile.TemporaryDirectory()
 profile.PROFILE_PATH = Path(TMP.name) / "apply_profile.json"
@@ -45,6 +45,8 @@ PROFILE = {
     "github": "https://github.com/test",
     "portfolio": "",
     "college_tier": "Other/Not Listed",
+    "gpa_10_point": "7.4",
+    "gpa_5_point": "3.7",
     "degree_recognized_by": "UGC",
 }
 profile.PROFILE_PATH.write_text(json.dumps(PROFILE), encoding="utf-8")
@@ -142,6 +144,35 @@ with sync_playwright() as pw:
         got = resolver.resolve(college[0])
         check("the college box gets the university",
               bool(got) and got[0] == PROFILE["university"], repr(got))
+
+    print("\nthe upload tile is recognised as one, not just named right")
+    # wants_resume() folding accents was not enough: _upload_tile_kind has its
+    # own match, and a tile the sweep does not recognise is a resume that is
+    # never prepared and never attached, silently, on a required field.
+    tile = next((f for f in fields if "sum" in str(f.get("label") or "").lower()
+                 and f.get("tag") in ("button", "div")), None)
+    check("the Résumé tile is a resume tile",
+          tile is not None and worker._upload_tile_kind(tile) == "resume",
+          repr(worker._upload_tile_kind(tile)) if tile else "no tile")
+    letter_tile = next((f for f in fields if str(f.get("label")) == "Cover letter"
+                        and f.get("tag") in ("button", "div")), None)
+    check("and the letter tile is still the letter's",
+          letter_tile is not None and worker._upload_tile_kind(letter_tile) == "letter",
+          repr(worker._upload_tile_kind(letter_tile)) if letter_tile else "no tile")
+
+    print("\na GPA goes in only where the form insists")
+    for label, want in (("On a 10-point GPA/Grade Point scale, what best represents "
+                         "your academic performance?", "7.4"),
+                        ("On a 5-point GPA/Grade Point scale, what best represents "
+                         "your academic performance?", "3.7")):
+        asked = {"tag": "div", "role": "combobox", "haspopup": "listbox", "type": "",
+                 "label": label, "name": "", "elid": "x", "group": "", "accept": "",
+                 "value": "", "required": True}
+        got = resolver.resolve(asked)
+        check(f"required {label[5:12]} is answered", bool(got) and got[0] == want, repr(got))
+        spare = {**asked, "required": False}
+        check(f"optional {label[5:12]} is left alone",
+              resolver.resolve(spare) is None, repr(resolver.resolve(spare)))
 
     print("\nthe accrediting-body dropdown answers itself")
     degree = labelled(fields, "degree was awarded")

@@ -173,6 +173,12 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      re.compile(r"^(name of )?(university|college|school|institute|institution)$"
                 r"|\bname of (your |the )?(university|college|school|institut\w+)"
                 r"|\b(university|college|school|institut\w+) name\b")),
+    ("gpa_10_point", (),
+     re.compile(r"^gpa[_ ]?10([_ ]?point)?$|^cgpa[_ ]?10$"),
+     re.compile(r"\b10[\s-]*point\b")),
+    ("gpa_5_point", (),
+     re.compile(r"^gpa[_ ]?5([_ ]?point)?$|^cgpa[_ ]?5$"),
+     re.compile(r"\b5[\s-]*point\b")),
     ("degree_recognized_by", (),
      re.compile(r"^degree[_ ]?recognized[_ ]?by$"),
      # "My degree was awarded by an institution recognized by:" - a dropdown
@@ -793,6 +799,13 @@ _RADIO_GROUP_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+# Facts to offer only where the form insists on them. A GPA is a number that
+# says less about six years of work than the work does, and a form that leaves
+# it optional is a form that does not need it - so it goes in when it is
+# required and is left alone otherwise.
+_ONLY_WHEN_REQUIRED = {"gpa_10_point", "gpa_5_point"}
+
+
 def _radio_from_profile(field: dict[str, Any]) -> tuple[str, str] | None:
     """Tick one option of a known group, or nothing at all.
 
@@ -916,6 +929,8 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
         if key == "phone_country_code":
             value = _dial_code(data)
         if not value:
+            continue
+        if key in _ONLY_WHEN_REQUIRED and not field.get("required"):
             continue
         if key == "location" and "," in value and re.search(r"\bcity\b", norm_label):
             value = value.split(",")[0].strip()  # "Bangalore, India" -> City: Bangalore

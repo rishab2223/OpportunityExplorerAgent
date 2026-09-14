@@ -76,6 +76,11 @@ TEMPLATE: dict[str, Any] = {
     # tier list puts the college ("Tier 1", "Tier 2", "Other/Not Listed").
     "degree_recognized_by": "",
     "college_tier": "",
+    # Both scales, because a form asks for one or the other and converting on
+    # the spot is how a 7.4 becomes a 7.4 out of 5. Only ever filled where the
+    # form makes it mandatory - see _ONLY_WHEN_REQUIRED in resolver.py.
+    "gpa_10_point": "",
+    "gpa_5_point": "",
     # One line per school, separated by ";" or a newline, for the forms that
     # want the whole thing in one box:
     #   "Example University - Bachelors, Computer Science, 2015-2019"

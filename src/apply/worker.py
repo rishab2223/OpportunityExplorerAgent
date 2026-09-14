@@ -48,6 +48,23 @@ LETTER_COMMANDS = ("cover letter", "attach cover letter", "write cover letter")
 
 RESUME_FIELD_RE = resolver.RESUME_FIELD_RE
 
+
+def _resume_words(text: str) -> bool:
+    """Does this text name a resume? Accents folded first.
+
+    Rippling spells it "Résumé", and the upload tile went unrecognised for
+    exactly two acute accents - so no resume was prepared, nothing tried to
+    attach one, and nothing said so. Every match in this module goes through
+    here rather than touching the pattern, because folding at ten call sites
+    is how the eleventh gets missed.
+    """
+    return bool(RESUME_FIELD_RE.search(resolver.plain(text)))
+
+
+def _letter_words(text: str) -> bool:
+    """The same, for a cover letter ("Carta de presentación")."""
+    return bool(cover_letter.COVER_LETTER_RE.search(resolver.plain(text)))
+
 # Submit buttons are never clicked by code - the candidate always submits.
 SUBMIT_WORDS = ("submit", "apply now", "send application", "finish", "submit application")
 # Wizard navigation is not submission; the script clicks these freely.
@@ -1494,24 +1511,24 @@ def _upload_tile_kind(field: dict[str, Any], page_text: str = "") -> str:
     # Greenhouse-style tiles just say "Attach"; the section heading the
     # snapshot captured as group ("Resume/CV", "Cover Letter") names the noun.
     scope = f"{text} {field.get('group', '')}"
-    if cover_letter.COVER_LETTER_RE.search(scope):
+    if _letter_words(scope):
         return "letter"
-    if RESUME_FIELD_RE.search(scope):
+    if _resume_words(scope):
         return "resume"
     # The section title above the tile ("Resume/CV") is the next word on it.
     section = str(field.get("section") or "")
-    if cover_letter.COVER_LETTER_RE.search(section):
+    if _letter_words(section):
         return "letter"
-    if RESUME_FIELD_RE.search(section):
+    if _resume_words(section):
         return "resume"
     if generic and page_text:
         # No heading of its own: the step's text decides ("Autofill with
         # Resume", "Upload your resume"). The resume wins when both are named
         # - Workday's box says "upload your resume/CV ... a cover letter or
         # portfolio document ... as well", and the resume is the required one.
-        if RESUME_FIELD_RE.search(page_text):
+        if _resume_words(page_text):
             return "resume"
-        if cover_letter.COVER_LETTER_RE.search(page_text):
+        if _letter_words(page_text):
             return "letter"
     return ""
 
@@ -1674,7 +1691,7 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
     #     seen and the resume went unnoticed.
     if not attach.resume_attached:
         text = browser.page_text(page, 1500)
-        if DROPZONE_RE.search(text) and RESUME_FIELD_RE.search(text):
+        if DROPZONE_RE.search(text) and _resume_words(text):
             hidden = _lone_document_file_input(page)
             if hidden is not None:
                 path = attach.resume_path or attach.resume()
@@ -1792,13 +1809,13 @@ def _picker_wants(context: dict[str, Any]) -> str:
     until something is specific.
     """
     own = context.get("own") or ""
-    if cover_letter.COVER_LETTER_RE.search(own):
+    if _letter_words(own):
         return "letter"
-    if RESUME_FIELD_RE.search(own):
+    if _resume_words(own):
         return "resume"
     for text in context.get("around") or []:
-        letter = bool(cover_letter.COVER_LETTER_RE.search(text))
-        resume = bool(RESUME_FIELD_RE.search(text))
+        letter = bool(_letter_words(text))
+        resume = bool(_resume_words(text))
         if letter != resume:
             return "letter" if letter else "resume"
     return ""
@@ -4517,7 +4534,11 @@ def _search_terms(value: str) -> list[str]:
     """
     whole = (value or "").strip()
     runs = [m.group(0).strip() for m in _SEARCH_WORDS_RE.finditer(whole)]
-    runs = [r for r in runs if len(r) >= 3]
+    # Two letters count: a country code IS the searchable token in "+91 IN",
+    # which produced no terms at all and left the narrowing with nothing to
+    # try. A short term is only ever used to NARROW - the full value is still
+    # what has to match - so a useless one costs a look, not a wrong answer.
+    runs = [r for r in runs if len(r) >= 2]
     terms: list[str] = []
     for candidate in (runs[-1] if runs else "", runs[0] if runs else ""):
         low = candidate.lower()
@@ -4526,7 +4547,8 @@ def _search_terms(value: str) -> list[str]:
     return terms
 
 
-def _type_to_filter(page, locator, text: str, baseline: list[str] | None = None):
+def _type_to_filter(page, locator, text: str, baseline: list[str] | None = None,
+                    sess=None, label: str = "", prefix: str = ""):
     """Put `text` in the box and return the options it leaves showing.
 
     fill() sets the value and fires one input event, and a controlled
@@ -4549,14 +4571,27 @@ def _type_to_filter(page, locator, text: str, baseline: list[str] | None = None)
     # that ignored the fill shows either the list it had or nothing at all.
     if shown != baseline:
         return visible, shown
+    # Say so. This fallback failed silently on Rippling's country box and left
+    # nothing in the transcript to say whether it had even been tried, which
+    # is how a fix that did not work looked the same as one that did.
+    def note(what: str) -> None:
+        if sess is not None:
+            sess.log(f"{prefix}{_brief(label, LOG_LABEL) or 'dropdown'}: {what}")
+
+    note(f"the list did not move on '{_brief(text, 30)}'; typing it as keystrokes")
     try:
         locator.focus(timeout=3000)
         locator.press("Control+A")
         locator.press_sequentially(text, delay=15, timeout=15000)
-    except Exception:
+    except Exception as exc:
+        note(f"typing it failed ({_short(exc)}); the list is as it was")
         return visible, shown
     page.wait_for_timeout(120)
-    return _wait_for_options(page, locator)
+    visible, shown = _wait_for_options(page, locator)
+    if shown == baseline:
+        note("typing moved nothing either - this widget is not filtering on "
+             "what is typed at it")
+    return visible, shown
 
 
 def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
@@ -4588,7 +4623,7 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         was = locator.input_value(timeout=2000)   # to put back if we refuse
     except Exception:
         was = ""
-    visible, shown = _type_to_filter(page, locator, value, opening)
+    visible, shown = _type_to_filter(page, locator, value, opening, sess, label, prefix)
     index = _choose_option(shown, value, prefer)
     decisive = resolver.plain(prefer[0]) if prefer else ""
     if decisive and (index < 0 or decisive not in resolver.plain(shown[index])):
@@ -4616,7 +4651,7 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         # value, then match the FULL value against what comes back: the
         # fragment narrows, it never chooses.
         for term in _search_terms(value):
-            fresh_visible, fresh = _type_to_filter(page, locator, term, shown)
+            fresh_visible, fresh = _type_to_filter(page, locator, term, shown, sess, label, prefix)
             fresh_index = _choose_option(fresh, value, prefer)
             if fresh_index >= 0:
                 sess.log(

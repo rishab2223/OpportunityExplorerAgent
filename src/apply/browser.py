@@ -224,13 +224,16 @@ SNAPSHOT_JS = """
       // control within its enclosing blocks names it (it was "#11"). Boxes
       // only: a bare checkbox (the SMS opt-in) would take the heading of
       // the box above it.
-      // Eight, not five: Rippling wraps a combobox in six divs before the
+      // Twelve, not five: Rippling wraps a combobox in six divs before the
       // block holding its question, so eleven dropdowns on one form stayed
-      // "Select" and the model was asked to fill in boxes with no names. The
-      // loop stops at the first depth that finds anything, so a deeper cap
-      // only ever runs where the shallow search came back empty.
+      // "Select" and the model was asked to fill in boxes with no names. Its
+      // phone country box is deeper still - ten - and stayed "Search" through
+      // three sessions, so the transcript kept saying "Could not select
+      // Search" about a box the candidate could not identify. The loop stops
+      // at the first depth that finds anything, so a deeper cap only ever
+      // runs where the shallower search came back empty.
       let box = el.parentElement;
-      for (let depth = 0; box && depth < 8 && !label; depth++, box = box.parentElement) {
+      for (let depth = 0; box && depth < 12 && !label; depth++, box = box.parentElement) {
         const found = [];
         for (const h of box.querySelectorAll('label, legend, p, span, div, h1, h2, h3, h4, h5, h6')) {
           if (h === el || h.contains(el)) continue;
