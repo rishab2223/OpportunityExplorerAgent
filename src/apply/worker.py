@@ -4465,6 +4465,31 @@ def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess,
     sess.log(f"{prefix}Selected '{texts[index]}' for {_brief(label, LOG_LABEL)}")
 
 
+# The words in an option worth searching on, longest run last: a country
+# code reads "+91 IN - India", and a widget that searches on the country NAME
+# finds nothing when the whole label is typed at it.
+_SEARCH_WORDS_RE = re.compile(r"[A-Za-z][A-Za-z.'&-]+(?:\s+[A-Za-z][A-Za-z.'&-]+)*")
+
+
+def _search_terms(value: str) -> list[str]:
+    """Shorter things to type when a list does not filter on the whole value.
+
+    Never used to CHOOSE an option - only to narrow the list, which is then
+    matched against the full value as before. Typing "India" and taking
+    whatever comes back is how a phone code once became +246 (British Indian
+    Ocean Territory).
+    """
+    whole = (value or "").strip()
+    runs = [m.group(0).strip() for m in _SEARCH_WORDS_RE.finditer(whole)]
+    runs = [r for r in runs if len(r) >= 3]
+    terms: list[str] = []
+    for candidate in (runs[-1] if runs else "", runs[0] if runs else ""):
+        low = candidate.lower()
+        if candidate and low != whole.lower() and candidate not in terms:
+            terms.append(candidate)
+    return terms
+
+
 def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
                      prefer: list[str] | None = None) -> str:
     """Pick `value` in a custom dropdown (react-select on Greenhouse, the
@@ -4504,6 +4529,32 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
                 locator.fill(value, timeout=10000)   # back to the first list
                 visible, shown = _wait_for_options(page, locator)
                 index = _choose_option(shown, value, prefer)
+    narrowed_list = False
+    if index < 0:
+        # The widget did not filter on the whole value, so it is still showing
+        # everything it has - alphabetically. That is how "+91 IN - India" was
+        # never among the rows a 250-entry country list had rendered, and the
+        # candidate was asked to pick from "+247 AC - Ascension Island,
+        # +376 AD - Andorra, ...". Narrow the list with a word out of the
+        # value, then match the FULL value against what comes back: the
+        # fragment narrows, it never chooses.
+        for term in _search_terms(value):
+            try:
+                locator.fill(term, timeout=10000)
+            except Exception:
+                break
+            fresh_visible, fresh = _wait_for_options(page, locator)
+            fresh_index = _choose_option(fresh, value, prefer)
+            if fresh_index >= 0:
+                sess.log(
+                    f"{prefix}{_brief(label, LOG_LABEL)}: the list did not filter on "
+                    f"'{_brief(value, 40)}'; searched '{term}' instead."
+                )
+                visible, shown, index = fresh_visible, fresh, fresh_index
+                break
+            if fresh and len(fresh) < len(shown):
+                visible, shown = fresh_visible, fresh   # a shorter list to name
+                narrowed_list = True
     if index >= 0:
         try:
             visible.nth(index).click(timeout=2500)
@@ -4511,7 +4562,15 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
             return "picked"
         except Exception:
             pass
-    if len(shown) > 1:
+    if len(shown) > 1 or narrowed_list:
+        # Enter takes whatever the widget has highlighted, so it is never the
+        # way out of a narrowed list: one wrong row left standing would be
+        # committed as the answer.
+        if narrowed_list:
+            try:
+                locator.fill(value, timeout=10000)
+            except Exception:
+                pass
         raise ValueError(
             f"'{value}' matches none of the dropdown's options; pick one of: "
             + ", ".join(shown[:12])
