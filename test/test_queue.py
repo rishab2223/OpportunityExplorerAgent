@@ -162,3 +162,46 @@ class ParkCommandTests(unittest.TestCase):
         sess = self._session()
         sess.answer("Cyber Park, Gurgaon")
         self.assertEqual(sess.ask("Where do you work?"), "Cyber Park, Gurgaon")
+
+
+class SubmittedCommandTests(unittest.TestCase):
+    """Saying "I submitted it" must work at EVERY prompt.
+
+    A real session submitted an application, was then asked for the six-digit
+    code the site had emailed, and had nowhere to go: at a question about one
+    box every reply is typed into that box, so "done" would have gone into the
+    code field, and abort - the only other exit - records nothing. The
+    candidate had to abort and then press Mark applied on the row.
+    """
+
+    def _session(self) -> apply_session.ApplySession:
+        return apply_session.ApplySession("20260913T120000", "job1", "Company 1")
+
+    def test_the_phrases_end_the_session_as_applied(self) -> None:
+        for phrase in ("i submitted", "I submitted it", "i applied",
+                       "mark applied", "already applied", "submitted myself"):
+            sess = self._session()
+            sess.answer(phrase)
+            with self.assertRaises(apply_session.Submitted, msg=phrase):
+                sess.ask("Please enter the 6-digit confirmation code.")
+            # Not an abort: the application went through, and a queue carries on.
+            self.assertFalse(sess.aborted(), phrase)
+
+    def test_a_bare_word_is_still_a_normal_answer(self) -> None:
+        # "applied" and "submitted" on their own are plausible answers to a
+        # form field ("Application status?"), so they must stay answers here.
+        for word in ("applied", "submitted", "done"):
+            sess = self._session()
+            sess.answer(word)
+            self.assertEqual(sess.ask("Application status?"), word)
+
+    def test_a_sentence_containing_the_phrase_is_still_an_answer(self) -> None:
+        sess = self._session()
+        text = "I submitted a patch upstream and it was merged."
+        sess.answer(text)
+        self.assertEqual(sess.ask("Tell us about a contribution."), text)
+
+    def test_submitted_is_not_an_abort_or_a_park(self) -> None:
+        # run_session catches all three separately and finishes differently.
+        self.assertFalse(issubclass(apply_session.Submitted, apply_session.Aborted))
+        self.assertFalse(issubclass(apply_session.Submitted, apply_session.Parked))

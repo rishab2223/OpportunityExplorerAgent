@@ -702,6 +702,7 @@ function setChatEnabled(enabled) {
   $("send").disabled = !enabled;
   $("abort").disabled = !enabled;
   $("park").disabled = !enabled;
+  $("markapplied").disabled = !enabled;
   $("attachresume").disabled = !enabled;
   $("attachletter").disabled = !enabled;
   if (!enabled) showDraftTools("");
@@ -1223,6 +1224,14 @@ $("send").addEventListener("click", sendChat);
 $("abort").addEventListener("click", abortApply);
 act("startqueue").forEach((b) => b.addEventListener("click", startQueue));
 act("jobinfo").forEach((b) => b.addEventListener("click", toggleJobInfo));
+$("markapplied").addEventListener("click", () => {
+  if (!applySessionId) return;
+  // Same words the chat accepts, so there is one path through the worker.
+  postJSON(`/api/apply/${applySessionId}/chat`, { text: "i submitted" }).catch((err) =>
+    appendApply(`Could not record it: ${err.message}`)
+  );
+});
+
 $("park").addEventListener("click", () => {
   if (!applySessionId) return;
   fillChat("", "");

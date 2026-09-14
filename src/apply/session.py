@@ -11,6 +11,24 @@ TERMINAL_STATUSES = ("applied", "failed", "aborted", "closed", "parked")
 # "park" leaves THIS application for later and lets a queue move to the
 # next job; "abort" still stops everything. Nothing is recorded either way.
 PARK_COMMANDS = ("park", "park job", "park it", "later", "skip job")
+# "I finished it myself": records the application and ends the session, from
+# ANY prompt - including one the model raised about a single box, where the
+# reply is otherwise typed straight into that box.
+#
+# A real session submitted an application, was then asked for the six-digit
+# code the site had emailed, and had nowhere to go: "done" would have been
+# typed into the code box, and abort ends the session without recording the
+# application that had just been sent. The candidate had to abort and then
+# press Mark applied on the row.
+#
+# Every phrase here is more than one word on purpose. A bare "applied" or
+# "submitted" is a plausible answer to a form field ("Application status?"),
+# and these are not.
+APPLIED_COMMANDS = (
+    "i applied", "i submitted", "i have applied", "i have submitted",
+    "i submitted it", "i applied myself", "mark applied", "applied myself",
+    "submitted myself", "already applied", "already submitted",
+)
 # "dump" / "dump 10": save the page for offline inspection and keep waiting.
 # Not an answer, so it never reaches a field or the answer bank.
 DUMP_COMMAND_RE = re.compile(r"^(?:dump|dump page|dump dom|inspect)(?:\s+(\d{1,2}))?$", re.IGNORECASE)
@@ -28,6 +46,12 @@ class Parked(Exception):
     """The candidate left this application for later. Deliberately NOT a
     subclass of Aborted: a queue treats the two oppositely - park moves on
     to the next job, abort stops the queue."""
+
+
+class Submitted(Exception):
+    """The candidate finished and submitted the application themselves, and
+    said so at a prompt. Recorded as applied, exactly as if the page had
+    confirmed it - because the person who pressed the button says it did."""
 
 
 class PageChanged(Exception):
@@ -144,6 +168,9 @@ class ApplySession:
         if text.lower() in PARK_COMMANDS:
             self.emit("answer", text)
             raise Parked("parked by the candidate")
+        if text.lower() in APPLIED_COMMANDS:
+            self.emit("answer", text)
+            raise Submitted("submitted by you")
         # Long payloads (an edited resume source) would swamp the transcript.
         self.emit("answer", text if len(text) <= 400 else f"{text[:400]}... [{len(text)} chars]")
         return text

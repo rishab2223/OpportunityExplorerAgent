@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from src import answers
 from src.apply import (browser, catalogue, cover_letter, profile, resolver, salary,
                        session, sites)
-from src.apply.session import Aborted, ApplySession, Parked
+from src.apply.session import Aborted, ApplySession, Parked, Submitted
 from src.apply.sites import linkedin
 from src.config import AppConfig, EnvSettings
 from src.llm import describe_provider, make_invoker
@@ -980,6 +980,19 @@ def run_session(
         sess.log(f"Model calls this session: {llm_calls}")
         sess.log("Parked for later. Nothing was submitted or recorded.")
         sess.finish("parked", "parked for later")
+    except Submitted:
+        # The candidate says they submitted it. That is the same outcome as a
+        # page confirming it, and it can be said at ANY prompt - including one
+        # the model raised about a single box, where every other reply is
+        # typed into that box. A real session submitted an application, was
+        # then asked for the emailed six-digit code, and had no way to say so:
+        # abort was the only exit, and it records nothing.
+        sess.log(f"Model calls this session: {llm_calls}")
+        if not headless:
+            sess.log(f"Recorded as applied. The browser closes in {CLOSE_GRACE_SECONDS}s.")
+        sess.finish("applied", "submitted by you")
+        if not headless:
+            time.sleep(CLOSE_GRACE_SECONDS)
     except Exception as exc:
         message = str(exc)
         # The user closing the Chrome window means "stop" - treat it as an
