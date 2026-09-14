@@ -954,6 +954,26 @@ def run_session(
                 outcome, outcome_text = "applied", "confirmed by the page"
                 break
 
+            # A sign-in wall is not a form, and the model must never be asked
+            # to work one out. Given the password step on iCIMS - one box, no
+            # submit the snapshot could see, so the hand-off branch above was
+            # never reached - it came back with a question, and the agent
+            # asked the candidate to type their account password into the
+            # chat. That is the one thing this must never do.
+            if _is_sign_in_page(fields):
+                reply = _ask_watching(
+                    sess, holder, page, handled, fields,
+                    "This is the site's sign-in page, not the application form. "
+                    "Sign in yourself in this Chrome window - I never type or store "
+                    "a password - and I will pick the form up as soon as it appears.",
+                )
+                if reply is None:
+                    continue          # the page moved on; read it again
+                if reply.lower() in FINISHED_WORDS:
+                    continue
+                notes.append(f"guidance from the candidate: {reply}")
+                continue
+
             # 2) One batched model call for whatever the script could not do.
             sig = _page_sig(fields)
             if sig == last_llm_sig:
@@ -2687,6 +2707,23 @@ def _run_action(
             )
 
     if action.action == "ask" or _needs_user(action, field, label):
+        # A password, an OTP, a card number: never asked for, whatever the
+        # model proposes. It is typed into the site's own box by the person it
+        # belongs to. On the iCIMS sign-in step the model came back with an
+        # "ask", and the agent put "What is the password for your iCIMS
+        # account?" in the chat - a secret this has no business handling, on
+        # its way into a transcript.
+        if (field or {}).get("type", "").lower() == "password" or profile.is_secret(
+            f"{label} {(field or {}).get('name') or ''}"
+        ):
+            sess.log(
+                f"'{label}' wants a secret. Type it into the browser yourself - "
+                "I never ask for one, and nothing of the sort is stored."
+            )
+            notes.append(f"'{label}' is a secret the candidate types on the page")
+            if key:
+                handled.add(key)
+            return "skipped"
         # The user often fills fields on the page while the agent works through
         # its plan; never ask about a field that has an answer by now.
         current = _live_value(page, field)
