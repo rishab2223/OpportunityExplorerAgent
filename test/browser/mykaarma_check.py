@@ -1,0 +1,153 @@
+"""The myKaarma/Rippling form, rebuilt from the dump of Sep 14 2026.
+
+Four things went wrong on one page, and every one of them was a label the
+snapshot never reached even though the text was sitting in the DOM:
+
+  * Both uploads read "Drop or select (.doc / .docx / .pdf)" - the button's
+    own words - so resume and cover letter were indistinguishable and neither
+    was attached. Their real names are in the wrapping label's
+    aria-labelledby: "Résumé" and "Cover letter".
+  * Eleven dropdowns read "Select". The question sits six ancestors above the
+    combobox and the walk climbed five, so the model was handed a page of
+    boxes called Select and asked to fill them in.
+  * "Which college tier does your institute fall under?" was invisible: the
+    native radios are painted to zero size and the styled wrappers that
+    replace them were skipped for containing an input.
+  * "Website link" and "Share the name of your Institute/College:" matched no
+    rule, because both patterns are anchored to the bare word.
+
+Scratch profile, temp DB. Nothing real is read or written.
+"""
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+ROOT = Path(__file__).resolve().parents[2]
+WORK = Path(__file__).resolve().parent / "_work"   # generated, gitignored
+WORK.mkdir(exist_ok=True)
+sys.path.insert(0, str(ROOT))
+HERE = Path(__file__).resolve().parent
+
+from playwright.sync_api import sync_playwright  # noqa: E402
+
+from src import history  # noqa: E402
+from src.apply import browser, profile, resolver  # noqa: E402
+
+TMP = tempfile.TemporaryDirectory()
+profile.PROFILE_PATH = Path(TMP.name) / "apply_profile.json"
+history.DB_PATH = Path(TMP.name) / "history.db"
+PROFILE = {
+    "full_name": "Test User",
+    "email": "a_candidate@example.invalid",
+    "university": "Example University",
+    "github": "https://github.com/test",
+    "portfolio": "",
+    "college_tier": "Other/Not Listed",
+    "degree_recognized_by": "UGC",
+}
+profile.PROFILE_PATH.write_text(json.dumps(PROFILE), encoding="utf-8")
+
+failures = []
+
+
+def check(label, ok, detail=""):
+    print(f"  {'PASS' if ok else 'FAIL'}  {label}{(' - ' + detail) if detail else ''}")
+    if not ok:
+        failures.append(label)
+
+
+def labelled(fields, wanted):
+    return [f for f in fields if wanted.lower() in str(f.get("label") or "").lower()]
+
+
+with sync_playwright() as pw:
+    b = pw.chromium.launch()
+    page = b.new_page(viewport={"width": 1280, "height": 1400})
+    page.goto((HERE / "fixture_mykaarma.html").as_uri())
+    page.wait_for_timeout(250)
+
+    fields = browser.snapshot(page)
+    print(f"{len(fields)} fields:")
+    for f in fields:
+        print(f"  id={f['id']:>3} {f['tag']:7} type={str(f.get('type') or ''):9} "
+              f"req={str(f.get('required')):5} {str(f.get('label') or '')[:62]!r}")
+
+    print("\nthe two uploads are told apart")
+    drops = labelled(fields, "Drop or select")
+    check("neither is named by the button's own words", len(drops) == 0,
+          f"{len(drops)} still are")
+    check("one is the resume", len(labelled(fields, "sum")) == 1,
+          str([f.get("label") for f in labelled(fields, "sum")]))
+    check("one is the cover letter", len(labelled(fields, "Cover letter")) == 1,
+          str([f.get("label") for f in labelled(fields, "Cover letter")]))
+    check("and the screen-reader filler is not in the name",
+          not labelled(fields, "file selected"),
+          str([f.get("label") for f in labelled(fields, "file selected")]))
+
+    print("\nthe dropdowns are named by their question")
+    selects = [f for f in fields if str(f.get("label") or "").strip().lower()
+               in ("select", "select...")]
+    check("none is left reading 'Select'", not selects, f"{len(selects)} are")
+    check("the work-authorisation one found its question",
+          len(labelled(fields, "authorized to lawfully work")) == 1)
+    check("so did the degree one",
+          len(labelled(fields, "degree was awarded")) == 1)
+
+    print("\nthe college-tier radios exist at all")
+    tiers = [f for f in fields
+             if str(f.get("label") or "").strip() in ("Tier 1", "Tier 2", "Other/Not Listed")]
+    check("all three options are in the snapshot", len(tiers) == 3,
+          str([f.get("label") for f in tiers]))
+    check("they read as radios",
+          len(tiers) == 3 and all(f.get("type") == "radio" for f in tiers),
+          str([f.get("type") for f in tiers]))
+    check("and none is ticked yet",
+          len(tiers) == 3 and all(not f.get("checked") for f in tiers))
+    # Visible is not the same as answerable: three loose words with no
+    # question and no shared name are three things the model cannot place.
+    check("they share one radio group name",
+          len({str(f.get("name") or "") for f in tiers}) == 1
+          and all(f.get("name") for f in tiers),
+          str([f.get("name") for f in tiers]))
+    check("and the group carries the question",
+          all("college tier" in str(f.get("group") or "").lower() for f in tiers),
+          str([f.get("group") for f in tiers]))
+
+    print("\nthe two boxes a rule should have filled")
+    site = labelled(fields, "Website link")
+    college = labelled(fields, "Institute/College")
+    check("Website link is on the page", len(site) == 1)
+    check("Institute/College is on the page", len(college) == 1)
+    if site:
+        got = resolver.resolve(site[0])
+        check("website falls back to github when portfolio is empty",
+              bool(got) and got[0] == PROFILE["github"], repr(got))
+    if college:
+        got = resolver.resolve(college[0])
+        check("the college box gets the university",
+              bool(got) and got[0] == PROFILE["university"], repr(got))
+
+    print("\nticking a styled radio really ticks the native one")
+    if len(tiers) == 3:
+        other = next(f for f in tiers if f["label"] == "Other/Not Listed")
+        browser.locate(page, other["id"], str(other.get("elid") or "")).click()
+        page.wait_for_timeout(150)
+        check("the form now holds the chosen value",
+              page.evaluate("() => document.querySelector('input[value=\"Other/Not Listed\"]').checked") is True)
+        again = browser.snapshot(page)
+        picked = [f for f in again if str(f.get("label") or "") == "Other/Not Listed"]
+        check("and the snapshot sees it as ticked",
+              bool(picked) and picked[0].get("checked") is True,
+              str([(f.get("label"), f.get("checked")) for f in again
+                   if str(f.get("label") or "").startswith(("Tier", "Other"))]))
+
+    b.close()
+TMP.cleanup()
+
+print()
+if failures:
+    print("MYKAARMA CHECK FAILED:", ", ".join(failures))
+    sys.exit(1)
+print("MYKAARMA CHECK PASSED")

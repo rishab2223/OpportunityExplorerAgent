@@ -39,9 +39,9 @@ SNAPSHOT_JS = """
   // Period) was invisible to the scan, so those boxes were never filled.
   // Not [role=listbox] itself: that is the option container (and Workday's
   // list of chosen chips), which read as a phantom dropdown field.
-  const selector = 'input, textarea, select, button, [role=button], [role=checkbox], a[href],' +
-    ' [role=combobox], [aria-haspopup=listbox]';
-  const actionable = /apply|easy apply|continue|next|start|submit|review|sign in|log in|upload|attach|resume|\bcv\b|cover letter/i;
+  const selector = 'input, textarea, select, button, [role=button], [role=checkbox],' +
+    ' [role=radio], a[href], [role=combobox], [aria-haspopup=listbox]';
+  const actionable =/apply|easy apply|continue|next|start|submit|review|sign in|log in|upload|attach|resume|\bcv\b|cover letter/i;
   // An open modal (LinkedIn Easy Apply, ATS popups) owns the page: scope the
   // scan to it. Without this the background page's dozens of buttons filled
   // the MAX_FIELDS budget and the dialog's own fields - appended at the END
@@ -73,6 +73,28 @@ SNAPSHOT_JS = """
   // identity. Without this the second entry looked "already handled".
   const dupCounts = new Map();
   const FORM_TAGS = ['INPUT', 'TEXTAREA', 'SELECT'];
+  // aria-labelledby, minus the screen-reader scaffolding. Rippling points the
+  // resume upload at "file-input-10 field-8-label", which spells out as
+  // "Total 0 file selected Résumé" - the first of those is a hidden live
+  // region that names nothing. Keep the parts a person can actually see, and
+  // fall back to all of them when none is visible.
+  const labelledBy = node => {
+    const ids = (node.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean);
+    if (!ids.length) return '';
+    const home = node.getRootNode();
+    const parts = ids
+      .map(id => (home.getElementById ? home.getElementById(id) : document.getElementById(id)))
+      .filter(Boolean);
+    // Bigger than a pixel: the usual screen-reader-only recipe is a 1x1 box
+    // with everything clipped away, so "is it on screen at all" is not enough
+    // to tell the caption from the live region sitting next to it.
+    const seen = parts.filter(n => {
+      const box = n.getBoundingClientRect();
+      return box.width > 1 && box.height > 1 && n.getAttribute('aria-hidden') !== 'true';
+    });
+    return (seen.length ? seen : parts)
+      .map(n => (n.innerText || '').trim()).filter(Boolean).join(' ').trim();
+  };
   for (const el of deepAll(root, selector)) {
     const style = window.getComputedStyle(el);
     const rect = el.getBoundingClientRect();
@@ -89,8 +111,19 @@ SNAPSHOT_JS = """
     if (rect.width === 0 || rect.height === 0) continue;
     // A custom dropdown that WRAPS a real control is not the field; the
     // control inside it is (react-select puts role=combobox on its input).
+    // ...unless the control inside has been painted out of existence and this
+    // IS the thing on screen. Rippling's radios are a native input at zero
+    // size inside a styled [role=radio]: the input is skipped as invisible and
+    // the wrapper was skipped for containing one, so "Which college tier does
+    // your institute fall under?" - required - appeared nowhere at all.
+    const standsIn = ['radio', 'checkbox'].includes(
+      (el.getAttribute('role') || '').toLowerCase());
+    const inner = el.querySelector(
+      'input:not([type=hidden]):not(.cdk-visually-hidden), textarea, select');
+    const innerShows = inner && inner.getBoundingClientRect().width > 0 &&
+      inner.getBoundingClientRect().height > 0;
     if (!FORM_TAGS.includes(el.tagName) && el.tagName !== 'BUTTON' && el.tagName !== 'A' &&
-        el.querySelector('input:not([type=hidden]):not(.cdk-visually-hidden), textarea, select')) continue;
+        inner && !(standsIn && !innerShows)) continue;
     if (el.tagName === 'A') {
       // Pages carry hundreds of links; only apply/continue-style ones matter,
       // and MAX_FIELDS would drown in the rest.
@@ -101,7 +134,12 @@ SNAPSHOT_JS = """
     i += 1;
     el.setAttribute('data-oea-id', String(i));
     let label = '';
-    if (el.labels && el.labels.length) label = el.labels[0].innerText;
+    // Same trap as the wrapper below: the <label> around a Rippling upload
+    // says "Drop or select (.doc / .docx / .pdf)" and points elsewhere for
+    // the name. What it points at wins.
+    if (el.labels && el.labels.length) {
+      label = labelledBy(el.labels[0]) || el.labels[0].innerText;
+    }
     if (!label) label = el.getAttribute('aria-label') || '';
     if (!label && el.id) {
       // Inside a shadow root the label lives in that root, not the document.
@@ -110,7 +148,11 @@ SNAPSHOT_JS = """
     }
     if (!label) {
       const wrapper = el.closest('label');
-      if (wrapper) label = wrapper.innerText;
+      // The wrapper's own words can be the widget's, not the field's: both of
+      // Rippling's uploads sit in a label reading "Drop or select (.doc /
+      // .docx / .pdf)", so resume and cover letter were the same string and
+      // neither could be matched. What the label POINTS at is the caption.
+      if (wrapper) label = labelledBy(wrapper) || wrapper.innerText;
     }
     if (!label) {
       // Angular Material keeps the real label in <mat-label> inside the
@@ -127,13 +169,7 @@ SNAPSHOT_JS = """
       }
       if (own) label = own.innerText || '';
     }
-    if (!label && el.getAttribute('aria-labelledby')) {
-      const root = el.getRootNode();
-      label = el.getAttribute('aria-labelledby').split(/\\s+/).map(id => {
-        const n = root.getElementById ? root.getElementById(id) : document.getElementById(id);
-        return n ? (n.innerText || '') : '';
-      }).join(' ').trim();
-    }
+    if (!label) label = labelledBy(el);
     if (!label) {
       // A button's own words beat its name: iCIMS names its sign-in button
       // "action", so the candidate was told to click 'action' when the button
@@ -188,8 +224,13 @@ SNAPSHOT_JS = """
       // control within its enclosing blocks names it (it was "#11"). Boxes
       // only: a bare checkbox (the SMS opt-in) would take the heading of
       // the box above it.
+      // Eight, not five: Rippling wraps a combobox in six divs before the
+      // block holding its question, so eleven dropdowns on one form stayed
+      // "Select" and the model was asked to fill in boxes with no names. The
+      // loop stops at the first depth that finds anything, so a deeper cap
+      // only ever runs where the shallow search came back empty.
       let box = el.parentElement;
-      for (let depth = 0; box && depth < 5 && !label; depth++, box = box.parentElement) {
+      for (let depth = 0; box && depth < 8 && !label; depth++, box = box.parentElement) {
         const found = [];
         for (const h of box.querySelectorAll('label, legend, p, span, div, h1, h2, h3, h4, h5, h6')) {
           if (h === el || h.contains(el)) continue;
@@ -263,10 +304,33 @@ SNAPSHOT_JS = """
     // Radios and checkboxes are often labelled just "Yes"/"No"; the question
     // lives in a legend or the surrounding block, so carry that along.
     let group = '';
-    if (type === 'radio' || type === 'checkbox') {
+    // A stand-in div carries no type attribute, so the grouping below never
+    // ran for one and three college-tier options reached the model as three
+    // loose words with nothing to say what they answered.
+    const actsAs = type ||
+      (standsIn ? (el.getAttribute('role') || '').toLowerCase() : '');
+    if (actsAs === 'radio' || actsAs === 'checkbox') {
       const fs = el.closest('fieldset');
       const legend = fs ? fs.querySelector('legend') : null;
       if (legend) group = legend.innerText;
+      // A radiogroup is a fieldset by another name, and its question sits in
+      // a block above it rather than inside it.
+      if (!group) {
+        const rg = el.closest('[role=radiogroup], [role=group]');
+        let box = rg ? rg.parentElement : null;
+        for (let d = 0; box && d < 4 && !group; d++, box = box.parentElement) {
+          const before = [];
+          for (const h of box.querySelectorAll(
+              'p, label, legend, span, div, h1, h2, h3, h4, h5, h6')) {
+            if (h === el || h.contains(el) || h.contains(rg)) continue;
+            if (h.querySelector('input, select, textarea, button, [role=radio]')) continue;
+            if (!(h.compareDocumentPosition(rg) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+            const t = (h.innerText || '').trim();
+            if (t.length >= 3 && t.length <= 200) before.push(t);
+          }
+          if (before.length) group = before[before.length - 1];
+        }
+      }
       if (!group) {
         const block = el.closest('fieldset, div, li, p, tr, section');
         if (block) group = (block.innerText || '').split(String.fromCharCode(10))[0];
@@ -347,7 +411,11 @@ SNAPSHOT_JS = """
       ordinal: ordinal,
       group: (group || '').trim().slice(0, 160),
       label: (label || '').trim().slice(0, 200),
-      name: el.getAttribute('name') || el.getAttribute('formcontrolname') || '',
+      // The stand-in has no name; the control it hides has the one that ties
+      // the options of a group together.
+      name: el.getAttribute('name') ||
+        (standsIn && inner ? (inner.getAttribute('name') || '') : '') ||
+        el.getAttribute('formcontrolname') || '',
       accept: (el.getAttribute('accept') || '').slice(0, 120),
       elid: el.id || '',  // Greenhouse names its file inputs by id ("resume", "cover_letter")
       required: el.required === true || el.getAttribute('aria-required') === 'true',
@@ -364,8 +432,10 @@ SNAPSHOT_JS = """
     // give it the type the rest of the code already knows how to handle, and
     // read its state from aria-checked rather than a .checked property it
     // does not have.
+    // Not only a BUTTON: Rippling's radios are divs, and the div is what a
+    // person clicks. Whatever carries the role carries the state.
     const buttonRole = (el.getAttribute('role') || '').toLowerCase();
-    if (el.tagName === 'BUTTON' && (buttonRole === 'checkbox' || buttonRole === 'radio')) {
+    if (el.tagName !== 'INPUT' && (buttonRole === 'checkbox' || buttonRole === 'radio')) {
       item.type = buttonRole;
       item.checked = el.getAttribute('aria-checked') === 'true';
     }

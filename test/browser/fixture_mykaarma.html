@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Rippling application - myKaarma shapes</title>
+<style>
+  /* Rippling replaces the native radio with a styled div; the input keeps
+     the name and value but is painted out of existence. */
+  .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+  .native-radio { width:0; height:0; opacity:0; position:absolute; }
+  /* Rippling hides the real file input and shows the button instead. */
+  .hidden-input { width:0; height:0; opacity:0; position:absolute; }
+  .row { margin-bottom: 18px; }
+  .q { margin: 4px 0; }
+</style>
+</head>
+<body>
+<form>
+<h4>Application: Software Developer II</h4>
+
+<!-- Two uploads whose ONLY distinguishing text is in aria-labelledby. The
+     button's own words are identical on both, which is what the snapshot
+     was reading: "Drop or select (.doc / .docx / .pdf)" twice. -->
+<div class="row" data-testid="field">
+  <div><span id="field-8-label">Résumé</span><span>*</span></div>
+  <div>
+    <div data-testid="screen-reader-only" id="file-input-10" class="sr-only">Total 0 file selected</div>
+    <label data-testid="resume" tabindex="-1" aria-labelledby="file-input-10 field-8-label">
+      <input title="" accept=".doc,.docx,.pdf" data-testid="input-resume" type="File" class="hidden-input">
+      <button data-testid="test_button" type="button"><span><span>Drop or select (.doc / .docx / .pdf)</span></span></button>
+    </label>
+  </div>
+</div>
+
+<div class="row" data-testid="field">
+  <div><span id="field-63-label">Cover letter</span></div>
+  <div>
+    <div data-testid="screen-reader-only" id="file-input-65" class="sr-only">Total 0 file selected</div>
+    <label data-testid="cover_letter" tabindex="-1" aria-labelledby="file-input-65 field-63-label">
+      <input title="" accept=".doc,.docx,.pdf" data-testid="input-cover_letter" type="File" class="hidden-input">
+      <button data-testid="test_button" type="button"><span><span>Drop or select (.doc / .docx / .pdf)</span></span></button>
+    </label>
+  </div>
+</div>
+
+<!-- A plain box whose label the resolver's anchored pattern missed. -->
+<div class="row" data-testid="field">
+  <div><span id="field-59-label">Website link</span></div>
+  <input id="field-59" type="text" name="QOzKGAsOM23">
+</div>
+
+<div class="row" data-testid="field">
+  <div><span id="field-109-label">Share the name of your Institute/College:</span></div>
+  <input id="field-109" type="text" name="TA3M-Mc1ykf">
+</div>
+
+<!-- The question sits OUTSIDE the field wrapper, six ancestors up from the
+     combobox. The walk only climbed five, so all of these read "Select". -->
+<div class="row">
+  <div class="marginBottom--4"><p class="q">Are you authorized to lawfully work in the country where the job is available?</p></div>
+  <div data-testid="field">
+    <div><div data-testid="customQuestions.aaa"><div>
+      <div data-testid="select-controller"><div>
+        <div id="field-67" role="combobox" aria-autocomplete="list" aria-haspopup="listbox"
+             aria-expanded="false" aria-label="Select" aria-required="true" tabindex="0">Select</div>
+      </div></div>
+    </div></div></div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="marginBottom--4"><p class="q">My degree was awarded by an institution recognized by:</p></div>
+  <div data-testid="field">
+    <div><div data-testid="customQuestions.bbb"><div>
+      <div data-testid="select-controller"><div>
+        <div id="field-120" role="combobox" aria-autocomplete="list" aria-haspopup="listbox"
+             aria-expanded="false" aria-label="Select" aria-required="true" tabindex="0">Select</div>
+      </div></div>
+    </div></div></div>
+  </div>
+</div>
+
+<!-- A radiogroup nobody could see: the native inputs are painted to zero
+     size, and the styled wrappers were skipped for containing an input. -->
+<div class="row">
+  <div class="marginBottom--4"><p class="q">Which college tier does your institute fall under?</p></div>
+  <div id="field-113" role="radiogroup">
+    <div data-testid="radio-label-tier" data-value="Tier 1" role="radio" tabindex="0" aria-checked="false">
+      <div><div>
+        <input data-testid="radio-tier" aria-labelledby="label-tier-1" class="native-radio"
+               type="radio" value="Tier 1" name="tier">
+      </div></div>
+      <div id="label-tier-1"><div><div><p>Tier 1</p></div></div></div>
+    </div>
+    <div data-testid="radio-label-tier" data-value="Tier 2" role="radio" tabindex="-1" aria-checked="false">
+      <div><div>
+        <input data-testid="radio-tier" aria-labelledby="label-tier-2" class="native-radio"
+               type="radio" value="Tier 2" name="tier">
+      </div></div>
+      <div id="label-tier-2"><div><div><p>Tier 2</p></div></div></div>
+    </div>
+    <div data-testid="radio-label-tier" data-value="Other/Not Listed" role="radio" tabindex="-1" aria-checked="false">
+      <div><div>
+        <input data-testid="radio-tier" aria-labelledby="label-tier-3" class="native-radio"
+               type="radio" value="Other/Not Listed" name="tier">
+      </div></div>
+      <div id="label-tier-3"><div><div><p>Other/Not Listed</p></div></div></div>
+    </div>
+  </div>
+</div>
+
+<button type="submit">Apply</button>
+</form>
+
+<script>
+// The styled wrapper is what a person clicks; keep aria-checked honest so the
+// snapshot has something true to read.
+document.querySelectorAll('[role=radio]').forEach(w => {
+  w.addEventListener('click', () => {
+    document.querySelectorAll('[role=radio]').forEach(o => o.setAttribute('aria-checked', 'false'));
+    w.setAttribute('aria-checked', 'true');
+    const input = w.querySelector('input[type=radio]');
+    if (input) input.checked = true;
+  });
+});
+</script>
+</body>
+</html>

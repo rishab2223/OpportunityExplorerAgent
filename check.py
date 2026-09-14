@@ -33,6 +33,7 @@ GROUPS: dict[str, list[str]] = {
     "sites": [                        # one replica per ATS widget that bit us
         "phenom_check.py", "material_check.py", "radix_check.py",
         "rippling_check.py", "signin_check.py", "longlist_check.py",
+        "mykaarma_check.py",
         "combo_check.py", "radio_check.py", "rdp_probe.py", "work_check.py",
         "contact_check.py", "rewipe_check.py", "optional_check.py",
         "redo_check.py", "amount_check.py", "snapshot_check.py",

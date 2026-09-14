@@ -101,8 +101,10 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      re.compile(r"^github([_ ]?(url|profile))?$"),
      re.compile(r"\bgithub\b")),
     ("portfolio", ("url",),
-     re.compile(r"^(portfolio|website|personal[_ ]?site)$"),
-     re.compile(r"\b(portfolio|personal (web)?site)\b")),
+     re.compile(r"^(portfolio|website|personal[_ ]?site|website[_ ]?link)$"),
+     # "Website link" is the label on Rippling's box; the anchored pattern
+     # wanted the bare word and let it through empty.
+     re.compile(r"\b(portfolio|personal (web)?site)\b|^website( link| url)?$")),
     ("current_company", ("organization",),
      re.compile(r"^(company|current[_ ]?company|employer|organization)$"),
      re.compile(r"\b(current |present )(company|employer)\b")),
@@ -162,8 +164,12 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
     # of the model guessing "Computer Science", which is not an option.
     ("university", (),
      re.compile(r"^(university|college|school|institute|institution)$"),
+     # Not anchored to the bare word: Rippling asks "Share the name of your
+     # Institute/College:", which matched nothing, so a required box stayed
+     # empty with the answer sitting in the profile.
      re.compile(r"^(name of )?(university|college|school|institute|institution)$"
-                r"|\b(university|college) name\b")),
+                r"|\bname of (your |the )?(university|college|school|institut\w+)"
+                r"|\b(university|college|school|institut\w+) name\b")),
     ("highest_education_level", (),
      re.compile(r"^(degree|qualification|education[_ ]?level|highest[_ ]?qualification)$"),
      re.compile(r"\b(highest )?(degree|qualification)\b|\beducation level\b"
@@ -852,6 +858,12 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
                 value = " ".join(parts[1:])
         if not value and key == "country":
             value = _country(data)
+        if not value and key == "portfolio":
+            # A "Website link" box with no portfolio to put in it: GitHub is
+            # the site this candidate actually has, and leaving it blank was
+            # worse than the near-miss. LinkedIn has its own rule and its own
+            # box, so it is not a candidate here.
+            value = str(data.get("github") or "").strip()
         if key == "phone_country_code":
             value = _dial_code(data)
         if not value:
