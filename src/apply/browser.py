@@ -135,11 +135,54 @@ SNAPSHOT_JS = """
       }).join(' ').trim();
     }
     if (!label) {
-      label = el.getAttribute('placeholder') || el.getAttribute('name') || el.innerText || '';
+      // A button's own words beat its name: iCIMS names its sign-in button
+      // "action", so the candidate was told to click 'action' when the button
+      // in front of them said Continue. Only for things that CARRY text - a
+      // <select>'s innerText is every option it has, and a combobox div's is
+      // whatever is currently chosen.
+      const carries = el.tagName === 'BUTTON' || el.tagName === 'A' ||
+        el.getAttribute('role') === 'button' ||
+        /^(submit|button|reset)$/.test(type);
+      const ownText = carries ? (el.innerText || '').trim() : '';
+      label = el.getAttribute('placeholder') || ownText ||
+        el.getAttribute('name') || el.innerText || '';
     }
+    // A label that names the WIDGET instead of the question, or an id a
+    // framework generated, is worse than none: the text that IS the question
+    // sits just above the control, and the walk below finds it. Rippling
+    // ships aria-label="textbox" over a box whose own label says "Location",
+    // a dozen comboboxes all reading "Select", and inputs whose only label
+    // is a name like "VIQ1zlI-W69" - which is what the transcript then
+    // showed the candidate when it filled one in.
+    const JUNK_LABEL = /^(textbox|combobox|listbox|dropdown|select|select\\.\\.\\.|search|choose|choose\\.\\.\\.|option|options|none|value|input|field)$/i;
+    // "VIQ1zlI-W69", "KXTFUcVOuOm": one token, both cases, and either a
+    // digit or case flipping about all over it. "LinkedIn" flips twice and
+    // is a word, so it stays a label.
+    const generatedId = s => {
+      if (/\\s/.test(s) || s.length < 8) return false;
+      if (!/[a-z]/.test(s) || !/[A-Z]/.test(s)) return false;
+      if (/[0-9]/.test(s)) return true;
+      let flips = 0;
+      for (let n = 1; n < s.length; n++) {
+        const a = s[n - 1], c = s[n];
+        if (/[a-zA-Z]/.test(a) && /[a-zA-Z]/.test(c) &&
+            (a === a.toUpperCase()) !== (c === c.toUpperCase())) flips++;
+      }
+      return flips >= 4;
+    };
+    const weakLabel = !!label &&
+      (JUNK_LABEL.test(label.trim()) || generatedId(label.trim()));
+    const lastResort = weakLabel ? label : '';
+    if (weakLabel) label = '';
     const typeable = el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' ||
       (el.tagName === 'INPUT' && !/^(checkbox|radio|file|submit|button|image|reset)$/.test(type));
-    if (!label && typeable) {
+    // A combobox holds a value the same way a box does, so the question
+    // above it names it the same way. Without this the twelve Rippling
+    // dropdowns stayed "Select" and the transcript could not say which
+    // question had just been answered Yes.
+    const asksSomething = typeable || el.getAttribute('role') === 'combobox' ||
+      el.getAttribute('aria-haspopup') === 'listbox';
+    if (!label && asksSomething) {
       // Workday questionnaires: the question is a plain text block above
       // the box, tied to it by nothing - the nearest short text before the
       // control within its enclosing blocks names it (it was "#11"). Boxes
@@ -147,17 +190,48 @@ SNAPSHOT_JS = """
       // the box above it.
       let box = el.parentElement;
       for (let depth = 0; box && depth < 5 && !label; depth++, box = box.parentElement) {
-        let best = '';
+        const found = [];
         for (const h of box.querySelectorAll('label, legend, p, span, div, h1, h2, h3, h4, h5, h6')) {
           if (h === el || h.contains(el)) continue;
           if (h.querySelector('input, select, textarea, button')) continue;
+          // Text INSIDE another control is that control's value, not a label
+          // for this one: the span in a Radix dropdown button reads "Remote",
+          // which turned the notice-period box into "Remote Notice Period".
+          if (h.closest('button, [role=button], [role=combobox], select, textarea')) continue;
           if (!(h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
           const t = (h.innerText || '').trim();
-          if (t.length >= 3 && t.length <= 200) best = t;
+          if (t.length >= 3 && t.length <= 200) found.push(h);
         }
-        label = best;
+        // A wrapper repeats whatever is inside it; keep the innermost.
+        const own = found.filter(h => !found.some(o => o !== h && h.contains(o)));
+        // The question AND the hint under it. Rippling puts "What are your
+        // compensation expectations for this role?" in one block and "Feel
+        // free to provide a range..." in the next, so the nearest block on
+        // its own is the hint - which names no topic, so no salary estimate
+        // would run for a box that is plainly about pay.
+        //
+        // Only across an unbroken run, though: with any control in between,
+        // the earlier block belongs to THAT field, and joining them labelled
+        // a work-authorisation dropdown "Location Are you authorized to...".
+        // ...but only when the nearer block is plainly a continuation of the
+        // one before it: that one asked a question and this one does not.
+        // Joining whatever happened to come before put the section heading in
+        // front of half the labels on a Radix form.
+        const between = Array.from(
+          box.querySelectorAll('input, select, textarea, [role=combobox], button')
+        ).filter(c => c !== el && !c.contains(el));
+        const texts = own.map(h => (h.innerText || '').trim());
+        label = texts.length ? texts[texts.length - 1] : '';
+        const asked = texts.length > 1 ? texts[texts.length - 2] : '';
+        const split = own.length > 1 && between.some(c =>
+          (own[own.length - 2].compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+          (c.compareDocumentPosition(own[own.length - 1]) & Node.DOCUMENT_POSITION_FOLLOWING));
+        if (label && asked && !split && /\\?$/.test(asked) && !/[?:]$/.test(label)) {
+          label = asked + ' ' + label;
+        }
       }
     }
+    if (!label) label = lastResort;
     // A chip-style prompt (Workday's phone code, skills, "how did you hear")
     // keeps its choice as pills beside an EMPTY search box: the pills are
     // the value, or every pass would fill the box again.

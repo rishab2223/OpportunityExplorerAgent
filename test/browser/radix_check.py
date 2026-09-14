@@ -66,7 +66,13 @@ with sync_playwright() as pw:
     check("one control per question", len(fields), 6)
 
     print("\na combobox button is a dropdown, not a text box")
-    notice = next(f for f in fields if f.get("label") == "Select" and f["id"] == 2)
+    notice = next(f for f in fields if f["id"] == 2)
+    # It used to read "Select" - the widget's own word, which named nothing.
+    # The question above it does, and the dropdown's current value ("Remote",
+    # sitting inside the button before it) must not creep into it.
+    check("named by its question, not the widget", notice.get("label"), "Notice Period")
+    check("and not by the dropdown before it",
+          "Remote" in str(notice.get("label")), False)
     check("notice period is a listbox button", resolver.is_listbox_button(notice), True)
     worker._pick_listbox(page, browser.locate(page, notice["id"], ""), "Immediate",
                          "Notice Period", "", sess)

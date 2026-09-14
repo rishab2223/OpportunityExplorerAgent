@@ -874,12 +874,23 @@ def run_session(
                     # Watched: the user may open a form here (Easy Apply popup,
                     # an apply page in a new tab) instead of typing - the wait
                     # ends on its own and the new fields get filled.
-                    reply = _ask_watching(
-                        sess, holder, page, handled, fields,
-                        f"Everything I can fill is done. Review the form and click "
-                        f"'{_field_label(submit_field)}' yourself in the browser, then type "
-                        "done (or tell me what to fix).",
-                    )
+                    if _is_sign_in_page(fields):
+                        # Not the form: nothing here has been applied for, so
+                        # saying the filling is done would be a lie, and the
+                        # wait below ends by itself when the form loads.
+                        asking = (
+                            "This is the site's sign-in page, not the application form. "
+                            "Sign in yourself in this Chrome window - your e-mail is "
+                            "already in - and I will pick the form up as soon as it "
+                            "appears. The password is never typed or stored by me."
+                        )
+                    else:
+                        asking = (
+                            f"Everything I can fill is done. Review the form and click "
+                            f"'{_field_label(submit_field)}' yourself in the browser, then "
+                            "type done (or tell me what to fix)."
+                        )
+                    reply = _ask_watching(sess, holder, page, handled, fields, asking)
                     if reply is None:
                         if holder.get("changed") == "submitted":
                             # Asked the user to submit, and the page now says
@@ -1401,7 +1412,11 @@ def is_resume_field(field: dict[str, Any]) -> bool:
     return resolver.wants_resume(field)
 
 
-UPLOAD_VERB_RE = re.compile(r"\b(upload|attach|add)\b", re.IGNORECASE)
+# "Drop or select (.doc / .docx / .pdf)" is Rippling's entire upload button:
+# it names no noun and uses none of the usual verbs, so neither of its two
+# tiles was recognised and the form reached the hand-off with no resume and
+# no cover letter on it.
+UPLOAD_VERB_RE = re.compile(r"\b(upload|attach|add|drop)\b", re.IGNORECASE)
 # Generic picker buttons that name no noun at all: Workday's "Select file",
 # "Choose file", "Browse". What they attach comes from the page around them.
 PICKER_BUTTON_RE = re.compile(
@@ -1500,14 +1515,56 @@ def _sole_hidden_file_input(page, tile: dict[str, Any] | None = None):
         if inputs.count() == 1:
             return inputs.first
         if tile is not None and inputs.count() > 1:
+            # translate(): XPath compares the attribute byte for byte, and
+            # Rippling writes type="File", so the tile's own input was
+            # invisible to this and both uploads fell through to asking the
+            # candidate to click. The CSS selector above is case-insensitive
+            # in an HTML document and always did match.
             near = browser.locate(page, tile["id"], str(tile.get("elid") or "")).locator(
-                "xpath=ancestor::*[.//input[@type='file']][1]//input[@type='file']"
-            )
+                "xpath=ancestor::*[.//input[translate(@type,'FILE','file')='file']][1]"
+            ).locator("input[type=file]")
             if near.count() == 1:
                 return near.first
     except Exception:
         pass
     return None
+
+
+# "Continue with Google", "Sign in with Apple", "Log in with LinkedIn".
+SSO_BUTTON_RE = re.compile(
+    r"\b(continue|sign ?in|log ?in|register|sign ?up)\b\W{0,4}\bwith\b", re.IGNORECASE
+)
+
+
+def _is_sign_in_page(fields: list[dict[str, Any]]) -> bool:
+    """A sign-in wall rather than the application form.
+
+    iCIMS puts one in front of the form: a username box, a Continue, and a row
+    of "Continue with Google / Apple / LinkedIn / Facebook" buttons. Read as a
+    form it looks finished the moment the e-mail is typed, so the candidate was
+    told "Everything I can fill is done" about a page with no application on
+    it, and asked to click a button named 'action'.
+    """
+    providers = 0
+    password = False
+    fillable = 0
+    for field in fields:
+        if SSO_BUTTON_RE.search(f"{field.get('text') or ''} {_field_label(field)}"):
+            providers += 1
+            continue
+        kind = (field.get("type") or "").lower()
+        if kind == "file":
+            return False          # an upload slot means a real application
+        if kind == "password":
+            password = True
+        elif field.get("tag") in ("input", "textarea", "select") and kind not in (
+                "submit", "button", "reset", "hidden", "checkbox", "radio"):
+            fillable += 1
+    if not password and providers < 2:
+        return False
+    # A form that registers you inline has plenty else to fill; a sign-in page
+    # has the credentials and almost nothing else.
+    return fillable <= 3
 
 
 def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
