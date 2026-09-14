@@ -33,7 +33,7 @@ HERE = Path(__file__).resolve().parent
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 from src import history  # noqa: E402
-from src.apply import browser, profile, resolver  # noqa: E402
+from src.apply import browser, cover_letter, profile, resolver  # noqa: E402
 
 TMP = tempfile.TemporaryDirectory()
 profile.PROFILE_PATH = Path(TMP.name) / "apply_profile.json"
@@ -82,6 +82,20 @@ with sync_playwright() as pw:
           str([f.get("label") for f in labelled(fields, "sum")]))
     check("one is the cover letter", len(labelled(fields, "Cover letter")) == 1,
           str([f.get("label") for f in labelled(fields, "Cover letter")]))
+    # Having the right NAME is not the same as being recognised by it. The
+    # accents in "Résumé" meant the box was not a resume field at all, so no
+    # resume was ever prepared for it and nothing logged a failure - the
+    # upload simply never happened, quietly, on a required field.
+    resume_box = labelled(fields, "sum")
+    if resume_box:
+        check("and the resume box is recognised through its accents",
+              resolver.wants_resume(resume_box[0]),
+              repr(resume_box[0].get("label")))
+    letter_box = labelled(fields, "Cover letter")
+    if letter_box:
+        check("the letter box is still the letter's",
+              cover_letter.is_cover_letter(letter_box[0])
+              and not resolver.wants_resume(letter_box[0]))
     check("and the screen-reader filler is not in the name",
           not labelled(fields, "file selected"),
           str([f.get("label") for f in labelled(fields, "file selected")]))

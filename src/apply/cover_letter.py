@@ -9,6 +9,7 @@ then is it filled in or compiled to a small PDF and uploaded.
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -96,8 +97,15 @@ class CoverLetter(BaseModel):
 
 
 def is_cover_letter(field: dict[str, Any]) -> bool:
-    haystack = " ".join(
+    # Accents folded for the same reason the resume matcher folds them: a box
+    # labelled "Résumé" stopped being a resume field because of two acutes,
+    # and the letter is one "Carta de presentación" away from the same fate.
+    # (resolver.plain does this too, but resolver imports THIS module.)
+    raw = " ".join(
         str(field.get(key) or "") for key in ("label", "name", "elid", "group", "text")
+    )
+    haystack = "".join(
+        c for c in unicodedata.normalize("NFKD", raw) if not unicodedata.combining(c)
     )
     return bool(COVER_LETTER_RE.search(haystack))
 

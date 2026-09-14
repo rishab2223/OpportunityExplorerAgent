@@ -43,9 +43,12 @@ def wants_resume(field: dict[str, Any]) -> bool:
     accept = str(field.get("accept") or "").strip()
     if accept and not _DOC_ACCEPT_RE.search(accept):
         return False
-    haystack = " ".join(
+    # Folded, because Rippling spells it "Résumé": the accents meant the box
+    # was not a resume field at all, so no resume was ever prepared for it and
+    # nothing logged a failure - the upload simply never happened.
+    haystack = plain(" ".join(
         str(field.get(k) or "") for k in ("label", "name", "elid", "group", "text")
-    )
+    ))
     return bool(RESUME_FIELD_RE.search(haystack)) or not haystack.strip()
 
 # (profile key, autocomplete values, name pattern, label pattern)

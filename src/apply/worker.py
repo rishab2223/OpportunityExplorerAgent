@@ -4526,6 +4526,39 @@ def _search_terms(value: str) -> list[str]:
     return terms
 
 
+def _type_to_filter(page, locator, text: str, baseline: list[str] | None = None):
+    """Put `text` in the box and return the options it leaves showing.
+
+    fill() sets the value and fires one input event, and a controlled
+    component can accept that without ever running its filter. Rippling's
+    phone country list answered with the SAME seven rows - the window around
+    the current selection - however the whole value was typed at it, in two
+    separate sessions. When the list does not move, type it again as real
+    keystrokes, which is what such a box is listening for and the same reason
+    _retype exists.
+    """
+    if baseline is None:
+        _, baseline = _visible_options(page, locator)
+    try:
+        locator.fill(text, timeout=10000)
+    except Exception:
+        return _wait_for_options(page, locator)
+    visible, shown = _wait_for_options(page, locator)
+    # Unchanged means the box never ran its filter - and "unchanged" includes
+    # empty-to-empty, which is where the fallback is needed most: a widget
+    # that ignored the fill shows either the list it had or nothing at all.
+    if shown != baseline:
+        return visible, shown
+    try:
+        locator.focus(timeout=3000)
+        locator.press("Control+A")
+        locator.press_sequentially(text, delay=15, timeout=15000)
+    except Exception:
+        return visible, shown
+    page.wait_for_timeout(120)
+    return _wait_for_options(page, locator)
+
+
 def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
                      prefer: list[str] | None = None) -> str:
     """Pick `value` in a custom dropdown (react-select on Greenhouse, the
@@ -4546,8 +4579,16 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         locator.click(timeout=3000)
     except Exception:
         pass
-    locator.fill(value, timeout=10000)
-    visible, shown = _wait_for_options(page, locator)  # let the option list filter
+    # What the widget shows before anything is typed. A box that had rows and
+    # then has none has told us the value matches nothing; a box that never
+    # had any is one whose list this cannot read, which is a different thing
+    # and keeps the keyboard fallback at the end.
+    _, opening = _visible_options(page, locator)
+    try:
+        was = locator.input_value(timeout=2000)   # to put back if we refuse
+    except Exception:
+        was = ""
+    visible, shown = _type_to_filter(page, locator, value, opening)
     index = _choose_option(shown, value, prefer)
     decisive = resolver.plain(prefer[0]) if prefer else ""
     if decisive and (index < 0 or decisive not in resolver.plain(shown[index])):
@@ -4575,11 +4616,7 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         # value, then match the FULL value against what comes back: the
         # fragment narrows, it never chooses.
         for term in _search_terms(value):
-            try:
-                locator.fill(term, timeout=10000)
-            except Exception:
-                break
-            fresh_visible, fresh = _wait_for_options(page, locator)
+            fresh_visible, fresh = _type_to_filter(page, locator, term, shown)
             fresh_index = _choose_option(fresh, value, prefer)
             if fresh_index >= 0:
                 sess.log(
@@ -4598,15 +4635,20 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
             return "picked"
         except Exception:
             pass
-    if len(shown) > 1 or narrowed_list:
+    if len(shown) > 1 or narrowed_list or (opening and not shown):
         # Enter takes whatever the widget has highlighted, so it is never the
         # way out of a narrowed list: one wrong row left standing would be
-        # committed as the answer.
-        if narrowed_list:
-            try:
-                locator.fill(value, timeout=10000)
-            except Exception:
-                pass
+        # committed as the answer. Nor out of a list that HAD rows and now has
+        # none - that is the widget saying the value matches nothing, and
+        # pressing Enter at it logged "Selected '+999 XX - Atlantis'" for a
+        # country no list has ever contained.
+        # Put the box back the way it was found. A search term left sitting in
+        # it reads as the answer on a widget that shows its selection there -
+        # the refusal would look like a pick of "Atlantis".
+        try:
+            locator.fill(was, timeout=10000)
+        except Exception:
+            pass
         raise ValueError(
             f"'{value}' matches none of the dropdown's options; pick one of: "
             + ", ".join(shown[:12])
