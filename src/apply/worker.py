@@ -1596,10 +1596,13 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
                         return True
                     except Exception as exc:
                         sess.log(f"Direct upload behind '{label}' failed ({_short(exc)}); use the button.")
+                if _click_upload_tile(page, field, attach, sess, "resume", label):
+                    attach.resume_attached = True
+                    return True
                 _arm_file_chooser(page, attach, sess)
                 sess.log(
-                    f"Now click '{label}' in the form - the picker will be "
-                    "filled with your chosen resume."
+                    f"Clicking '{label}' opened no picker - click it in the form "
+                    "yourself and it will be filled with your chosen resume."
                 )
                 notes.append(f"'{label}' opens a file picker; the candidate clicks it")
             else:
@@ -1617,6 +1620,9 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
                     return True
                 except Exception as exc:
                     sess.log(f"Direct upload behind '{label}' failed ({_short(exc)}); use the button.")
+            if _click_upload_tile(page, field, attach, sess, "letter", label):
+                attach.letter_attached = True
+                return True
             _arm_file_chooser(page, attach, sess)
             sess.log(f"Click '{label}' - the picker gets the cover letter PDF.")
         else:
@@ -1692,11 +1698,16 @@ def _arm_file_chooser(page, attach, sess) -> None:
         return
 
     def handler(chooser) -> None:
-        try:
-            context = json.loads(chooser.element.evaluate(PICKER_CONTEXT_JS))
-        except Exception:
-            context = {}
-        wants = _picker_wants(context)
+        # A picker WE opened already knows what it is for: the tile we clicked
+        # named the slot. Everything below is for a picker the candidate opens
+        # by hand, where the only evidence is the page.
+        wants = str(getattr(page, "_oea_chooser_want", "") or "")
+        if not wants:
+            try:
+                context = json.loads(chooser.element.evaluate(PICKER_CONTEXT_JS))
+            except Exception:
+                context = {}
+            wants = _picker_wants(context)
         # Nothing on the page says which it is. One attachment prepared is
         # then the answer; both prepared and no way to choose is a question,
         # not a coin toss - the wrong file in a cover-letter slot is an
@@ -1722,6 +1733,7 @@ def _arm_file_chooser(page, attach, sess) -> None:
             return
         try:
             chooser.set_files(path)
+            page._oea_chooser_filled = wants
             sess.log(f"Supplied {Path(path).name} to the file picker (it asks for the {wants}).")
         except Exception as exc:
             sess.log(f"Could not fill the file picker: {_short(exc)}")
@@ -1735,6 +1747,51 @@ def _arm_file_chooser(page, attach, sess) -> None:
         )
     except Exception:
         pass
+
+
+# How long a click on an upload tile is given to produce its picker. The
+# chooser arrives over the same connection as everything else, so this is a
+# poll of short waits rather than one long block.
+PICKER_OPEN_WAIT_MS = 4000
+
+
+def _click_upload_tile(page, field, attach, sess, wants: str, label: str) -> bool:
+    """Click an upload button ourselves so the armed handler fills the picker
+    it opens. True when a file actually went in.
+
+    Jobvite's "Select" fronts a file input that its cover-letter button shares,
+    so `_sole_hidden_file_input` cannot tell the two apart and returns nothing -
+    and the candidate was then asked to click the button by hand on a form the
+    agent was otherwise filling for them. Clicking it is how a person does it,
+    and the picker never reaches the desktop: Playwright intercepts it.
+    """
+    _arm_file_chooser(page, attach, sess)
+    try:
+        page._oea_chooser_filled = ""
+        page._oea_chooser_want = wants
+    except Exception:
+        return False
+    try:
+        browser.click(
+            browser.locate(page, field["id"], str(field.get("elid") or "")),
+            timeout=5000,
+            fallback_timeout=2000,
+        )
+    except Exception as exc:
+        sess.log(f"Could not click '{label}' to open its picker: {_short(exc)}")
+        page._oea_chooser_want = ""
+        return False
+    waited = 0
+    while waited < PICKER_OPEN_WAIT_MS:
+        if getattr(page, "_oea_chooser_filled", ""):
+            page._oea_chooser_want = ""
+            return True
+        page.wait_for_timeout(100)
+        waited += 100
+    # The click opened no picker: it was not the button we took it for, so the
+    # candidate is told rather than left watching nothing happen.
+    page._oea_chooser_want = ""
+    return False
 
 
 def _manual_attachment(reply: str, attach, page, sess, notes) -> bool:

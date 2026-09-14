@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import types
 import tempfile
 import unittest
 import unittest.mock
@@ -2101,6 +2102,84 @@ class FilePickerChoiceTests(unittest.TestCase):
         # cover-letter slot is an application sent with two resumes.
         self.assertEqual(worker._picker_wants({"own": "", "around": ["Upload", "Apply"]}), "")
         self.assertEqual(worker._picker_wants({}), "")
+
+
+class _PickerPage:
+    """Enough of a Page for the file-chooser handler: it remembers what was
+    registered so the test can fire a chooser at it."""
+
+    def __init__(self) -> None:
+        self.handler = None
+
+    def on(self, event, fn):
+        self.handler = fn
+
+
+class _PickerChooser:
+    def __init__(self, own: str = "", around=()) -> None:
+        payload = json.dumps({"own": own, "around": list(around)})
+        self.element = types.SimpleNamespace(evaluate=lambda js: payload)
+        self.files = ""
+
+    def set_files(self, path):
+        self.files = path
+
+
+class _PickerAttach:
+    def __init__(self, resume="C:/tmp/Resume.pdf", letter="C:/tmp/Letter.pdf") -> None:
+        self.resume_path = resume
+        self.letter_pdf = letter
+
+
+class _PickerSess:
+    def __init__(self) -> None:
+        self.logs: list[str] = []
+
+    def log(self, text):
+        self.logs.append(text)
+
+
+class TileClickPickerTests(unittest.TestCase):
+    """A picker the agent itself opened knows which slot it is for.
+
+    Jobvite's buttons front no file input at all - each one builds its input
+    on the click and throws it away - so nothing can be set directly and the
+    candidate was told to click the button by hand on a form the agent was
+    otherwise filling. The agent clicks it now, and because it clicked a tile
+    it had already classified, the slot is known rather than inferred from an
+    anonymous input.
+    """
+
+    def _fire(self, page, chooser):
+        worker._arm_file_chooser(page, self.attach, self.sess)
+        page.handler(chooser)
+
+    def setUp(self) -> None:
+        self.attach = _PickerAttach()
+        self.sess = _PickerSess()
+
+    def test_a_tile_we_clicked_pins_the_slot(self) -> None:
+        page = _PickerPage()
+        page._oea_chooser_want = "letter"
+        # An input with nothing on it and nothing around it: inference would
+        # refuse, because both attachments are prepared.
+        self._fire(page, chooser := _PickerChooser())
+        self.assertEqual(chooser.files, self.attach.letter_pdf)
+        self.assertEqual(page._oea_chooser_filled, "letter")
+
+    def test_without_a_pin_the_page_still_decides(self) -> None:
+        page = _PickerPage()
+        self._fire(page, chooser := _PickerChooser(own="resume_upload"))
+        self.assertEqual(chooser.files, self.attach.resume_path)
+
+    def test_a_pin_never_outlives_the_click(self) -> None:
+        # The candidate opening a picker later must not inherit the last
+        # tile's slot - that is how a cover-letter box gets a resume.
+        page = _PickerPage()
+        page._oea_chooser_want = ""
+        self._fire(page, chooser := _PickerChooser(own="", around=["Upload", "Apply"]))
+        self.assertEqual(chooser.files, "")
+        self.assertTrue(any("nothing on it says" in s for s in self.sess.logs))
 
 
 class SiteSearchGuardTests(unittest.TestCase):
