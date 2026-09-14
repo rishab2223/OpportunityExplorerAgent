@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Dummy Apply - one box nobody can answer</title></head>
+<body>
+<h1>Apply to DummyCo - Software Engineer</h1>
+
+<!--
+  Everything here is answerable from the profile except one required box that
+  neither a rule nor the model has anything to say about. That single field
+  used to keep `unresolved` non-empty for the rest of the session, so the
+  hand-off ("review this and click Submit") was never reached and the
+  candidate got "I am not making progress on this form" instead - about a
+  form that was finished bar one box, and without being told which one.
+-->
+<form>
+  <label>Full name <input type="text" name="full_name" autocomplete="name"></label>
+  <label>Email address <input type="email" name="email" autocomplete="email"></label>
+  <label>Mobile phone number <input type="tel" name="phone" autocomplete="tel"></label>
+  <label>Which of our four values speaks to you, and why?*
+    <textarea name="values" rows="3" required></textarea></label>
+  <button type="button" onclick="document.title='SUBMITTED'">Submit application</button>
+</form>
+</body>
+</html>

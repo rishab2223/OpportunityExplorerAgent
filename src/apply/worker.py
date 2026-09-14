@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 from src import answers
 from src.apply import (browser, catalogue, cover_letter, profile, resolver, salary,
                        session, sites)
-from src.apply.session import Aborted, ApplySession, Parked, Submitted
+from src.apply.session import (TERMINAL_STATUSES, Aborted, ApplySession, Parked,
+                               Submitted)
 from src.apply.sites import linkedin
 from src.config import AppConfig, EnvSettings
 from src.llm import describe_provider, make_invoker
@@ -407,7 +408,13 @@ def start_apply(
                 resume_options=resume_options, out_dir=out_dir,
             )
         finally:
-            # Backstop for a crash that never reached finish().
+            # Backstop for a crash that never reached finish(). The status is
+            # still "running" at this point, and handing THAT on is how a
+            # crashed job was filed in the queue's done list as running and
+            # recorded against the row as running - a state nothing ever
+            # clears. A session whose thread has ended has failed.
+            if sess.status not in TERMINAL_STATUSES:
+                sess.status = "failed"
             if on_finish is not None and sess.on_outcome is not None:
                 sess.on_outcome = None
                 on_finish(sess.status)
@@ -486,6 +493,14 @@ def run_session(
         # question (an OTP in particular) every time the model eyes that field.
         session_answers: dict[str, str] = {}
         attempts: dict[str, int] = {}
+        # Required fields the model was shown and chose not to touch. An
+        # optional one is retired after a single pass; a required one used to
+        # be retired never, so one control the model could not work out kept
+        # `unresolved` non-empty for the rest of the session - and the hand-off
+        # that says "review this and click Continue" lives behind an empty
+        # `unresolved`. The candidate got "I am not making progress" instead,
+        # on a form that was finished bar one box.
+        ignored: dict[str, int] = {}
         handled: set[str] = set()
         written: dict[str, str] = {}   # what the sweep wrote where, for re-fills
         noop_streak = 0
@@ -554,9 +569,16 @@ def run_session(
                 # Watched like every other prompt: the candidate filled the
                 # box by hand and clicked Next, then submitted, and neither
                 # the new step nor the "Application Submitted" popup was seen.
+                # Name what it is stuck on. "I am not making progress" sent the
+                # candidate back to the browser to find the box themselves, on
+                # a form where every other field was already filled in.
+                stuck = [_brief(_field_label(f), 70)
+                         for f in _unresolved_fields(fields, handled)][:3]
                 reply = _ask_watching(
                     sess, holder, page, handled, fields,
-                    "I am not making progress on this form. Tell me what to do next, "
+                    "I am not making progress on this form"
+                    + (f" - still empty: {'; '.join(stuck)}. " if stuck else ". ")
+                    + "Tell me what to do next, "
                     "paste the form's URL to open it, type done if you already submitted "
                     "the application yourself, or type abort to stop.",
                 )
@@ -1087,8 +1109,22 @@ def run_session(
             adds_done = [] if (refused or (executed and busy_with_sections)) else pending_adds
             for field in unresolved + adds_done:
                 key = _field_key(field, _field_label(field))
-                if key and key not in acted_keys and not field.get("required"):
+                if not key or key in acted_keys:
+                    continue
+                if not field.get("required"):
                     handled.add(key)
+                    continue
+                # Required, and the model passed over it. A plan that hit the
+                # action cap simply ran out of room, so that one gets another
+                # round; a plan with room to spare had its chance and did not
+                # take it. Waiting for a second opinion it will never give is
+                # not an option either - the page has not changed, so the next
+                # pass short-circuits on last_llm_sig rather than asking again.
+                ignored[key] = ignored.get(key, 0) + 1
+                if len(plan.actions) < MAX_PLAN_ACTIONS or ignored[key] >= 2:
+                    handled.add(key)
+                    sess.log(f"FILL THIS ONE YOURSELF: {_brief(_field_label(field), 90)} "
+                             f"- required, and I could not work out what to put in it.")
 
             if executed:
                 noop_streak = 0

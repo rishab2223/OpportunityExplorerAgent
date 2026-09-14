@@ -17,6 +17,7 @@ nothing else.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import time
@@ -28,7 +29,7 @@ BROWSER = ROOT / "test" / "browser"
 # A group is a name for one kind of breakage, not one folder.
 GROUPS: dict[str, list[str]] = {
     "unit": [],                       # special-cased: unittest discover
-    "apply": ["run_e2e.py"],          # the whole apply loop, 19 scenarios
+    "apply": ["run_e2e.py"],          # the whole apply loop, 20 scenarios
     "sites": [                        # one replica per ATS widget that bit us
         "phenom_check.py", "material_check.py", "radix_check.py",
         "rippling_check.py", "signin_check.py", "longlist_check.py",
@@ -45,7 +46,8 @@ GROUPS: dict[str, list[str]] = {
         "boilerplate_repro.py", "llm_at_submit_repro.py",
     ],
     "queue": ["queue_e2e.py"],
-    "ui": ["ui_check.py", "chat_ui_check.py", "pager_check.py", "readme_check.py"],
+    "ui": ["ui_check.py", "queue_ui_check.py", "chat_ui_check.py",
+           "pager_check.py", "readme_check.py"],
 }
 
 # Which groups a changed file puts at risk. First match wins, so the specific
@@ -84,11 +86,14 @@ def groups_for(paths: list[str]) -> list[str]:
     return [g for g in GROUPS if g in wanted]
 
 
-def run_unit() -> tuple[bool, float]:
+def run_unit() -> tuple[bool, float, str]:
     started = time.time()
     done = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "test", "-q"],
                           cwd=ROOT, capture_output=True, text=True)
-    return done.returncode == 0, time.time() - started
+    # The count comes from the run, not from a number typed in here: a
+    # hardcoded one goes stale the first time a test is added.
+    found = re.search(r"Ran (\d+) test", done.stderr or "")
+    return done.returncode == 0, time.time() - started, f"{found.group(1) if found else '?'} unit tests"
 
 
 def run_script(name: str) -> tuple[bool, float, str]:
@@ -105,7 +110,7 @@ def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if "--list" in sys.argv:
         for name, scripts in GROUPS.items():
-            print(f"{name:9} {len(scripts) or 'the 479 unit tests'} "
+            print(f"{name:9} {len(scripts) or 'the whole unittest suite'} "
                   f"{'script(s)' if scripts else ''}")
             for script in scripts:
                 print(f"            {script}")
@@ -129,8 +134,8 @@ def main() -> int:
     for group in wanted:
         print(f"== {group} ==")
         if group == "unit":
-            ok, took = run_unit()
-            print(f"  {'PASS' if ok else 'FAIL'}  479 unit tests  {took:.1f}s")
+            ok, took, what = run_unit()
+            print(f"  {'PASS' if ok else 'FAIL'}  {what}  {took:.1f}s")
             if not ok:
                 failed.append("unit")
             continue

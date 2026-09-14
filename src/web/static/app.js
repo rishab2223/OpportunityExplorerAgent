@@ -788,6 +788,14 @@ async function loadJobs(stamp) {
     // another run would silently hide most of it.
     clearFilters();
     closeFilterMenu();
+    // So does a tick. They key on job_id alone, so ticks made on one run
+    // stayed in the set after switching to another: the button counted jobs
+    // that were no longer on the table, and Start queue would have sent them
+    // under the NEW run's stamp - the wrong folder for the resume.
+    if (currentStamp) {
+      queueTicks.clear();
+      refreshQueueButton();     // in case the run below fails to load
+    }
   }
   currentStamp = stamp;
   try {
@@ -1361,6 +1369,15 @@ async function followQueue() {
   appendApply("--- queue: the next job did not open; use Start apply on a row ---");
 }
 
+// A queue spends a few seconds between jobs with no session at all: the
+// browser is closing so the next one can open. A reload landing in that gap
+// found nothing to attach to, and resumeActiveApply is the only thing that
+// runs at boot - so the page stopped following while the queue went on
+// opening jobs it never showed. Resume the wait, not just the state.
+async function resumeQueueFollow() {
+  if (queueState.active && !applySessionId) await followQueue();
+}
+
 async function resumeActiveApply() {
   const state = await getJSON("/api/apply/status");
   // Only a LIVE session is re-armed; a finished one used to be replayed and
@@ -1465,4 +1482,8 @@ $("redraft").addEventListener("click", () => {
 });
 $("restoredraft").addEventListener("click", () => fillChat(lastDraft));
 
-loadStamps().then(resumeActiveRun).then(resumeActiveApply).then(loadQueue);
+loadStamps()
+  .then(resumeActiveRun)
+  .then(resumeActiveApply)
+  .then(loadQueue)
+  .then(resumeQueueFollow);

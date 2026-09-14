@@ -469,10 +469,23 @@ logs18 = "\n".join(s18.logs)
 assert "The page confirms the application was sent" in logs18, logs18
 assert any("Favourite editor" in q for q in s18.asked), s18.asked
 
+# One required box neither a rule nor the model can answer. It must not hold
+# the whole form open: the agent says which box it is, then hands off exactly
+# as it would on a form it finished - "review it and click Submit" - rather
+# than spinning to "I am not making progress" with nothing named.
+stuck_url = (E2E / "fixture_stuck_required.html").as_uri()
+s19 = run("stuck-required", stuck_url, ["done", "done"], expect_calls=1)
+logs19 = "\n".join(s19.logs)
+assert "FILL THIS ONE YOURSELF: Which of our four values speaks to you, and why?*" in logs19, logs19
+assert "Everything I can fill is done" in s19.asked[-1], s19.asked
+assert all("not making progress" not in q for q in s19.asked), s19.asked
+assert "[profile] Filled Full name = Test User" in logs19, logs19
+
 for name, sess in (("pass1", s1), ("pass2", s2), ("skip", s3), ("external", s4), ("modal", s5),
                    ("greenhouse", s6), ("popup", s7), ("late-modal", s8), ("shadow-modal", s9),
                    ("sent", s10), ("workday", s11), ("stuck-next", s12), ("experience", s13),
-                   ("apply-choice", s14), ("rerender", s15), ("typeahead", s16), ("confirm-next", s17), ("question-sent", s18)):
+                   ("apply-choice", s14), ("rerender", s15), ("typeahead", s16), ("confirm-next", s17), ("question-sent", s18),
+                   ("stuck-required", s19)):
     joined = "\n".join(sess.logs)
     assert "Clicked Submit application" not in joined, f"{name} clicked submit!"
 

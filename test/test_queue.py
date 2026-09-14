@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import time
 import unittest
 
 from src.apply import session as apply_session
+from src.apply import worker
 from src.web import applyqueue
 
 
@@ -242,3 +244,83 @@ class ParkWhileBusyTests(unittest.TestCase):
 
     def test_a_session_nobody_parked_is_not_parked(self) -> None:
         self.assertFalse(self._session().parked())
+
+
+class CrashedSessionTests(unittest.TestCase):
+    """A session whose thread dies before finish() ran.
+
+    start_apply's finally block is the backstop, and it used to hand on
+    sess.status untouched - which is still "running". That was recorded
+    against the row, and filed in the queue's done list, as a job that is
+    running: a state nothing ever clears and no retry ever gets past.
+    """
+
+    def setUp(self) -> None:
+        applyqueue.reset()
+        self.real_run = worker.run_session
+
+    def tearDown(self) -> None:
+        worker.run_session = self.real_run
+        applyqueue.reset()
+
+    def _crash(self, also_release=None):
+        """Run one session that dies inside run_session, and wait for the
+        thread's finally block to have run."""
+        outcomes: list[str] = []
+        released: list[str] = []
+
+        def blow_up(*args, **kwargs):
+            raise RuntimeError("chrome went away")
+
+        def note(status: str) -> None:
+            if also_release is not None:
+                also_release(status)
+            released.append(status)
+
+        worker.run_session = blow_up
+        sess = worker.start_apply(
+            "20260914T090000", {"job_id": "j1", "company": "X", "title": "Y"},
+            "resume", None, None,
+            on_finish=outcomes.append, on_released=note,
+        )
+        for _ in range(200):
+            if released:
+                break
+            time.sleep(0.02)
+        return sess, outcomes, released
+
+    def test_a_crash_is_reported_as_failed_not_as_running(self) -> None:
+        sess, outcomes, released = self._crash()
+        self.assertEqual(released, ["failed"])
+        self.assertEqual(outcomes, ["failed"])
+        self.assertEqual(sess.status, "failed")
+
+    def test_the_queue_files_a_crash_as_failed(self) -> None:
+        # release() puts anything that is not parked into done with the
+        # status it was handed, so "running" went straight into the list the
+        # dashboard shows as the queue's results. Drive the real chain:
+        # start_apply crashes, its finally calls applyqueue.release.
+        applyqueue.start([job(1)], lambda stamp, job_id: "label")
+        self._crash(also_release=applyqueue.release)
+        self.assertEqual([entry["status"] for entry in applyqueue.state()["done"]],
+                         ["failed"])
+
+    def test_a_clean_finish_keeps_its_own_status(self) -> None:
+        # The backstop must never overwrite a real outcome.
+        def applied(sess, *args, **kwargs):
+            sess.finish("applied")
+
+        worker.run_session = applied
+        outcomes: list[str] = []
+        released: list[str] = []
+        worker.start_apply(
+            "20260914T090000", {"job_id": "j2", "company": "X", "title": "Y"},
+            "resume", None, None,
+            on_finish=outcomes.append, on_released=released.append,
+        )
+        for _ in range(200):
+            if released:
+                break
+            time.sleep(0.02)
+        self.assertEqual(released, ["applied"])
+        self.assertEqual(outcomes, ["applied"])   # once, from finish() itself
