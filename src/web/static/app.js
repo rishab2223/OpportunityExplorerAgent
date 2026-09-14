@@ -419,6 +419,164 @@ function linksCell(job) {
   return links;
 }
 
+// ------------------------------------------------- column filters
+// Status and Source each carry a ▾ in their header. The values it offers are
+// the ones actually present in this run, with counts: a menu listing every
+// status the code can produce would mostly be a list of ways to empty the
+// table. Filters combine, so source=linkedin + status=pending is what is
+// left to apply to.
+//
+// The status shown in a cell is derived (history wins over the run's own
+// status), so statusKey is what both the cell and the filter read. Filtering
+// on job.status directly would offer values the table never displays.
+const jobFilters = { source: "", status: "" };
+
+function statusKey(job) {
+  const hist = job.history_status || "";
+  return hist === "applied" || hist === "closed" ? hist : job.status || "pending";
+}
+
+function statusLabel(job) {
+  return filterLabel("status", statusKey(job));
+}
+
+const FILTER_VALUE = {
+  source: (job) => job.source || "-",
+  status: statusKey,
+};
+
+function filterLabel(col, value) {
+  if (col !== "status") return value;
+  return value === "applied" ? "applied ✓" : value === "closed" ? "closed ✗" : value;
+}
+
+// `except` leaves one column's filter out. A menu counts the set the OTHER
+// filters have already left, so every count is the number of rows that
+// clicking it actually produces - and a value no longer reachable (no
+// linkedin job is still pending) is not offered at all. Counting the whole
+// run instead made the menu promise 150 and the click deliver 10.
+function matchesFilters(job, except) {
+  return Object.keys(jobFilters).every(
+    (col) => col === except || !jobFilters[col] || FILTER_VALUE[col](job) === jobFilters[col]
+  );
+}
+
+function activeFilters() {
+  return Object.keys(jobFilters)
+    .filter((col) => jobFilters[col])
+    .map((col) => `${col} ${filterLabel(col, jobFilters[col])}`);
+}
+
+function clearFilters() {
+  Object.keys(jobFilters).forEach((col) => (jobFilters[col] = ""));
+}
+
+// The button carries the value it is filtering to, not just a highlight: a
+// table showing 3 of 40 rows has to say why on the header doing it.
+function refreshFilterButtons(jobs) {
+  document.querySelectorAll("#jobs .colfilter").forEach((button) => {
+    const col = button.dataset.filter;
+    const value = jobFilters[col];
+    button.classList.toggle("on", !!value);
+    button.textContent = value ? `${filterLabel(col, value)} ▾` : "▾";
+    button.title = value
+      ? `Showing ${filterLabel(col, value)} only - click to change or clear`
+      : `Filter by ${col}`;
+    button.disabled = !jobs.length;
+  });
+}
+
+let openFilterMenu = null;
+
+function closeFilterMenu() {
+  if (!openFilterMenu) return;
+  openFilterMenu.menu.remove();
+  openFilterMenu.button.setAttribute("aria-expanded", "false");
+  openFilterMenu = null;
+}
+
+function openFilterMenu_(button, allJobs) {
+  const col = button.dataset.filter;
+  closeFilterMenu();
+
+  // Everything the other columns' filters leave: this column's own filter is
+  // ignored, or picking a different value for it would be impossible.
+  const jobs = allJobs.filter((job) => matchesFilters(job, col));
+  const counts = new Map();
+  jobs.forEach((job) => {
+    const value = FILTER_VALUE[col](job);
+    counts.set(value, (counts.get(value) || 0) + 1);
+  });
+
+  const menu = document.createElement("div");
+  menu.className = "colmenu";
+  menu.setAttribute("role", "listbox");
+
+  const option = (value, label, count) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "colmenu-item";
+    item.setAttribute("role", "option");
+    const chosen = jobFilters[col] === value;
+    item.setAttribute("aria-selected", String(chosen));
+    if (chosen) item.classList.add("current");
+    const name = document.createElement("span");
+    name.textContent = label;
+    const tally = document.createElement("span");
+    tally.className = "colmenu-count";
+    tally.textContent = count;
+    item.append(name, tally);
+    item.addEventListener("click", () => {
+      jobFilters[col] = value;
+      // Page 4 of the old list is not page 4 of the new one.
+      shortlistPage = 0;
+      closeFilterMenu();
+      renderJobs(lastJobs);
+    });
+    return item;
+  };
+
+  menu.appendChild(option("", "All", jobs.length));
+  // Alphabetical, not by count: the position of a value must not move
+  // between runs, or you end up reading the menu every time instead of
+  // reaching for where "applied" was last time.
+  [...counts.keys()].sort().forEach((value) => {
+    menu.appendChild(option(value, filterLabel(col, value), counts.get(value)));
+  });
+
+  document.body.appendChild(menu);
+  // Fixed, on the body: .tablewrap scrolls and would clip a menu positioned
+  // inside the sticky header it hangs from.
+  const box = button.getBoundingClientRect();
+  const left = Math.max(8, Math.min(box.left, window.innerWidth - menu.offsetWidth - 12));
+  menu.style.top = `${box.bottom + 4}px`;
+  menu.style.left = `${left}px`;
+  button.setAttribute("aria-expanded", "true");
+  openFilterMenu = { menu, button, col };
+  const first = menu.querySelector(".current") || menu.querySelector("button");
+  if (first) first.focus();
+}
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("#jobs .colfilter");
+  if (button) {
+    event.stopPropagation();
+    const col = button.dataset.filter;
+    if (openFilterMenu && openFilterMenu.col === col) closeFilterMenu();
+    else openFilterMenu_(button, lastJobs.filter((j) => !REFERRAL_STATES.includes(j.history_status)));
+    return;
+  }
+  if (!event.target.closest(".colmenu")) closeFilterMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeFilterMenu();
+});
+// The menu is positioned once, against where the button was. Anything that
+// moves the button underneath it closes the menu rather than leaving it
+// pointing somewhere else.
+window.addEventListener("scroll", closeFilterMenu, true);
+window.addEventListener("resize", closeFilterMenu);
+
 function renderJobs(jobs) {
   lastJobs = jobs;
   jobsById = {};
@@ -429,7 +587,9 @@ function renderJobs(jobs) {
   refreshQueueButton();
 }
 
-function renderShortlist(jobs) {
+function renderShortlist(allJobs) {
+  const jobs = allJobs.filter(matchesFilters);
+  refreshFilterButtons(allJobs);
   const body = document.querySelector("#jobs tbody");
   body.replaceChildren();
   const pages = Math.max(1, Math.ceil(jobs.length / PAGE_SIZE));
@@ -439,7 +599,11 @@ function renderShortlist(jobs) {
     renderJobs(lastJobs);
   });
   if (!jobs.length) {
-    emptyRow(body, 10, "No shortlisted jobs left in this run.");
+    // Say which of the two empties this is: a run with nothing left in it
+    // looks exactly like a filter that matches nothing.
+    emptyRow(body, 10, activeFilters().length
+      ? `No jobs match ${activeFilters().join(" and ")}. Pick All to clear it.`
+      : "No shortlisted jobs left in this run.");
     return;
   }
   const start = shortlistPage * PAGE_SIZE;
@@ -457,13 +621,7 @@ function renderShortlist(jobs) {
     add(job.source || "-", "source");
     row.appendChild(linksCell(job));
     row.appendChild(pathCell(job));
-    const hist = job.history_status || "";
-    const shownStatus =
-      hist === "applied" ? "applied ✓" : hist === "closed" ? "closed ✗" : job.status || "pending";
-    const statusCell = add(
-      shownStatus,
-      "status-" + (hist === "applied" || hist === "closed" ? hist : job.status || "pending")
-    );
+    const statusCell = add(statusLabel(job), "status-" + statusKey(job));
     if (job.history_how === "similar") {
       statusCell.title = "Matched by company+title from your history";
     }
@@ -592,7 +750,13 @@ async function decide(jobId, decision) {
 
 async function loadJobs(stamp) {
   if (!stamp) return;
-  if (stamp !== currentStamp) shortlistPage = referralPage = 0;
+  if (stamp !== currentStamp) {
+    shortlistPage = referralPage = 0;
+    // A filter belongs to the run it was set on: "pending" carried into
+    // another run would silently hide most of it.
+    clearFilters();
+    closeFilterMenu();
+  }
   currentStamp = stamp;
   try {
     const [run, data] = await Promise.all([

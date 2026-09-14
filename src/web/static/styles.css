@@ -718,3 +718,93 @@ a { color: var(--accent); }
   font-variant-numeric: tabular-nums;
   opacity: 0.65;
 }
+
+/* ---------------------------------------------- column filters
+   A ▾ in the Status and Source headers. The menu is fixed and lives on the
+   body, because .tablewrap scrolls and would clip anything positioned inside
+   the sticky header the button sits in. */
+.colhead {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.colfilter {
+  border: 1px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.colfilter:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.colfilter:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Filtering is a state the table is IN, so the header that caused it carries
+   the value, not just a highlight. */
+.colfilter.on {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+
+.colmenu {
+  position: fixed;
+  z-index: 50;
+  min-width: 172px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 20px rgba(16, 24, 40, 0.14);
+}
+
+.colmenu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.colmenu-item:hover,
+.colmenu-item:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.colmenu-item.current {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.colmenu-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
