@@ -49,7 +49,7 @@ openai:
 resume:
   # Local file only. .tex writes tailored resumes; .pdf writes JSON only.
   # Relative to the project root. Empty string fails load.
-  local_path: "localData/RishabResume.tex"
+  local_path: "localData/resume.tex"
 
 scrape:
   # Indeed `keyword` only. LinkedIn search text is the keywords= query in searchUrls below.

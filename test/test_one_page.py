@@ -9,13 +9,13 @@ from src.resume import one_page
 RESUME = r"""\documentclass[11pt]{article}
 \begin{document}
 \section*{Experience}
-\noindent \textbf{Cadence} \hfill 2020
+\noindent \textbf{Initech} \hfill 2020
 \begin{itemize}[nosep]
     \item Built things.
 \end{itemize}
 
 \section*{Education}
-\noindent \textbf{NorthCap University} \hfill 2019
+\noindent \textbf{Example University} \hfill 2019
 
 \section*{Certifications}
 \begin{itemize}[leftmargin=0.15in, nosep]

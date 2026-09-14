@@ -73,7 +73,7 @@ TEMPLATE: dict[str, Any] = {
     "graduation_year": "",
     # One line per school, separated by ";" or a newline, for the forms that
     # want the whole thing in one box:
-    #   "NorthCap University - Bachelors, Computer Science, 2015-2019"
+    #   "Example University - Bachelors, Computer Science, 2015-2019"
     "education": "",
     # Strongest first: a form capped at ten skills takes the first ten.
     "skills": "",

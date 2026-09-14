@@ -12,7 +12,7 @@ JOB = {
     "job_id": "indeed:abc123",
     "company": "Acme Corp",
     "title": "Senior Software Engineer",
-    "location": "Gurgaon, India",
+    "location": "Bangalore, India",
     "source": "indeed",
     "apply_url": "https://example.com/apply/1",
 }

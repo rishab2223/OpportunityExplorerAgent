@@ -12,7 +12,7 @@ DUMMY_PROFILE = {
     "full_name": "Test User",
     "email": "test@example.invalid",
     "phone": "+91 00000 00000",
-    "location": "Gurgaon",
+    "location": "Bangalore",
     "linkedin": "https://linkedin.com/in/test",
     "github": "",
     "notice_period": "60 days",
@@ -93,7 +93,7 @@ class ProfileMappingTests(ResolverTestCase):
 class CountryAndDialCodeTests(ResolverTestCase):
     def setUp(self) -> None:
         super().setUp()
-        self._write_profile({**DUMMY_PROFILE, "location": "Gurgaon, India"})
+        self._write_profile({**DUMMY_PROFILE, "location": "Bangalore, India"})
 
     def _write_profile(self, data: dict) -> None:
         profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
@@ -186,10 +186,10 @@ class MatchOptionTests(unittest.TestCase):
 class CityFromLocationTests(ResolverTestCase):
     def test_city_field_gets_only_the_city(self) -> None:
         profile.PROFILE_PATH.write_text(
-            json.dumps({**DUMMY_PROFILE, "location": "Gurgaon, India"}), encoding="utf-8"
+            json.dumps({**DUMMY_PROFILE, "location": "Bangalore, India"}), encoding="utf-8"
         )
-        self.assertEqual(resolver.resolve(field(label="City")), ("Gurgaon", "profile"))
-        self.assertEqual(resolver.resolve(field(label="Current Location")), ("Gurgaon, India", "profile"))
+        self.assertEqual(resolver.resolve(field(label="City")), ("Bangalore", "profile"))
+        self.assertEqual(resolver.resolve(field(label="Current Location")), ("Bangalore, India", "profile"))
 
 
 class PlaceholderSelectTests(ResolverTestCase):
@@ -205,7 +205,7 @@ class PlaceholderSelectTests(ResolverTestCase):
 
     def test_country_select_on_placeholder_is_filled(self) -> None:
         profile.PROFILE_PATH.write_text(
-            json.dumps({**DUMMY_PROFILE, "location": "Gurgaon, India"}), encoding="utf-8"
+            json.dumps({**DUMMY_PROFILE, "location": "Bangalore, India"}), encoding="utf-8"
         )
         opts = ["Select an option", "United States of America", "India"]
         got = resolver.resolve(field(tag="select", type="", label="Country",
@@ -214,16 +214,16 @@ class PlaceholderSelectTests(ResolverTestCase):
 
     def test_location_city_label(self) -> None:
         profile.PROFILE_PATH.write_text(
-            json.dumps({**DUMMY_PROFILE, "location": "Gurgaon, India"}), encoding="utf-8"
+            json.dumps({**DUMMY_PROFILE, "location": "Bangalore, India"}), encoding="utf-8"
         )
-        self.assertEqual(resolver.resolve(field(label="Location (city)")), ("Gurgaon", "profile"))
+        self.assertEqual(resolver.resolve(field(label="Location (city)")), ("Bangalore", "profile"))
 
 
 class ListboxButtonResolveTests(ResolverTestCase):
     def setUp(self) -> None:
         super().setUp()
         profile.PROFILE_PATH.write_text(json.dumps({
-            **DUMMY_PROFILE, "location": "Gurgaon, India", "phone": "9000000000",
+            **DUMMY_PROFILE, "location": "Bangalore, India", "phone": "9000000000",
             "phone_country_code": "+91"}), encoding="utf-8")
 
     def _button(self, label, text="Select One"):
@@ -257,30 +257,30 @@ class RepeatingSectionTests(ResolverTestCase):
         self.assertIsNone(resolver.resolve(field(label="Company", section="Employment History")))
         self.assertIsNone(resolver.resolve(field(label="Location", section="Education")))
         self.assertEqual(resolver.resolve(field(label="Location", section="Contact Information")),
-                         ("Gurgaon", "profile"))
-        self.assertEqual(resolver.resolve(field(label="Location")), ("Gurgaon", "profile"))
+                         ("Bangalore", "profile"))
+        self.assertEqual(resolver.resolve(field(label="Location")), ("Bangalore", "profile"))
 
 
 class AccentAndAddressTests(ResolverTestCase):
     def setUp(self) -> None:
         super().setUp()
         profile.PROFILE_PATH.write_text(json.dumps({
-            **DUMMY_PROFILE, "state": "Haryana", "address_line1": "12 Test Lane"}), encoding="utf-8")
+            **DUMMY_PROFILE, "state": "Karnataka", "address_line1": "12 Test Lane"}), encoding="utf-8")
 
     def test_accent_insensitive_option_match(self) -> None:
         # Workday spells the Indian states with macrons.
-        opts = ["Select One", "Bihār", "Haryāna", "Himāchal Pradesh"]
-        self.assertEqual(resolver.match_option("Haryana", opts), "Haryāna")
-        self.assertEqual(resolver.match_option("bihar", opts), "Bihār")
+        opts = ["Select One", "Odishā", "Karnātaka", "Himāchal Pradesh"]
+        self.assertEqual(resolver.match_option("Karnataka", opts), "Karnātaka")
+        self.assertEqual(resolver.match_option("odisha", opts), "Odishā")
         self.assertEqual(resolver.match_option("Pradesh", opts), "Himāchal Pradesh")
 
     def test_state_and_address_rules(self) -> None:
-        opts = ["Select One", "Haryāna", "Kerala"]
+        opts = ["Select One", "Karnātaka", "Kerala"]
         self.assertEqual(resolver.resolve(field(tag="select", type="", label="State*", options=opts)),
-                         ("Haryāna", "profile"))
+                         ("Karnātaka", "profile"))
         self.assertEqual(resolver.resolve(field(tag="button", type="button", haspopup="listbox",
                                                 label="State*", text="Select One")),
-                         ("Haryana", "profile"))
+                         ("Karnataka", "profile"))
         self.assertEqual(resolver.resolve(field(label="Address Line 1")), ("12 Test Lane", "profile"))
         self.assertIsNone(resolver.resolve(field(label="Address Line 2")))
 
@@ -330,7 +330,7 @@ class EducationEntryTests(ResolverTestCase):
     """The profile's education line answers the Education section, so the
     model never has to guess "Computer Science" at a 345-option dropdown."""
 
-    EDUCATION = "NorthCap University - Bachelors, Computer and Information Science, 2015-2019"
+    EDUCATION = "Example University - Bachelors, Computer and Information Science, 2015-2019"
 
     def setUp(self) -> None:
         super().setUp()
@@ -340,7 +340,7 @@ class EducationEntryTests(ResolverTestCase):
     def test_the_line_is_split_into_its_parts(self) -> None:
         entries = resolver.profile_education({"education": self.EDUCATION})
         self.assertEqual(entries, [{
-            "school": "NorthCap University", "degree": "Bachelors",
+            "school": "Example University", "degree": "Bachelors",
             "field": "Computer and Information Science", "start": "2015", "end": "2019",
         }])
         # Two entries, and a line with no years.
@@ -352,7 +352,7 @@ class EducationEntryTests(ResolverTestCase):
         self.assertEqual(resolver.profile_education({}), [])
 
     def test_an_education_entry_is_filled_from_the_profile(self) -> None:
-        for label, want in (("School or University*", "NorthCap University"),
+        for label, want in (("School or University*", "Example University"),
                             ("Degree*", "Bachelors"),
                             ("Field of study*", "Computer and Information Science")):
             got = resolver.resolve(field(label=label, section="Education :", ordinal=0))
@@ -654,8 +654,8 @@ class NoticePeriodUnitTests(ResolverTestCase):
         self.assertEqual(
             resolver.notice_for_field("30 days", field(label="Expected salary")), "30 days")
         self.assertEqual(
-            resolver.notice_for_field("Gurgaon", field(label="Notice Period (In days)*")),
-            "Gurgaon")
+            resolver.notice_for_field("Bangalore", field(label="Notice Period (In days)*")),
+            "Bangalore")
 
     def test_the_phrases_people_actually_write(self) -> None:
         for phrase in ("Immediate", "Immediate Joiner", "immediately", "ASAP",
@@ -805,7 +805,7 @@ class FormatHintTests(ResolverTestCase):
         super().setUp()
         profile.PROFILE_PATH.write_text(json.dumps({
             "graduation_year": "2019",
-            "education": "NorthCap University - Bachelors, Computer Science, 2015-2019",
+            "education": "Example University - Bachelors, Computer Science, 2015-2019",
             "notice_period": "Immediate Joiner",
             "total_experience_years": "6",
         }), encoding="utf-8")

@@ -55,11 +55,11 @@ Edit [`config/settings.yaml`](config/settings.yaml) for search terms, lookback, 
 
 ```yaml
 resume:
-  local_path: "localData/RishabResume.tex"   # or .pdf
+  local_path: "localData/resume.tex"   # or .pdf
 ```
 
 - Local disk only. Relative paths are resolved from the project root.
-- `localData/` is gitignored. Copy your Overleaf source to e.g. `localData/RishabResume.tex`.
+- `localData/` is gitignored. Copy your Overleaf source to e.g. `localData/resume.tex`.
 - **`.tex`:** scoring uses stripped text; enrich returns per-section replacement bodies that are validated and spliced into your original source, producing a `.tex` per shortlisted job whose untouched parts are byte-identical to yours. `shortlisted.json` still includes `resume_edit_suggestions` as a changelog of those edits (including a note when an edit was rejected).
 - **`.pdf` (and other non-tex):** scoring and markdown resume suggestions; dump is JSON only (no `.tex` files).
 - V1 is a single main `.tex` file (no `\input` graph).
@@ -238,7 +238,7 @@ Before the first run, fill in [`localData/apply_profile.json`](localData/) (crea
 | `notice_period`, `current_ctc`, `expected_ctc`, `willing_to_relocate` | the four questions almost every Indian application asks. `notice_period` takes a human phrase (`2 months`, `Immediate`) and is converted to whatever unit the box wants |
 | `skills` | a comma-separated list, written into a skills box or picked one by one in a skills typeahead. **Order matters**: a form that says "add up to 10 skills" gets the first ten, so put the strongest first |
 | `languages` | `English - Intermediate; Hindi - Fluent` — the agent clicks *Add Language* once per entry and fills the level selects |
-| `education` | `NorthCap University - Bachelors, Computer and Information Science, 2015-2019` — school, degree, field of study and years, so a 345-entry "Field of study" dropdown is answered without the model guessing |
+| `education` | `Example University - Bachelors, Computer and Information Science, 2015-2019` — school, degree, field of study and years, so a 345-entry "Field of study" dropdown is answered without the model guessing |
 | `jobs` | your employment history, **most recent first**, filled by the script so the model is never asked to re-read it off your resume. Each entry takes `title`, `company`, `location`, `start` and `end` as `MM/YYYY` (`"current": true` instead of an end date for the job you are in), and a `description`. The description is static: when you want it tailored for one application, type `redo` at the review prompt and edit it there. An entry the site has already filled with an employer this list does not name is left completely alone rather than overwritten |
 | `university`, `highest_education_level`, `field_of_study`, `graduation_year` | the same facts as `education`, split out so a standalone degree dropdown or a "Field of study" list is answered without the model guessing |
 | `city`, `postal_code`, `date_of_birth` | address and identity boxes a form asks for separately from `location` |
@@ -305,7 +305,7 @@ Two ways out of a job, and they are opposites:
 | **Park** (or type `park`, `later`, `skip job`) | leaves **this** application and starts the next queued job. Nothing is submitted and nothing is recorded: the job keeps its place in the shortlist and stays eligible for a later scrape. This is the answer to a form that wants an employer account and an email verification before it will show you anything |
 | **Abort** (or type `abort`, `stop`, `cancel`) | stops this application **and the rest of the queue** |
 
-Only the bare word counts, so an answer that happens to contain it — a location of "Cyber Park, Gurgaon" — is typed into the form like any other text.
+Only the bare word counts, so an answer that happens to contain it — a location of "Cyber Park, Bangalore" — is typed into the form like any other text.
 
 A job that simply fails does not stop the queue; only `abort` does. Neither does a browser that would not open, but that one stops it deliberately: whatever blocked this job almost certainly blocks the next, so the queue halts and says why rather than churning through the rest. **Clear queued** drops what is still waiting without touching the job in front of you.
 

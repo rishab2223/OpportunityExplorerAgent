@@ -269,7 +269,7 @@ _TO_LABEL_RE = re.compile(r"\b(to|end|graduat\w*|completion)\b", re.IGNORECASE)
 
 def profile_education(data: dict[str, Any]) -> list[dict[str, str]]:
     """The profile's education line(s) split into their parts:
-    'NorthCap University - Bachelors, Computer and Information Science,
+    'Example University - Bachelors, Computer and Information Science,
     2015-2019' -> school, degree, field, start, end. Several entries are
     separated by ';'."""
     out: list[dict[str, str]] = []
@@ -857,7 +857,7 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
         if not value:
             continue
         if key == "location" and "," in value and re.search(r"\bcity\b", norm_label):
-            value = value.split(",")[0].strip()  # "Gurgaon, India" -> City: Gurgaon
+            value = value.split(",")[0].strip()  # "Bangalore, India" -> City: Bangalore
         matched = (
             (autocomplete and autocomplete in ac_values)
             or (name and name_re.fullmatch(name) is not None)
@@ -895,8 +895,8 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
 
 
 # Renamed cities: a form's list may carry either name, and searching one
-# never shows the other ("Gurgaon" found only Gurgaon in Bihar; the Haryana
-# city is listed as Gurugram).
+# never shows the other: searching the old name turns up a same-named city
+# in another state, while the one that is wanted is listed under the new.
 _CITY_ALIASES = {
     "gurgaon": "gurugram", "bangalore": "bengaluru", "bombay": "mumbai", "madras": "chennai",
     "calcutta": "kolkata", "poona": "pune", "trivandrum": "thiruvananthapuram",
@@ -907,8 +907,8 @@ _CITY_ALIASES.update({v: k for k, v in list(_CITY_ALIASES.items())})
 
 
 def city_aliases(value: str) -> list[str]:
-    """Other spellings of the city that starts `value` ("Gurgaon, India" ->
-    ["Gurugram, India"]); empty for anything not in the table."""
+    """Other spellings of the city that starts `value` ("Bangalore, India" ->
+    ["Bengaluru, India"]); empty for anything not in the table."""
     text = (value or "").strip()
     if not text:
         return []
@@ -920,7 +920,7 @@ def city_aliases(value: str) -> list[str]:
 
 
 def plain(text: str) -> str:
-    """Lower-case, accents stripped: Workday lists "Haryāna" and "Bihār";
+    """Lower-case, accents stripped: Workday lists "Karnātaka" and "Odishā";
     nobody types the macron."""
     decomposed = unicodedata.normalize("NFKD", text or "")
     return "".join(c for c in decomposed if not unicodedata.combining(c)).strip().lower()

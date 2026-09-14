@@ -160,8 +160,8 @@ class ParkCommandTests(unittest.TestCase):
         # Only the bare word ends the job: "park" inside a real answer (a
         # location, say) must reach the field like any other text.
         sess = self._session()
-        sess.answer("Cyber Park, Gurgaon")
-        self.assertEqual(sess.ask("Where do you work?"), "Cyber Park, Gurgaon")
+        sess.answer("Cyber Park, Bangalore")
+        self.assertEqual(sess.ask("Where do you work?"), "Cyber Park, Bangalore")
 
 
 class SubmittedCommandTests(unittest.TestCase):

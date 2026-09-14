@@ -1,9 +1,9 @@
 """Salary answers in the unit the form asks for, plus a market estimate for
 "expected salary" questions.
 
-Forms disagree on units: "Current CTC (in LPA)" wants 25, "Annual salary
-(INR)" wants 2500000, "Monthly salary" wants 208333. The answer bank stores
-one canonical form ("25 LPA"); parse_annual_inr() reads any of the common
+Forms disagree on units: "Current CTC (in LPA)" wants 18, "Annual salary
+(INR)" wants 1800000, "Monthly salary" wants 150000. The answer bank stores
+one canonical form ("18 LPA"); parse_annual_inr() reads any of the common
 spellings back into rupees per year and for_field() writes it out the way
 the field asks. A field that names no unit gets the stored text verbatim.
 
@@ -59,8 +59,8 @@ def is_salary_field(field: dict[str, Any]) -> bool:
 
 
 def parse_annual_inr(text: str, unit_hint: str = "") -> int | None:
-    """Rupees per year from '25 LPA', '25 lakhs', '2.5 cr', '2500000',
-    '25,00,000', '80k per month' - or None when there is no number.
+    """Rupees per year from '18 LPA', '18 lakhs', '2.5 cr', '1800000',
+    '18,00,000', '80k per month' - or None when there is no number.
 
     A bare number is read by unit_hint ('lpa', 'monthly', 'annual') when the
     field named one; otherwise anything under 500 is taken as lakhs (no annual
@@ -83,7 +83,7 @@ def parse_annual_inr(text: str, unit_hint: str = "") -> int | None:
     elif unit in ("k", "thousand"):
         amount = number * 1000
     elif number < 500 or (unit_hint == "lpa" and number < 10_000):
-        # "25" is lakhs; so is "2500" in an LPA box - but "2500000" typed
+        # "18" is lakhs; so is "1800" in an LPA box - but "1800000" typed
         # into that same box is rupees, whatever the label says.
         amount = number * LAKH
     elif unit_hint == "monthly":
@@ -115,7 +115,7 @@ def _trim(value: float) -> str:
 
 
 def canonical(annual_inr: int) -> str:
-    """The bank's form: '25 LPA', '25.5 LPA'."""
+    """The bank's form: '18 LPA', '25.5 LPA'."""
     return f"{_trim(annual_inr / LAKH)} LPA"
 
 
@@ -141,7 +141,7 @@ def for_field(value: str, field: dict[str, Any]) -> str:
     if not is_salary_field(field):
         return value
     if len(re.findall(r"\d+(?:[.,]\d+)*", value or "")) != 1:
-        return value  # a range ("25-30 LPA") or prose: the writer's words stand
+        return value  # a range ("25-22 LPA") or prose: the writer's words stand
     annual = parse_annual_inr(value, unit_of(field))
     if annual is None:
         return value
@@ -150,7 +150,7 @@ def for_field(value: str, field: dict[str, Any]) -> str:
 
 def normalize(value: str, field: dict[str, Any]) -> str:
     """What to STORE for a salary answer: '25' typed into an '(in LPA)' field
-    becomes '25 LPA', so a plain 'Current salary' field elsewhere reads it
+    becomes '18 LPA', so a plain 'Current salary' field elsewhere reads it
     right. Non-salary or unparsable answers are stored as typed."""
     if not is_salary_field(field):
         return value

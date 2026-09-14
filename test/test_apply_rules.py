@@ -170,7 +170,7 @@ class LlmChatTests(unittest.TestCase):
         self.assertEqual(_llm_instruction("llm:"), "")  # bare prefix = fresh draft
         # Normal answers are never mistaken for instructions.
         self.assertIsNone(_llm_instruction("6 years of backend work"))
-        self.assertIsNone(_llm_instruction("AI-ML engineer at Cadence"))
+        self.assertIsNone(_llm_instruction("AI-ML engineer at Initech"))
         self.assertIsNone(_llm_instruction("skip"))
 
     def test_draft_answer_carries_context_and_instruction(self) -> None:
@@ -433,7 +433,7 @@ class SalaryEstimateTests(TempDbTestCase):
         from unittest import mock
 
         self.profile = {"full_name": "Test User", "total_experience_years": "6",
-                        "current_ctc": "25 LPA", "expected_ctc": "30 LPA"}
+                        "current_ctc": "18 LPA", "expected_ctc": "22 LPA"}
         patcher = mock.patch("src.apply.profile.load_profile", side_effect=lambda: dict(self.profile))
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -455,7 +455,7 @@ class SalaryEstimateTests(TempDbTestCase):
                 raise RuntimeError("model down")
             self.assertIs(schema, salary.SalaryEstimate)
             self.assertIn("YEARS OF EXPERIENCE: 6", user)
-            self.assertNotIn("25 LPA", user)   # current pay never reaches the model
+            self.assertNotIn("18 LPA", user)   # current pay never reaches the model
             self.assertNotIn("Test User", user)
             return schema(low_lpa=low, high_lpa=high, basis="mid-size adtech, senior band")
 
@@ -479,13 +479,13 @@ class SalaryEstimateTests(TempDbTestCase):
         self.assertIn("Sr. Backend Engineer at X Co", joined)
 
     def test_never_below_current_pay(self) -> None:
-        attach = self._attach(18, 22)
-        # Band midpoint 20 < current 25: the saved expectation (30) is quoted.
-        self.assertEqual(attach.expected_salary(), 3_000_000)
+        attach = self._attach(12, 16)
+        # Band midpoint 14 < current 18: the saved expectation (22) is quoted.
+        self.assertEqual(attach.expected_salary(), 2_200_000)
         joined = "\n".join(attach.logs)
-        self.assertIn("model band 18 LPA-22 LPA, midpoint 20 LPA", joined)
-        self.assertIn("below your current 25 LPA", joined)
-        self.assertIn("Quoting 30 LPA", joined)
+        self.assertIn("model band 12 LPA-16 LPA, midpoint 14 LPA", joined)
+        self.assertIn("below your current 18 LPA", joined)
+        self.assertIn("Quoting 22 LPA", joined)
         self.assertIn("your saved expected pay", joined)
 
     def test_failed_call_falls_back_silently(self) -> None:
@@ -502,7 +502,7 @@ class SalaryEstimateTests(TempDbTestCase):
         self.assertTrue(_wants_salary_estimate({**base, "tag": "textarea", "type": "", "label": "Desired salary"}))
         self.assertFalse(_wants_salary_estimate({**base, "label": "Current CTC (in LPA)"}))
         self.assertFalse(_wants_salary_estimate({**base, "label": "Expected CTC", "value": "30"}))
-        self.assertFalse(_wants_salary_estimate({**base, "tag": "select", "label": "Expected CTC", "options": ["20-30 LPA"]}))
+        self.assertFalse(_wants_salary_estimate({**base, "tag": "select", "label": "Expected CTC", "options": ["20-22 LPA"]}))
 
     def test_sweep_writes_the_estimate_in_the_fields_unit(self) -> None:
         from unittest import mock
@@ -685,21 +685,21 @@ class RadixControlTests(TempDbTestCase):
 
 
 class AmountFormattingTests(TempDbTestCase):
-    """A box that inserts its own commas turned "30,00,000" into three crore."""
+    """A box that inserts its own commas turned "22,00,000" into three crore."""
 
     FIELD = {"tag": "input", "type": "text", "label": "Enter expected salary"}
 
     def test_grouping_separators_are_stripped_before_typing(self) -> None:
         from src.apply import worker
 
-        self.assertEqual(worker._plain_amount("30,00,000", self.FIELD), "3000000")
-        self.assertEqual(worker._plain_amount("25, 00, 000", self.FIELD), "2500000")
-        self.assertEqual(worker._plain_amount("3000000", self.FIELD), "3000000")
+        self.assertEqual(worker._plain_amount("22,00,000", self.FIELD), "2200000")
+        self.assertEqual(worker._plain_amount("18, 00, 000", self.FIELD), "1800000")
+        self.assertEqual(worker._plain_amount("2200000", self.FIELD), "2200000")
 
     def test_prose_is_left_for_the_amount_retry_to_handle(self) -> None:
         from src.apply import worker
 
-        for text in ("25-30 LPA", "35 LPA", "negotiable"):
+        for text in ("25-22 LPA", "35 LPA", "negotiable"):
             self.assertEqual(worker._plain_amount(text, self.FIELD), text)
 
     def test_a_box_that_is_not_about_money_is_untouched(self) -> None:
@@ -969,7 +969,7 @@ class AccentOptionTests(unittest.TestCase):
     def test_choose_option_ignores_accents(self) -> None:
         from src.apply.worker import _choose_option
 
-        self.assertEqual(_choose_option(["Select One", "Bihār", "Haryāna"], "Haryana"), 2)
+        self.assertEqual(_choose_option(["Select One", "Odishā", "Karnātaka"], "Karnataka"), 2)
         self.assertEqual(_choose_option(["Bachelors", "Masters"], "Bachelor's Degree"), 0)   # degree family
 
 
@@ -1003,13 +1003,13 @@ class RefillTests(TempDbTestCase):
                 pass
 
         with mock.patch.object(worker, "_apply_value", side_effect=fake_apply), \
-                mock.patch("src.apply.resolver.resolve", return_value=("Gurgaon", "profile")):
+                mock.patch("src.apply.resolver.resolve", return_value=("Bangalore", "profile")):
             worker._sweep(None, [field], handled, attempts, {}, "", Sess(), written=written)
             # Still handled and still holding a value: nothing happens.
-            worker._sweep(None, [dict(field, value="Gurgaon")], handled, attempts, {}, "", Sess(), written=written)
+            worker._sweep(None, [dict(field, value="Bangalore")], handled, attempts, {}, "", Sess(), written=written)
             # Blank again after a re-render: written once more, marked as such.
             worker._sweep(None, [field], handled, attempts, {}, "", Sess(), written=written)
-        self.assertEqual(calls, [("City*", "Gurgaon", "profile"), ("City*", "Gurgaon", "again")])
+        self.assertEqual(calls, [("City*", "Bangalore", "profile"), ("City*", "Bangalore", "again")])
         # A skipped (never written) handled field is left alone.
         calls.clear()
         with mock.patch.object(worker, "_apply_value", side_effect=fake_apply):
@@ -1044,7 +1044,7 @@ class HoldsTests(unittest.TestCase):
         self.assertTrue(_holds(Loc("+91 90000 00000"), "+91 9000000000"))
         self.assertFalse(_holds(Loc(""), "9000000000"))
         self.assertFalse(_holds(Loc("9000000001"), "9000000000"))
-        self.assertFalse(_holds(Loc("Gurgaon"), "Noida"))
+        self.assertFalse(_holds(Loc("Bangalore"), "Noida"))
 
 
 class ModelNextRefusedTests(TempDbTestCase):
@@ -1137,13 +1137,13 @@ class TieBreakerTests(unittest.TestCase):
     def test_profile_state_picks_between_same_start_options(self) -> None:
         from src.apply.worker import _choose_option
 
-        opts = ["Gurgaon, Bihar, India", "Gurgaon, Haryana, India", "Gurugram, Haryana, India"]
-        self.assertEqual(_choose_option(opts, "Gurgaon"), 0)                       # no context: first
-        self.assertEqual(_choose_option(opts, "Gurgaon", ["Haryana", "India"]), 1)
-        self.assertEqual(_choose_option(opts, "Gurgaon", ["Kerala"]), 0)          # nothing to prefer: first
+        opts = ["Bangalore, Odisha, India", "Bangalore, Karnataka, India", "Bengaluru, Karnataka, India"]
+        self.assertEqual(_choose_option(opts, "Bangalore"), 0)                       # no context: first
+        self.assertEqual(_choose_option(opts, "Bangalore", ["Karnataka", "India"]), 1)
+        self.assertEqual(_choose_option(opts, "Bangalore", ["Kerala"]), 0)          # nothing to prefer: first
         # Containment with several hits stays ambiguous unless a preference decides.
-        self.assertEqual(_choose_option(["A Haryana B", "C Haryana D"], "Haryana"), -1)
-        self.assertEqual(_choose_option(["A Haryana B", "C Haryana D"], "Haryana", ["C"]), 1)
+        self.assertEqual(_choose_option(["A Karnataka B", "C Karnataka D"], "Karnataka"), -1)
+        self.assertEqual(_choose_option(["A Karnataka B", "C Karnataka D"], "Karnataka", ["C"]), 1)
 
 
 class PickedNotRefilledTests(TempDbTestCase):
@@ -1171,14 +1171,14 @@ class CityAliasTests(unittest.TestCase):
         from src.apply import resolver
         from src.apply.worker import _choose_option
 
-        self.assertEqual(resolver.city_aliases("Gurgaon, India"), ["Gurugram, India"])
+        self.assertEqual(resolver.city_aliases("Bangalore, India"), ["Bengaluru, India"])
         self.assertEqual(resolver.city_aliases("Bengaluru"), ["Bangalore"])
         self.assertEqual(resolver.city_aliases("Pune, India"), ["Poona, India"])
         self.assertEqual(resolver.city_aliases("Noida"), [])
-        opts = ["Gurgaon, Bihar, India", "Gurugram, Haryana, India"]
-        self.assertEqual(_choose_option(opts, "Gurgaon", ["Haryana", "India"]), 1)
-        self.assertEqual(_choose_option(opts, "Gurgaon"), 0)   # no state to go by: as typed
-        self.assertEqual(_choose_option(["Gurugram, Haryana, India"], "Gurgaon", ["Haryana"]), 0)
+        opts = ["Bangalore, Odisha, India", "Bengaluru, Karnataka, India"]
+        self.assertEqual(_choose_option(opts, "Bangalore", ["Karnataka", "India"]), 1)
+        self.assertEqual(_choose_option(opts, "Bangalore"), 0)   # no state to go by: as typed
+        self.assertEqual(_choose_option(["Bengaluru, Karnataka, India"], "Bangalore", ["Karnataka"]), 0)
 
 
 class ApplyChoiceNoiseTests(unittest.TestCase):
@@ -1293,7 +1293,7 @@ class DuplicateRowTests(TempDbTestCase):
         self.assertEqual(worker._choose_option(["India (+91)", "India (+91)"], "+91"), 0)
         self.assertEqual(worker._choose_option(["Afghanistan (+93)", "Afghanistan (+93)", "India (+91)", "India (+91)"], "+91"), 2)
         # Two DIFFERENT rows containing the value stay ambiguous.
-        self.assertEqual(worker._choose_option(["Gurgaon, Bihar", "Gurgaon, Haryana"], "Gurgaon,"), -1)
+        self.assertEqual(worker._choose_option(["Bangalore, Odisha", "Bangalore, Karnataka"], "Bangalore,"), -1)
 
 
 class SkillsBoxTests(TempDbTestCase):
@@ -1535,9 +1535,9 @@ class ProposalTests(TempDbTestCase):
     def test_the_value_a_question_proposes(self) -> None:
         from src.apply import worker
 
-        q = ("What desired annual salary should I enter here (the field rejected '30 lpa' "
-             "- should it be a plain number like 3000000 INR)?")
-        self.assertEqual(worker._proposal_in_question(q), "3000000 INR")
+        q = ("What desired annual salary should I enter here (the field rejected '22 lpa' "
+             "- should it be a plain number like 2200000 INR)?")
+        self.assertEqual(worker._proposal_in_question(q), "2200000 INR")
         self.assertEqual(worker._proposal_in_question("Should I set it to India (+91)?"), "India (+91)")
         self.assertEqual(worker._proposal_in_question("What should I enter for 'City'?"), "")
 
@@ -1552,7 +1552,7 @@ class ProposalTests(TempDbTestCase):
     def test_number_box_takes_a_salary_as_digits(self) -> None:
         from src.apply import salary
 
-        self.assertEqual(salary.parse_annual_inr("30 lpa"), 3000000)
+        self.assertEqual(salary.parse_annual_inr("22 lpa"), 2200000)
         self.assertIsNone(salary.parse_annual_inr("yes"))
 
 
@@ -1664,7 +1664,7 @@ class RemoveExcludedEntryTests(TempDbTestCase):
         from src.apply import worker
 
         fields = (self._entry("Applied AI & LLM Agents", "", 10)
-                  + self._entry("Software Engineer", "Cadence Design Systems", 20))
+                  + self._entry("Software Engineer", "Initech Systems", 20))
         removals = worker._excluded_entry_removals(fields)
         self.assertEqual(len(removals), 1, removals)
         project, button = removals[0]
@@ -1680,8 +1680,8 @@ class RemoveExcludedEntryTests(TempDbTestCase):
     def test_real_jobs_are_never_removed(self) -> None:
         from src.apply import worker
 
-        fields = (self._entry("Software Engineer", "Cadence Design Systems", 10)
-                  + self._entry("Software Engineer Intern", "Cadence Design Systems", 20))
+        fields = (self._entry("Software Engineer", "Initech Systems", 10)
+                  + self._entry("Software Engineer Intern", "Initech Systems", 20))
         self.assertEqual(worker._excluded_entry_removals(fields), [])
         # An entry with no remove button of its own is left alone.
         lonely = self._entry("Applied AI & LLM Agents", "", 10)[:-1]
@@ -1826,7 +1826,7 @@ class ContactGuardTests(TempDbTestCase):
             {"tag": "input", "type": "tel", "label": "Phone number*", "value": "+91 90000 00000"},
             {"tag": "input", "type": "text", "label": "City", "value": "Mumbai"},
         ]
-        data = {"email": "a_candidate@example.invalid", "phone": "9000000000", "location": "Gurgaon"}
+        data = {"email": "a_candidate@example.invalid", "phone": "9000000000", "location": "Bangalore"}
         with mock.patch("src.apply.profile.load_profile", return_value=data):
             warnings = worker._contact_warnings(fields)
         self.assertEqual(len(warnings), 1, warnings)
@@ -1882,7 +1882,7 @@ class NotEmploymentTests(TempDbTestCase):
                          "Applied AI & LLM Agents")
         # A real employer passes, and so does the project name elsewhere on
         # the form (a portfolio or a "tell us about a project" answer).
-        self.assertEqual(worker._excluded_experience(title, "Cadence Design Systems"), "")
+        self.assertEqual(worker._excluded_experience(title, "Initech Systems"), "")
         self.assertEqual(worker._excluded_experience(
             {"label": "Describe a project", "section": "Questions"}, "Applied AI & LLM Agents"), "")
 
@@ -1932,9 +1932,9 @@ class EntryLocationTests(TempDbTestCase):
     def test_current_employers_entries_get_the_profile_location(self) -> None:
         from src.apply import worker
 
-        data = {"current_company": "Cadence Design Systems", "current_company_location": "Noida"}
+        data = {"current_company": "Initech Systems", "current_company_location": "Noida"}
         fields = [
-            {"label": "Company*", "section": "Work History (Optional) 2", "value": "Cadence Design Systems"},
+            {"label": "Company*", "section": "Work History (Optional) 2", "value": "Initech Systems"},
             {"label": "Location", "section": "Work History (Optional) 2", "value": ""},
             {"label": "Company*", "section": "Work History (Optional) 1", "value": "Other Corp"},
             {"label": "Location", "section": "Work History (Optional) 1", "value": ""},
@@ -1943,7 +1943,7 @@ class EntryLocationTests(TempDbTestCase):
         self.assertEqual(worker._entry_location(fields[1], fields, data), "Noida")
         self.assertIsNone(worker._entry_location(fields[3], fields, data))   # another employer
         self.assertIsNone(worker._entry_location(fields[4], fields, data))   # not a job entry
-        self.assertIsNone(worker._entry_location(fields[1], fields, {"current_company": "Cadence Design Systems"}))
+        self.assertIsNone(worker._entry_location(fields[1], fields, {"current_company": "Initech Systems"}))
 
 
 class PromptFieldTrimTests(TempDbTestCase):

@@ -2695,7 +2695,7 @@ def _run_action(
             if (action.action in ("fill", "select")
                     and answer.strip().lower() in ("yes", "y", "yes please", "ok", "okay", "sure", "go ahead")):
                 # ... or the value the question itself proposed ("a plain
-                # number like 3000000 INR?"); with neither, ask for it, since
+                # number like 2200000 INR?"); with neither, ask for it, since
                 # "yes" typed into a salary box is what happened.
                 proposal = action.value.strip() or _proposal_in_question(question)
                 if not proposal:
@@ -2884,7 +2884,7 @@ def _maybe_remember(
     if answer.lower() in CONTINUE_WORDS or answer.lower() in SKIP_WORDS:
         return
     if field is not None:
-        # "25" typed into an "(in LPA)" field is banked as "25 LPA", so a
+        # "25" typed into an "(in LPA)" field is banked as "18 LPA", so a
         # plain "Current salary" box elsewhere gets it in a readable unit.
         answer = salary.normalize(answer, field)
     kind = answers.classify(label, group)
@@ -3149,7 +3149,7 @@ def _clip_to_limit(field: dict[str, Any], value: str, label: str, sess) -> str:
 def _plain_amount(value: str, field: dict[str, Any]) -> str:
     """A money amount with its grouping separators taken off.
 
-    "30,00,000" typed a character at a time into a box that inserts its own
+    "22,00,000" typed a character at a time into a box that inserts its own
     commas came out as "3,00,00,000" - three crore instead of thirty lakh, on
     a real application. The box formats what it is given; it only needs the
     digits.
@@ -3157,7 +3157,7 @@ def _plain_amount(value: str, field: dict[str, Any]) -> str:
     if not salary.is_salary_field(field):
         return value
     if not re.fullmatch(r"[\d,. ]+", (value or "").strip()):
-        return value                      # prose ("25-30 LPA"): leave it alone
+        return value                      # prose ("25-22 LPA"): leave it alone
     digits = re.sub(r"[,\s]", "", value.strip())
     return digits if digits.replace(".", "").isdigit() else value
 
@@ -3245,7 +3245,7 @@ def _apply_value(
             f"'{_brief(value, 40)}' is an instruction to the model, not an answer for '{label}'"
         )
     # Salary fields disagree on units ("in LPA" wants 25, a number input wants
-    # 2500000): every writer - bank, profile, model, user - goes through here,
+    # 1800000): every writer - bank, profile, model, user - goes through here,
     # so this is the one place the amount is converted.
     value = salary.for_field(value, field)
     value = _plain_amount(value, field)
@@ -3253,7 +3253,7 @@ def _apply_value(
     # "Immediate Joiner" was accepted and then rejected by the form itself.
     value = resolver.notice_for_field(value, field)
     if field_type == "number" and re.search(r"[^\d.\-]", value or ""):
-        # A number box takes digits only: "30 lpa" is 3000000; "yes" is
+        # A number box takes digits only: "22 lpa" is 2200000; "yes" is
         # nothing at all (it was typed in, and rejected, twice).
         annual = salary.parse_annual_inr(value)
         if annual is None:
@@ -3989,7 +3989,7 @@ _PROPOSAL_RE = re.compile(
 
 def _proposal_in_question(question: str) -> str:
     """The value a question proposes in its own words ("... a plain number
-    like 3000000 INR?" -> "3000000 INR"), for a "yes" that would otherwise
+    like 2200000 INR?" -> "2200000 INR"), for a "yes" that would otherwise
     be typed into the box. '' when the question proposes nothing."""
     match = _PROPOSAL_RE.search(question or "")
     return match.group(1).strip() if match else ""
@@ -4012,7 +4012,7 @@ def _typeahead_state(page, locator) -> str:
 def _entry_location(field: dict[str, Any], fields: list[dict[str, Any]], data: dict[str, Any]) -> str | None:
     """A blank Location inside a work-history entry whose Company is the
     profile's current employer: that job's location is the profile's
-    current_company_location (the model left the second Cadence entry's
+    current_company_location (the model left the second Initech entry's
     Location empty)."""
     if not re.match(r"^\s*(job\s+)?location\b", str(field.get("label") or ""), re.IGNORECASE):
         return None
@@ -4052,8 +4052,8 @@ def _holds(locator, value: str) -> bool:
 
 def _tie_breakers(field: dict[str, Any]) -> list[str]:
     """Words that pick between several options starting the same way. For a
-    location box, the profile's state and country: "Gurgaon" alone chose
-    "Gurgaon, Bihar, India" over "Gurgaon, Haryana, India"."""
+    location box, the profile's state and country: a bare city name chose a
+    same-named city in the wrong state over the candidate's own."""
     label = str(field.get("label") or "")
     if not re.search(r"\b(location|city|town|address)\b", label, re.IGNORECASE):
         return []
@@ -4074,13 +4074,13 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
     the option that STARTS with it ("India" -> "India (+91)", never "British
     Indian Ocean Territory"), then the single option containing it as a
     whole token ("+91" -> "India (+91)"). Several candidates at one level are
-    told apart by `prefer` words (the profile's state: "Gurgaon, Haryana"
-    over "Gurgaon, Bihar"); otherwise the first wins, or none for the
+    told apart by `prefer` words (the profile's state picks "City, Right State"
+    over "City, Wrong State"); otherwise the first wins, or none for the
     containment level. -1 when nothing fits."""
     wanted = (value or "").strip()
     if not wanted:
         return -1
-    lowered = resolver.plain(wanted)   # case- and accent-insensitive ("Haryāna")
+    lowered = resolver.plain(wanted)   # case- and accent-insensitive ("Karnātaka")
     flat = [resolver.plain(t) for t in texts]
     wants = [resolver.plain(p) for p in (prefer or []) if p]
 
@@ -4130,7 +4130,7 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
 
     def satisfied(i: int) -> bool:
         # The first preference (the state) decides; the country alone matches
-        # every Indian city and would have settled for Gurgaon, Bihar.
+        # every Indian city and would have settled for the wrong state.
         return not wants or wants[0] in flat[i]
 
     best = match(wanted)
@@ -4148,7 +4148,7 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
                 return best
             best = -1
     # The other spelling of a renamed city may be the one in the right state:
-    # "Gurgaon" -> "Gurgaon, Bihar" but "Gurugram, Haryana" is the candidate's.
+    # the old name matches another state's city; the new name is the right one.
     for alias in resolver.city_aliases(wanted):
         other = match(alias)
         if other >= 0 and satisfied(other):
