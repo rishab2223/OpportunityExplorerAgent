@@ -110,3 +110,37 @@ class NormalizeAndEstimateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AbbreviationTests(unittest.TestCase):
+    """ECTC and CCTC are how Indian forms label these boxes.
+
+    A box labelled just "ECTC" was not an expected-pay box at all, so the
+    estimator - which quotes a band for the role and shows its working - never
+    ran, and the figure came from the profile with nothing explained.
+    """
+
+    def _field(self, label: str) -> dict:
+        return {"label": label, "name": "", "tag": "input", "type": "text",
+                "value": "", "group": "", "section": "", "autocomplete": ""}
+
+    def test_expected_abbreviations(self) -> None:
+        for label in ("ECTC", "ECTC *", "E-CTC", "Exp CTC", "Expected CTC",
+                      "Expected salary"):
+            self.assertEqual(salary.topic_of(self._field(label)), "expected_ctc", label)
+
+    def test_current_abbreviations(self) -> None:
+        for label in ("CCTC", "Current CTC", "Current CTC (per annum)",
+                      "Share your current annual fixed CTC (full number)"):
+            self.assertEqual(salary.topic_of(self._field(label)), "current_ctc", label)
+
+    def test_a_bare_ctc_is_left_to_the_model(self) -> None:
+        # It usually means current pay, but a form that means expected by it
+        # would get the candidate's current salary quoted as their
+        # expectation, and guessing wrong that way costs them money.
+        for label in ("CTC", "CTC *", "CTC (LPA)"):
+            self.assertEqual(salary.topic_of(self._field(label)), "", label)
+
+    def test_the_abbreviations_do_not_collide(self) -> None:
+        self.assertNotEqual(salary.topic_of(self._field("ECTC")),
+                            salary.topic_of(self._field("CCTC")))

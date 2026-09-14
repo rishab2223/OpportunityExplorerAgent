@@ -501,6 +501,15 @@ def run_session(
                 continue
 
             fields = browser.snapshot(page)
+            # Before anything is typed. A site that appends "Your application
+            # has been submitted." and RESETS the form leaves a page that
+            # looks like work to do: a real session re-typed the candidate's
+            # name, e-mail and phone into the empty boxes of a form whose
+            # application had already gone through. Nothing may be written to
+            # a page that says the application is in.
+            if _looks_submitted(browser.full_page_text(page)):
+                outcome, outcome_text = "applied", "confirmed by the page"
+                break
             # An open modal still loading its form (LinkedIn Easy Apply) is
             # given a few seconds: reading the page behind it instead had the
             # model clicking the background "Easy Apply" button the overlay
@@ -513,7 +522,7 @@ def run_session(
                 # sent" card is a modal with nothing to fill. Waiting six
                 # seconds for its form to arrive is waiting for something that
                 # is never coming, and it happened after every application.
-                if _looks_submitted(browser.page_text(page)):
+                if _looks_submitted(browser.full_page_text(page)):
                     break
                 if attempt == 0:
                     sess.log("A dialog is open but its form is still loading; waiting…")
@@ -548,7 +557,7 @@ def run_session(
                 # least give "submitted" somewhere to go: previously typing
                 # done here just looped, and the user had to abort a job that
                 # WAS applied.
-                if _looks_submitted(browser.page_text(page)):
+                if _looks_submitted(browser.full_page_text(page)):
                     answer = sess.ask(
                         "This page looks like a submission confirmation. Type done to "
                         "record the application as applied, paste a URL to keep going, "
@@ -820,7 +829,7 @@ def run_session(
             # has yet to be submitted does not carry that wording, and the
             # phrase on its own button ("Submit application") is the other
             # word order and does not match.
-            if _looks_submitted(browser.page_text(page)):
+            if _looks_submitted(browser.full_page_text(page)):
                 outcome, outcome_text = "applied", "confirmed by the page"
                 break
 
@@ -1823,7 +1832,7 @@ def _ask_watching(sess, holder, page, handled, fields, question: str,
         "keys": baseline, "handled": handled, "url": _safe_url(page), "ticks": 0,
         "fields_too": fields_too,
         # A page that already read as submitted must not re-trigger.
-        "submitted": _looks_submitted(browser.page_text(page)),
+        "submitted": _looks_submitted(browser.full_page_text(page)),
     }
     holder["changed"] = ""
     try:
@@ -1849,7 +1858,7 @@ def _page_grew(context, page, watch: dict[str, Any]) -> str:
         return "tab"
     if _safe_url(page) != watch["url"]:
         return "url"
-    if not watch.get("submitted") and _looks_submitted(browser.page_text(page)):
+    if not watch.get("submitted") and _looks_submitted(browser.full_page_text(page)):
         return "submitted"
     if not watch.get("fields_too", True):
         return ""

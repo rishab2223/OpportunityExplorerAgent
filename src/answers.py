@@ -62,8 +62,22 @@ def _is_total_experience(text: str) -> bool:
 # checked in definition order.
 TOPICS: dict[str, Any] = {
     "notice_period": re.compile(r"\bnotice\b"),
-    "current_ctc": re.compile(r"\b(current|present)\b.*\b(ctc|salary|compensation|pay)\b"),
-    "expected_ctc": re.compile(r"\b(expected|desired)\b.*\b(ctc|salary|compensation|pay)\b"),
+    # The abbreviations are how Indian forms label these: ECTC, CCTC, Exp CTC.
+    # Without them a box labelled just "ECTC" was not an expected-pay box at
+    # all, so the salary estimator - which quotes a band for the role and
+    # explains where the figure came from - never ran, and the number came
+    # from the profile with no working shown.
+    #
+    # A bare "CTC" is deliberately left out. It usually means current pay, but
+    # a form that means expected by it would get the candidate's current
+    # salary quoted as their expectation, and guessing wrong in that direction
+    # costs them money. The model reads it in context instead.
+    "current_ctc": re.compile(
+        r"\b(current|present)\b.*\b(ctc|salary|compensation|pay)\b|\bcctc\b"),
+    "expected_ctc": re.compile(
+        # "E-CTC" fingerprints to "e ctc": punctuation is stripped, not joined.
+        r"\b(expected|desired)\b.*\b(ctc|salary|compensation|pay)\b"
+        r"|\bectc\b|\bexp ctc\b|\be ctc\b"),
     "total_experience": lambda text: _is_total_experience(text),
     "work_authorization": re.compile(r"\b(authori[sz]ed?|authori[sz]ation|legally|eligib\w*)\b.*\bwork\b|\bwork\b.*\b(authori[sz]ed?|authori[sz]ation|permit)\b"),
     "sponsorship": re.compile(r"\bsponsor\w*\b|\bvisa\b"),

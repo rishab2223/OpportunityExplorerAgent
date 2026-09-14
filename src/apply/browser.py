@@ -621,6 +621,22 @@ def settle(page, before: str, timeout: int, step: int = 100, quiet: int = 2) -> 
     return shape != before
 
 
+# Enough to hold any real page's visible text, for checks that must not miss
+# something near the bottom. A confirmation replaces or is appended to the
+# form, so on a long form it lands well past any sensible head window: one
+# site put "Your application has been submitted." at character 6872 of a
+# 9,000-character page, and the 2500-character default meant the session
+# never saw it and sat at a prompt while the application had gone through.
+FULL_TEXT_LIMIT = 200_000
+
+
+def full_page_text(page) -> str:
+    """The whole visible text, for the submitted check. page_text's default
+    limit exists to keep model prompts small; a detector has no such reason
+    to read only the top of the page."""
+    return page_text(page, FULL_TEXT_LIMIT)
+
+
 def page_text(page, limit: int = 2500) -> str:
     """The visible text: the form's frame first (its "application submitted"
     must fit in the limit), then the page around it."""
