@@ -1488,6 +1488,53 @@ def is_resume_field(field: dict[str, Any]) -> bool:
     return resolver.wants_resume(field)
 
 
+# A Contact Form 7 upload is labelled with the word "File" and nothing else,
+# so nothing about it says resume. These are the labels that name no document
+# at all - the whole of the label, not a word inside it, because "Photograph
+# file" and "Upload your certificates" name one and must not be claimed.
+ANONYMOUS_UPLOAD_RE = re.compile(
+    r"^(file|files|upload|uploads|attach|attachment|attachments|document|documents"
+    r"|choose|choose (a )?file|select (a )?file|browse|browse files?|add file)$",
+    re.IGNORECASE,
+)
+# What a document slot takes. A photo input (image/*) is not one, and an input
+# that names no accept at all is too vague to claim.
+DOC_ACCEPT_RE = re.compile(
+    r"pdf|\.docx?|msword|wordprocessing|officedocument|\.rtf|\.txt|\.odt",
+    re.IGNORECASE,
+)
+
+
+def _required_marks(label: str) -> str:
+    """The label without the asterisk and the "(required)" a form puts on it."""
+    text = re.sub(r"\(\s*required\s*\)|\*", " ", label or "", flags=re.IGNORECASE)
+    return re.sub(r"[\s:]+", " ", text).strip()
+
+
+def _sole_document_upload(fields: list[dict[str, Any]], field: dict[str, Any]) -> bool:
+    """A required upload that names no document, on a form whose only other
+    document upload is itself. That is the resume.
+
+    Prachay's application - Contact Form 7 - asks for name, e-mail, phone,
+    location, qualification, field and one required file whose entire label is
+    "File". Nothing in it says resume, so no resume was prepared and the model
+    was reduced to asking the candidate what the box wanted. On a six-box job
+    application there is nothing else it could want: a cover letter is never
+    the only required upload, and anything more specific (a photograph, a
+    portfolio, certificates) says so in its label and is left alone here.
+    """
+    if (field.get("type") or "").lower() != "file" or not field.get("required"):
+        return False
+    if not DOC_ACCEPT_RE.search(str(field.get("accept") or "")):
+        return False
+    if not ANONYMOUS_UPLOAD_RE.match(_required_marks(_field_label(field))):
+        return False
+    docs = [f for f in fields
+            if (f.get("type") or "").lower() == "file"
+            and DOC_ACCEPT_RE.search(str(f.get("accept") or ""))]
+    return len(docs) == 1 and docs[0].get("id") == field.get("id")
+
+
 # "Drop or select (.doc / .docx / .pdf)" is Rippling's entire upload button:
 # it names no noun and uses none of the usual verbs, so neither of its two
 # tiles was recognised and the form reached the hand-off with no resume and
@@ -1688,15 +1735,22 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
                 sess.log(f"Could not attach the cover letter to {label}: {_short(exc)}")
                 notes.append(f"attaching the cover letter to '{label}' failed: {_short(exc)}")
             return True
-        if is_resume_field(field):
+        sole = _sole_document_upload(fields, field)
+        if is_resume_field(field) or sole:
             path = attach.resume()
             handled.add(key)
             if not path:
                 notes.append(f"the candidate skipped the resume upload for '{label}'")
                 return True
             try:
-                _apply_value(page, field, path, path, sess, source="resume")
+                _apply_value(page, field, path, path, sess, source="resume",
+                             sole_upload=sole)
                 attach.resume_attached = True
+                if sole:
+                    # Say why, because the box did not say so itself: the
+                    # candidate should be able to see the guess and correct it.
+                    sess.log(f"'{label}' names no document and is this form's only "
+                             "upload, so it got your resume.")
             except Exception as exc:
                 sess.log(f"Could not upload the resume to {label}: {_short(exc)}")
                 notes.append(f"uploading the resume to '{label}' failed: {_short(exc)}")
@@ -3373,6 +3427,7 @@ def _apply_value(
     sess: ApplySession,
     wants_on: bool | None = None,
     source: str = "",
+    sole_upload: bool = False,
 ) -> str | None:
     """Set a value the right way for this control: file, select, checkbox or
     text. Returns "typeahead" when the value went in as a picked suggestion."""
@@ -3383,9 +3438,13 @@ def _apply_value(
     prefix = f"[{source}] " if source else ""
 
     if field_type == "file":
-        if source != "letter" and not is_resume_field(field):
+        if source != "letter" and not is_resume_field(field) and not sole_upload:
             # Last line of defence: the resume never lands in a portfolio or
-            # certificate input, whatever asked for the upload.
+            # certificate input, whatever asked for the upload. `sole_upload`
+            # is the one way past, and it is not a loosening - the caller has
+            # established that this box names NO document and is the only one
+            # on the form that takes one, which is the opposite of a portfolio
+            # input, since that names itself.
             raise ValueError(f"'{label}' is not a resume field; ask the candidate what to upload")
         target = value if value and Path(value).is_file() else pdf_path
         if not target:

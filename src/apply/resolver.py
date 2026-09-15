@@ -192,7 +192,14 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
                 r"|\blevel of education\b")),
     ("field_of_study", (),
      re.compile(r"^(field[_ ]?of[_ ]?study|major|specialization|specialisation|discipline)$"),
-     re.compile(r"\bfield of study\b|\bmajor\b|\bspeciali[sz]ation\b|\bdiscipline\b")),
+     # "^field$" is the whole label, never a word inside one: Prachay's box
+     # beside Qualification is labelled with the bare word and was left for
+     # the candidate to type, while "Required field", "This field is
+     # required" and "Field of work" all contain it and mean nothing of
+     # the sort. The required marker is folded away before matching, so a
+     # "Field *" and a "Field * (required)" are the same label here.
+     re.compile(r"\bfield of study\b|\bmajor\b|\bspeciali[sz]ation\b|\bdiscipline\b"
+                r"|^field( required)?$")),
     ("graduation_year", (),
      re.compile(r"^(graduation[_ ]?year|year[_ ]?of[_ ]?passing|passing[_ ]?year)$"),
      re.compile(r"\b(graduation|passing|completion) year\b|\byear of (graduation|passing)\b")),

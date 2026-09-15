@@ -36,6 +36,8 @@ profile.PROFILE_PATH.write_text(json.dumps({
     "notice_period": "60 days",
     "expected_ctc": "30 LPA",
     "state": "Karnataka",
+    "highest_education_level": "Bachelors",
+    "field_of_study": "Computer and Information Science",
     "languages": "English - Intermediate; Hindi - Fluent",
     "linkedin": "https://linkedin.com/in/test",
     "github": "https://github.com/test",
@@ -497,11 +499,30 @@ assert all("Permanent account number" not in q for q in s20.asked), s20.asked
 assert "[profile] Filled First Name: * = Test" in logs20, logs20
 assert "Everything I can fill is done" in s20.asked[-1], s20.asked
 
+# A stock Contact Form 7, whose required upload is labelled with the word
+# "File" and nothing else. No rule reads that as a resume, so none was
+# prepared and the model could only ask the candidate what the box wanted -
+# the one required field on the form. Nameless, required, takes documents and
+# the only such input on the page: that is the resume.
+cf7_url = (E2E / "fixture_cf7.html").as_uri()
+s21 = run("cf7-nameless-upload", cf7_url, ["done", "tailored", "done"], expect_calls=0)
+logs21 = "\n".join(s21.logs)
+assert "[resume] Uploaded dummy_resume.pdf" in logs21, logs21
+assert "names no document and is this form's only upload" in logs21, logs21
+# The bare words "Qualification" and "Field" both come from the profile now.
+assert "[profile] Filled Qualification * (required) = Bachelors" in logs21, logs21
+assert "[profile] Filled Field = Computer and Information Science" in logs21, logs21
+# The point is that nobody is asked. A question here is the bug.
+assert all("File" not in q or "Everything I can fill is done" in q
+           for q in s21.asked), s21.asked
+assert "Everything I can fill is done" in s21.asked[-1], s21.asked
+
 for name, sess in (("pass1", s1), ("pass2", s2), ("skip", s3), ("external", s4), ("modal", s5),
                    ("greenhouse", s6), ("popup", s7), ("late-modal", s8), ("shadow-modal", s9),
                    ("sent", s10), ("workday", s11), ("stuck-next", s12), ("experience", s13),
                    ("apply-choice", s14), ("rerender", s15), ("typeahead", s16), ("confirm-next", s17), ("question-sent", s18),
-                   ("stuck-required", s19), ("optional-identifier", s20)):
+                   ("stuck-required", s19), ("optional-identifier", s20),
+                   ("cf7-nameless-upload", s21)):
     joined = "\n".join(sess.logs)
     assert "Clicked Submit application" not in joined, f"{name} clicked submit!"
 

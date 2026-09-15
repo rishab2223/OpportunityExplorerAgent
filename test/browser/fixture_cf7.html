@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Apply for this position - Contact Form 7</title></head>
+<body>
+<h1>FULL STACK DEVELOPER - TEAM LEAD</h1>
+
+<!--
+  The Prachay application of Sep 15 2026, a stock WordPress Contact Form 7.
+  Rebuilt from the dump rather than lifted from it: the real markup carries a
+  live reCAPTCHA token.
+
+  Two boxes on it were left for the candidate to fill by hand.
+
+  * The upload's entire label is the word "File". Nothing about it says
+    resume, so no resume was prepared for it and the model could only ask the
+    candidate what the box wanted - on the one required field of the form.
+    What identifies it is the company it keeps: required, accepts documents,
+    names none, and the only such input on the page.
+  * The box beside Qualification is labelled with the bare word "Field". The
+    field-of-study rule wanted "field of study", so it matched nothing.
+
+  The label shape is CF7's own: the caption, then a "*" marked aria-hidden,
+  then a screen-reader-only "(required)". Both markers are folded away before
+  a rule sees the label, which is what lets "Field" and "File *" match.
+-->
+<form enctype="multipart/form-data" novalidate>
+  <h2>Apply for this position</h2>
+  <p><label for="pap-field-1" class="pap-label">Full Name<span class="pap-req" aria-hidden="true"> *</span><span class="pap-sr-only"> (required)</span></label>
+     <input type="text" name="fname" id="pap-field-1" autocomplete="name" maxlength="400" required></p>
+  <p><label for="pap-field-2" class="pap-label">Email<span class="pap-req" aria-hidden="true"> *</span><span class="pap-sr-only"> (required)</span></label>
+     <input type="email" name="email-591" id="pap-field-2" autocomplete="email" maxlength="400" required></p>
+  <p><label for="pap-field-3" class="pap-label">Phone<span class="pap-req" aria-hidden="true"> *</span><span class="pap-sr-only"> (required)</span></label>
+     <input type="tel" name="tel-483" id="pap-field-3" autocomplete="tel" maxlength="400" required></p>
+  <p><label for="pap-field-4" class="pap-label">Location<span class="pap-req" aria-hidden="true"> *</span><span class="pap-sr-only"> (required)</span></label>
+     <input type="text" name="text-447" id="pap-field-4" autocomplete="address-level2" maxlength="400" required></p>
+  <p><label for="pap-field-5" class="pap-label">Qualification<span class="pap-req" aria-hidden="true"> *</span><span class="pap-sr-only"> (required)</span></label>
+     <input type="text" name="text-417" id="pap-field-5" autocomplete="off" maxlength="400" required></p>
+  <p><label for="pap-field-6" class="pap-label">Field</label>
+     <input type="text" name="text-129" id="pap-field-6" autocomplete="off" maxlength="400" placeholder="Field"></p>
+  <p><label for="pap-field-7" class="pap-label">File<span class="pap-req" aria-hidden="true"> *</span><span class="pap-sr-only"> (required)</span></label>
+     <input type="file" name="file-636" id="pap-field-7" accept=".pdf,.doc,.docx" required></p>
+  <p><button type="submit" onclick="event.preventDefault();document.title='SUBMITTED'">Apply</button></p>
+</form>
+</body>
+</html>
