@@ -486,3 +486,74 @@ class NotCurrentlyAcceptingTests(unittest.TestCase):
         self.assertTrue(linkedin.is_closed(text, "https://www.linkedin.com/jobs/view/123/"))
         self.assertTrue(_looks_closed(text))
         self.assertFalse(_looks_closed("Over 100 people clicked apply. Easy Apply"))
+
+
+class _Tab:
+    """A tab that records whether it was brought to the front."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.fronted = False
+
+    def is_closed(self) -> bool:
+        return False
+
+    def bring_to_front(self) -> None:
+        self.fronted = True
+
+    def wait_for_timeout(self, ms: int) -> None:
+        pass
+
+
+class _Sess:
+    def __init__(self):
+        self.lines = []
+
+    def log(self, line):
+        self.lines.append(line)
+
+
+class FocusEmployerTabTests(unittest.TestCase):
+    """Which tab the agent reads next is decided by document.visibilityState,
+    and in a real headed Chrome exactly one tab has it. When LinkedIn keeps
+    the foreground while the employer's page paints, the agent turns round and
+    reads the job card it just left - which is how an IGT session ended up
+    offering "Apply on company website" and LinkedIn's own "Clicked apply"
+    chip as if they were two buttons worth pressing.
+
+    Headless cannot show the symptom: there EVERY tab reports "visible", so
+    the newest is picked either way. What is asserted here is the mechanism -
+    that the employer's tab is named rather than left to chance.
+    """
+
+    def _page(self, *names):
+        page = FakePage()
+        tabs = [page] + [_Tab(n) for n in names]
+        page.context = type("C", (), {"pages": tabs})()
+        return page
+
+    def test_the_tab_the_click_opened_is_brought_forward(self) -> None:
+        page = self._page("employer")
+        self.assertTrue(linkedin.focus_employer_tab(page, _Sess()))
+        self.assertTrue(page.context.pages[-1].fronted)
+
+    def test_the_newest_one_wins_when_several_are_open(self) -> None:
+        page = self._page("stale", "employer")
+        linkedin.focus_employer_tab(page, _Sess())
+        self.assertFalse(page.context.pages[1].fronted)
+        self.assertTrue(page.context.pages[2].fronted)
+
+    def test_no_new_tab_is_not_an_error(self) -> None:
+        # An external apply that navigated in place opens nothing, and the
+        # job page itself must never be the one brought forward.
+        page = self._page()
+        self.assertFalse(linkedin.focus_employer_tab(page, _Sess()))
+
+    def test_a_tab_that_will_not_focus_is_survivable(self) -> None:
+        page = self._page("employer")
+
+        def boom():
+            raise RuntimeError("target closed")
+
+        page.context.pages[-1].bring_to_front = boom
+        self.assertFalse(linkedin.focus_employer_tab(page, _Sess()))

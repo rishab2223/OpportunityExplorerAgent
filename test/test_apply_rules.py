@@ -2281,3 +2281,38 @@ class GovernmentIdentifierTests(unittest.TestCase):
         # required or not, while a required identifier is a fair question.
         self.assertTrue(profile.is_secret("Choose Password:"))
         self.assertFalse(profile.is_identifier("Choose Password:"))
+
+
+class ApplyChoiceTests(unittest.TestCase):
+    """Two or more ways to apply is a question for the candidate. One way is
+    not, and neither is a page telling you that you already applied."""
+
+    def _link(self, text, tag="a"):
+        return {"tag": tag, "text": text, "label": text, "id": 1}
+
+    def test_a_real_choice_is_offered(self) -> None:
+        got = worker._apply_choices([
+            self._link("Easy Apply"), self._link("Apply on company website")])
+        self.assertEqual(len(got), 2)
+
+    def test_linkedins_status_chip_is_not_a_way_to_apply(self) -> None:
+        # The IGT session: LinkedIn stamps the card "Clicked apply" the moment
+        # it hands you to the employer, so the chip carries the word and was
+        # offered alongside the real button. The candidate was asked to choose
+        # between them on a card whose form was already open in another tab.
+        fields = [{"tag": "a", "text": "Clicked apply", "label": "Clicked apply", "id": 1},
+                  {"tag": "a", "text": "Apply", "label": "Apply on company website", "id": 15}]
+        got = worker._apply_choices(fields)
+        self.assertEqual([f["id"] for f in got], [15])
+
+    def test_the_other_things_a_finished_card_says(self) -> None:
+        for text in ("Clicked apply", "Applied", "Already applied",
+                     "Did you finish applying?", "Application sent",
+                     "Application submitted", "View application"):
+            self.assertEqual(worker._apply_choices([self._link(text)]), [], text)
+
+    def test_a_single_path_asks_nothing(self) -> None:
+        # One choice is not a choice: the agent clicks it. This is what makes
+        # the chip's removal fix the session rather than merely tidy the list.
+        self.assertEqual(
+            len(worker._apply_choices([self._link("Apply on company website")])), 1)

@@ -384,5 +384,39 @@ def start(page, sess) -> str:
                      "confirm - reading the page as it stands.")
     else:
         page.wait_for_timeout(3000)
+        if opened == "new tab":
+            focus_employer_tab(page, sess)
         sess.log("[linkedin] External apply - following the employer's site.")
     return kind
+
+
+def focus_employer_tab(page, sess) -> bool:
+    """Put the tab the apply click opened in front. True if one was found.
+
+    Which tab the agent reads next is decided by document.visibilityState, and
+    in a REAL (headed) Chrome exactly one tab has it - so if LinkedIn still
+    holds the foreground when the employer's page is painting, the agent turns
+    round and reads the job card it just left. That is what happened on an IGT
+    application: the form was open in the next tab, and the candidate was asked
+    to choose between "Apply on company website" and LinkedIn's own "Clicked
+    apply" chip.
+
+    Saying which tab we mean is better than hoping Chrome guessed right. Note
+    that headless cannot show this: there every tab reports "visible", so the
+    newest is picked either way and the bug is invisible.
+    """
+    try:
+        others = [p for p in page.context.pages if p is not page and not p.is_closed()]
+    except Exception:
+        return False
+    if not others:
+        return False
+    tab = others[-1]
+    try:
+        tab.bring_to_front()
+        tab.wait_for_timeout(200)
+    except Exception:
+        # Not fatal: the visibility check still has its own answer, and this
+        # only ever improves the odds it is the right one.
+        return False
+    return True

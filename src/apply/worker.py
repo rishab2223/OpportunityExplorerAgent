@@ -2377,6 +2377,18 @@ APPLY_CHOICE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# What a page says AFTER you have gone, not a way to go. LinkedIn stamps the
+# job card "Clicked apply" the moment it hands you to the employer, and asks
+# "Did you finish applying?" underneath. The chip carries the word, so it was
+# offered as an apply path, and the candidate was asked to choose between
+# "Clicked apply" and "Apply on company website" as though both were buttons
+# worth pressing - on a card whose form had already opened in another tab.
+APPLIED_ALREADY_RE = re.compile(
+    r"\b(clicked apply|applied|finish(ed)? applying|already applied|"
+    r"application (sent|submitted|received|viewed)|view( your)? application)\b",
+    re.IGNORECASE,
+)
+
 
 def _apply_choices(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The page's apply-path controls, in DOM order. Two or more means the
@@ -2388,6 +2400,8 @@ def _apply_choices(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         text = (f.get("text") or f.get("label") or "").strip()
         if not text or not APPLY_CHOICE_RE.search(text):
+            continue
+        if APPLIED_ALREADY_RE.search(text):
             continue
         # "Please read our Privacy Notice before you apply" is a link, not a way to apply.
         if len(text) > 40 or re.search(r"\b(privacy|notice|policy|terms)\b", text, re.IGNORECASE):
