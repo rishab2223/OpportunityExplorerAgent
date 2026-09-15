@@ -932,6 +932,16 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
             continue
         if key in _ONLY_WHEN_REQUIRED and not field.get("required"):
             continue
+        if key in ("gpa_10_point", "gpa_5_point"):
+            # Forms ask both, and the honest answer to the one you did NOT
+            # study on is the option that says so - not a converted figure.
+            # myKaarma offers "I attended a university using a 10-point scale"
+            # beside "4 or higher / 3 / 2 or below", and a 3.7 fits none of
+            # those because a 7.4/10 is not really a 3.7/5.
+            studied = str(data.get("gpa_scale") or "").strip()
+            asked = "10" if key == "gpa_10_point" else "5"
+            if studied and studied != asked:
+                value = f"{studied}-point scale"
         if key == "location" and "," in value and re.search(r"\bcity\b", norm_label):
             value = value.split(",")[0].strip()  # "Bangalore, India" -> City: Bangalore
         matched = (

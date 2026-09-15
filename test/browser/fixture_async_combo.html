@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>A country box that answers a beat late</title>
+<style>
+  #list { border:1px solid #888; max-height:300px; overflow:auto; width:320px; }
+  #list[hidden] { display:none; }
+  .opt { padding:2px 6px; }
+  .opt:hover { background:#def; }
+</style>
+</head>
+<body>
+<h3>Phone number</h3>
+
+<!--
+  Rippling's phone country box, as far as two sessions of evidence describe
+  it: whatever whole value was typed at it, the same seven rows came back -
+  the window around the currently selected country, never a filtered list.
+
+  A controlled React input behaves exactly like this when its filter runs off
+  key events: fill() sets the value and fires one input event, which the
+  component accepts without ever running the filter. That is the same reason
+  _retype exists in worker.py. So this fixture updates its list on keydown
+  ONLY, and ignores a programmatic value set - and it keeps rendering a fixed
+  window of rows around the selection, so a failure looks like the real one
+  rather than like an empty list.
+-->
+<input id="search" role="combobox" aria-autocomplete="list" aria-haspopup="listbox"
+       aria-expanded="false" aria-label="Search" placeholder="Search" value="+1 US"
+       autocomplete="off">
+<div id="list" role="listbox" hidden></div>
+
+<script>
+const CODES = [
+  ['AC','+247','Ascension Island'], ['AD','+376','Andorra'], ['AE','+971','United Arab Emirates'],
+  ['AF','+93','Afghanistan'], ['AG','+1','Antigua and Barbuda'], ['AI','+1','Anguilla'],
+  ['AL','+355','Albania'], ['AM','+374','Armenia'], ['AO','+244','Angola'],
+  ['IO','+246','British Indian Ocean Territory'],
+];
+// Padding so the real answer is far outside any rendered window, exactly as a
+// 250-entry country list puts India well past the first rows drawn.
+for (let n = 0; n < 230; n++) {
+  const a = String.fromCharCode(66 + (n % 20));
+  const b = String.fromCharCode(65 + (n % 26));
+  CODES.push([a + b + n, '+' + (300 + n), 'Country ' + a + b + n]);
+}
+CODES.push(['IN', '+91', 'India']);
+CODES.push(['TZ','+255','Tanzania'], ['UA','+380','Ukraine'], ['UG','+256','Uganda'],
+           ['US','+1','United States'], ['UY','+598','Uruguay'], ['UZ','+998','Uzbekistan'],
+           ['VA','+39','Vatican City']);
+
+const label = c => c[1] + ' ' + c[0] + ' - ' + c[2];
+const box = document.getElementById('search');
+const list = document.getElementById('list');
+// The filter's own state. Crucially NOT box.value: a value set from outside
+// never touches this, which is the whole behaviour being reproduced.
+let typed = '';
+let open = false;
+
+function render() {
+  let rows;
+  if (typed.trim()) {
+    const q = typed.trim().toLowerCase();
+    // Searches the country NAME, like the real one - "+91 IN - India" as a
+    // whole matches nothing.
+    rows = CODES.filter(c => c[2].toLowerCase().includes(q));
+  } else {
+    // No filter: the window around the current selection, which is what came
+    // back both times in the real sessions.
+    const at = Math.max(0, CODES.findIndex(c => label(c) === box.value));
+    rows = CODES.slice(Math.max(0, at - 3), Math.max(0, at - 3) + 7);
+  }
+  list.replaceChildren();
+  rows.slice(0, 40).forEach(c => {
+    const el = document.createElement('div');
+    el.className = 'opt';
+    el.setAttribute('role', 'option');
+    el.textContent = label(c);
+    el.addEventListener('mousedown', () => {
+      box.value = label(c);
+      typed = '';
+      open = false;
+      list.hidden = true;
+      box.setAttribute('aria-expanded', 'false');
+    });
+    list.appendChild(el);
+  });
+  list.hidden = !open;
+}
+
+box.addEventListener('click', () => {
+  open = true;
+  box.setAttribute('aria-expanded', 'true');
+  render();
+});
+// Real keys only. An 'input' event on its own does nothing here.
+// Server-backed search: the rows that answer what was typed arrive a beat
+// later, and the PREVIOUS query's rows sit there in the meantime. This one
+// does react to a fill() - the only problem is when the answer shows up.
+let pending = null;
+function search() {
+  open = true;
+  box.setAttribute('aria-expanded', 'true');
+  if (pending) clearTimeout(pending);
+  pending = setTimeout(() => { typed = box.value; render(); }, 900);
+}
+box.addEventListener('input', search);
+box.addEventListener('keydown', search);
+box.value = '+1 US';
+</script>
+</body>
+</html>

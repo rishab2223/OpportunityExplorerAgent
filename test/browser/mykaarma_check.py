@@ -47,6 +47,7 @@ PROFILE = {
     "college_tier": "Other/Not Listed",
     "gpa_10_point": "7.4",
     "gpa_5_point": "3.7",
+    "gpa_scale": "10",
     "degree_recognized_by": "UGC",
 }
 profile.PROFILE_PATH.write_text(json.dumps(PROFILE), encoding="utf-8")
@@ -161,10 +162,14 @@ with sync_playwright() as pw:
           repr(worker._upload_tile_kind(letter_tile)) if letter_tile else "no tile")
 
     print("\na GPA goes in only where the form insists")
+    # The 5-point question does NOT get the converted 3.7: the candidate
+    # studied on a 10-point scale, and the form offers an option that says so.
+    # Converting is what makes a 7.4/10 look like a 3.7/5, which is not a
+    # grade anyone was ever awarded.
     for label, want in (("On a 10-point GPA/Grade Point scale, what best represents "
                          "your academic performance?", "7.4"),
                         ("On a 5-point GPA/Grade Point scale, what best represents "
-                         "your academic performance?", "3.7")):
+                         "your academic performance?", "10-point scale")):
         asked = {"tag": "div", "role": "combobox", "haspopup": "listbox", "type": "",
                  "label": label, "name": "", "elid": "x", "group": "", "accept": "",
                  "value": "", "required": True}
@@ -173,6 +178,31 @@ with sync_playwright() as pw:
         spare = {**asked, "required": False}
         check(f"optional {label[5:12]} is left alone",
               resolver.resolve(spare) is None, repr(resolver.resolve(spare)))
+
+    print("\nand a GPA meets the bands a form actually offers")
+    TEN = ["7.0 or higher", "5.0–6.9", "Below 5.0",
+           "I attended a university using a 5-point scale"]
+    FIVE = ["4 or higher", "3", "2 or below",
+            "I attended a university using a 10-point scale"]
+    check("7.4 falls in the right band", worker._band_index(TEN, "7.4") == 0,
+          str(worker._band_index(TEN, "7.4")))
+    check("6.2 falls in the middle one", worker._band_index(TEN, "6.2") == 1,
+          str(worker._band_index(TEN, "6.2")))
+    check("4.1 falls below", worker._band_index(TEN, "4.1") == 2)
+    check("a word is never a band", worker._band_index(TEN, "Computer Science") == -1)
+    # The honest answer to the scale you did NOT study on is the option that
+    # says so: a 7.4/10 is not really a 3.7/5, and none of 4/3/2 is true.
+    asked5 = {"tag": "div", "role": "combobox", "haspopup": "listbox", "type": "",
+              "label": "On a 5-point GPA/Grade Point scale, what best represents "
+                       "your academic performance?",
+              "name": "", "elid": "x", "group": "", "accept": "", "value": "",
+              "required": True}
+    got5 = resolver.resolve(asked5)
+    check("the other scale is answered by saying which you used",
+          bool(got5) and got5[0] == "10-point scale", repr(got5))
+    check("and that lands on the option that says it",
+          bool(got5) and worker._choose_option(FIVE, got5[0]) == 3,
+          str(worker._choose_option(FIVE, got5[0]) if got5 else None))
 
     print("\nthe accrediting-body dropdown answers itself")
     degree = labelled(fields, "degree was awarded")

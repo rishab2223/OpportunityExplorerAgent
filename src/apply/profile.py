@@ -81,6 +81,11 @@ TEMPLATE: dict[str, Any] = {
     # form makes it mandatory - see _ONLY_WHEN_REQUIRED in resolver.py.
     "gpa_10_point": "",
     "gpa_5_point": "",
+    # Which scale was actually studied on ("10" or "5"). A form asking
+    # about the other one offers "I attended a university using a
+    # 10-point scale", and that is the true answer rather than a
+    # converted figure.
+    "gpa_scale": "",
     # One line per school, separated by ";" or a newline, for the forms that
     # want the whole thing in one box:
     #   "Example University - Bachelors, Computer Science, 2015-2019"

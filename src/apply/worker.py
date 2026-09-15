@@ -4227,6 +4227,55 @@ def _is_listbox_button(field: dict[str, Any]) -> bool:
     return resolver.is_listbox_button(field)
 
 
+# "7.0 or higher", "5.0-6.9", "Below 5.0", "4 or below", "3": the shapes a
+# form uses when it wants a band rather than a figure. myKaarma asks its two
+# GPA questions this way, and a stored 7.4 matched none of them.
+_BAND_RE = re.compile(
+    r"^(?:(?P<lo>\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(?P<hi>\d+(?:\.\d+)?)"
+    r"|(?P<n>\d+(?:\.\d+)?)\s*(?P<dir>or higher|or above|or more|\+|or below|or less|or lower)?"
+    r"|(?P<word>below|under|less than|above|over|more than)\s*(?P<m>\d+(?:\.\d+)?))\s*$"
+)
+
+
+def _band_index(texts: list[str], value: str) -> int:
+    """The band an amount falls in, or -1.
+
+    Only ever used after an exact match has failed, and only when the value is
+    a bare number: a band is a range, and reading "7.0 or higher" as a match
+    for 7.4 is arithmetic, not guesswork. An option that is not a band at all
+    can never win here.
+    """
+    try:
+        amount = float(str(value).strip())
+    except (TypeError, ValueError):
+        return -1
+    for i, raw in enumerate(texts):
+        found = _BAND_RE.match(resolver.plain(raw).replace(",", ""))
+        if not found:
+            continue
+        bits = found.groupdict()
+        if bits["lo"] is not None:
+            if float(bits["lo"]) <= amount <= float(bits["hi"]):
+                return i
+        elif bits["n"] is not None:
+            edge, direction = float(bits["n"]), (bits["dir"] or "").strip()
+            if direction in ("or higher", "or above", "or more", "+"):
+                if amount >= edge:
+                    return i
+            elif direction in ("or below", "or less", "or lower"):
+                if amount <= edge:
+                    return i
+            elif amount == edge:
+                return i
+        elif bits["m"] is not None:
+            edge, word = float(bits["m"]), bits["word"]
+            if word in ("below", "under", "less than") and amount < edge:
+                return i
+            if word in ("above", "over", "more than") and amount > edge:
+                return i
+    return -1
+
+
 def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None) -> int:
     """Index of the option for `value`: exact, then case-insensitive, then
     the option that STARTS with it ("India" -> "India (+91)", never "British
@@ -4547,17 +4596,40 @@ def _search_terms(value: str) -> list[str]:
     return terms
 
 
+def _wait_for_change(page, locator, baseline: list[str], timeout: int = 2500, step: int = 100):
+    """The option rows once they are something OTHER than `baseline`.
+
+    _wait_for_options cannot do this: it stops the moment the list holds real
+    suggestions, and a STALE list holds real suggestions already. Rippling
+    searches its Location and country lists on the server, so the rows that
+    answer what was just typed arrive a beat later - and the old rows, sitting
+    there in the meantime, ended the wait instantly. The agent then read the
+    list it had before it typed and said the value matched nothing, while the
+    error it printed a second later listed the very rows it had wanted.
+    """
+    visible, shown = _visible_options(page, locator)
+    waited = 0
+    while shown == baseline and waited < timeout:
+        pause = min(step, timeout - waited)
+        page.wait_for_timeout(pause)
+        waited += pause
+        visible, shown = _visible_options(page, locator)
+    return visible, shown
+
+
 def _type_to_filter(page, locator, text: str, baseline: list[str] | None = None,
                     sess=None, label: str = "", prefix: str = ""):
     """Put `text` in the box and return the options it leaves showing.
 
-    fill() sets the value and fires one input event, and a controlled
-    component can accept that without ever running its filter. Rippling's
-    phone country list answered with the SAME seven rows - the window around
-    the current selection - however the whole value was typed at it, in two
-    separate sessions. When the list does not move, type it again as real
-    keystrokes, which is what such a box is listening for and the same reason
-    _retype exists.
+    The wait is for the list to CHANGE, not merely to hold rows: Rippling
+    searches on the server, and the rows already sitting there answered the
+    previous query. Reading those and calling them the answer is how the
+    agent decided "Gurgaon, India" matched nothing and then printed the
+    matching rows in its own error message a second later.
+
+    If it still has not moved, type the text again as real keystrokes - some
+    controlled components run their filter off key events and take a fill()
+    without ever consulting it, the same reason _retype exists.
     """
     if baseline is None:
         _, baseline = _visible_options(page, locator)
@@ -4565,7 +4637,7 @@ def _type_to_filter(page, locator, text: str, baseline: list[str] | None = None,
         locator.fill(text, timeout=10000)
     except Exception:
         return _wait_for_options(page, locator)
-    visible, shown = _wait_for_options(page, locator)
+    visible, shown = _wait_for_change(page, locator, baseline)
     # Unchanged means the box never ran its filter - and "unchanged" includes
     # empty-to-empty, which is where the fallback is needed most: a widget
     # that ignored the fill shows either the list it had or nothing at all.
@@ -4586,8 +4658,7 @@ def _type_to_filter(page, locator, text: str, baseline: list[str] | None = None,
     except Exception as exc:
         note(f"typing it failed ({_short(exc)}); the list is as it was")
         return visible, shown
-    page.wait_for_timeout(120)
-    visible, shown = _wait_for_options(page, locator)
+    visible, shown = _wait_for_change(page, locator, baseline)
     if shown == baseline:
         note("typing moved nothing either - this widget is not filtering on "
              "what is typed at it")
@@ -4641,6 +4712,13 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
                 locator.fill(value, timeout=10000)   # back to the first list
                 visible, shown = _wait_for_options(page, locator)
                 index = _choose_option(shown, value, prefer)
+    if index < 0:
+        # A form that wants a band rather than a figure: "7.0 or higher" is
+        # where a 7.4 belongs, and no amount of text matching gets there.
+        index = _band_index(shown, value)
+        if index >= 0:
+            sess.log(f"{prefix}{_brief(label, LOG_LABEL)}: {_brief(value, 20)} falls in "
+                     f"'{_brief(shown[index], 40)}'.")
     narrowed_list = False
     if index < 0:
         # The widget did not filter on the whole value, so it is still showing
