@@ -21,6 +21,11 @@ from src.pdf_compile import compile_tex
 from src.resume.latex_sections import validate_document
 
 MAX_STEPS = 80
+# How long a form gets to finish rebuilding itself after an attachment goes
+# in. Sites that parse the resume (UKG/UltiPro fills Work Experience and
+# Education from it) take seconds over it, and this is a cap, not a sleep:
+# browser.settle returns as soon as the page stops changing.
+RESUME_PARSE_WAIT_MS = 12000
 LOW_CONFIDENCE = 0.6
 HISTORY_LIMIT = 12
 MAX_ATTEMPTS_PER_FIELD = 3
@@ -776,6 +781,16 @@ def run_session(
 
             # 1) Attachments the form is asking for, built on the spot.
             if _handle_attachments(page, fields, handled, attach, sess, notes):
+                # A site that READS the resume rewrites the form from it. UKG
+                # fills Work Experience and Education out of the parse and
+                # re-renders both; the agent clicked "Add Experience" 0.6s
+                # after the upload, into a section still being built, and the
+                # panel that opened never finished - overlay up, nothing
+                # clickable, for the candidate as much as for us. Wait for the
+                # shape to stop moving before touching anything.
+                if not browser.wait_quiet(page, timeout=RESUME_PARSE_WAIT_MS):
+                    sess.log("The form is still rebuilding itself after the upload; "
+                             "carrying on with what is on the page now.")
                 errors_in_a_row = 0
                 noop_streak = 0
                 last_llm_sig = ""

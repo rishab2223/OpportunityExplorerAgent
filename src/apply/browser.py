@@ -909,6 +909,66 @@ PAGE_BLOCKED_JS = """
 """
 
 
+# What the form looks like right now, cheaply. Counts and value LENGTHS, never
+# a value: this runs on a page holding the candidate's details and its result
+# goes nowhere near a log or a prompt.
+FORM_SIGNATURE_JS = """
+() => {
+  const els = document.querySelectorAll(
+      'input, textarea, select, button, [role=button]');
+  const parts = [els.length];
+  let i = 0;
+  for (const e of els) {
+    if (++i > 400) break;
+    parts.push((e.value || '').length);
+  }
+  return parts.join(',');
+}
+"""
+
+
+def wait_quiet(page, timeout: int = 8000, step: int = 250, quiet: int = 1000) -> bool:
+    """Wait for the page to stop rebuilding itself. True if it went quiet.
+
+    Not settle(), which answers a different question: settle waits for the
+    page to CHANGE from a known shape, and is right after an action whose
+    effect we are expecting. This one waits for change to STOP, without
+    caring whether any happened, so a site that does nothing with the resume
+    costs one quiet window instead of the whole cap.
+
+    A site that READS the uploaded resume rewrites the form from it: UKG fills
+    Work Experience and Education out of the parse and re-renders both
+    sections. Acting during that is how a panel ended up half-open with its
+    foreground overlay stuck up and the page unusable - the agent clicked
+    "Add Experience" 0.6 seconds after the upload, into a section the site was
+    still building.
+
+    Quiet is measured, not assumed: this returns as soon as the shape stops
+    moving, so a form that never changes costs one step rather than the cap.
+    """
+    last = None
+    stable = 0
+    waited = 0
+    while waited < timeout:
+        try:
+            sig = target(page).evaluate(FORM_SIGNATURE_JS)
+        except Exception:
+            return False
+        if sig == last:
+            stable += step
+            if stable >= quiet:
+                return True
+        else:
+            stable = 0
+            last = sig
+        try:
+            page.wait_for_timeout(step)
+        except Exception:
+            return False
+        waited += step
+    return False
+
+
 def page_blocked(page) -> str:
     """The name of the overlay holding the page hostage, or ''.
 

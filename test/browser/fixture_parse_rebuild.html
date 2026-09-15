@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>A form that rebuilds itself from the resume</title></head>
+<body>
+<!--
+  UKG/UltiPro reads the resume you upload and fills Work Experience and
+  Education from the parse, re-rendering both sections. On the USP application
+  the agent uploaded at 55.7s and clicked "Add Experience" at 56.3s - six
+  tenths of a second later, into a section the site had not finished building.
+  The panel that opened never completed: its foreground overlay stayed up, the
+  panel itself collapsed to 0x0, and the page was unusable for the candidate
+  as much as for the agent.
+
+  This is that, minus the overlay (which foreground_check owns): upload, a
+  pause while the "parse" runs, then the section is replaced wholesale. Acting
+  before it settles means acting on nodes that are about to be thrown away.
+-->
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  #experience { border: 1px solid #ccc; padding: 12px; margin-top: 16px; }
+</style>
+
+<h1>Apply - USP</h1>
+<label>Upload Resume
+  <input id="resume" type="file" accept=".doc,.docx,.pdf"></label>
+
+<div id="experience">
+  <h2>Work Experience</h2>
+  <button id="add" type="button" onclick="addEntry()">Add Experience</button>
+  <div id="entries"></div>
+</div>
+
+<pre id="log"></pre>
+
+<script>
+  var parsing = false;
+
+  function addEntry() {
+    // What the site does with a click that lands mid-parse: it is accepted,
+    // and then thrown away by the rebuild a moment later. The agent sees
+    // "Clicked Add Experience" and a section that no longer holds it.
+    var d = document.createElement('div');
+    d.className = 'entry';
+    d.innerHTML = '<label>Job Title <input class="title" type="text"></label>';
+    document.getElementById('entries').appendChild(d);
+    document.getElementById('log').textContent += (parsing ? 'add-during-parse ' : 'add ');
+  }
+
+  document.getElementById('resume').addEventListener('change', function () {
+    parsing = true;
+    document.getElementById('log').textContent += 'upload ';
+    // Two beats, like a real parse: the section grows, then is replaced.
+    setTimeout(function () {
+      document.getElementById('entries').innerHTML =
+        '<div class="entry"><label>Job Title <input class="title" type="text" value="Parsing..."></label></div>';
+    }, 400);
+    setTimeout(function () {
+      document.getElementById('entries').innerHTML =
+        '<div class="entry"><label>Job Title <input class="title" type="text" value="Software Engineer"></label></div>' +
+        '<div class="entry"><label>Job Title <input class="title" type="text" value="Software Engineer Intern"></label></div>';
+      parsing = false;
+      document.getElementById('log').textContent += 'parsed ';
+    }, 1400);
+  });
+</script>
+</body>
+</html>
