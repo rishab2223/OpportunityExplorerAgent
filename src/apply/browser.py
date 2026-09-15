@@ -839,6 +839,43 @@ def alerts(page) -> str:
         return ""
 
 
+# Is this click being refused on purpose? Returns the overlay's name when the
+# page is foregrounding something else, and '' when it is not.
+#
+# A viewport-sized overlay on its own says nothing: dentsu's Workday page left
+# a stale one behind that blocked Accept Cookies, the phone code and the skills
+# box alike, and punching through it was the only way on. What separates that
+# from a live modal is whether anything is still REACHABLE - a live overlay
+# funnels you into one panel raised above it, a stale one covers the lot.
+BLOCKING_OVERLAY_JS = """
+(el) => {
+  const at = (x, y) => document.elementFromPoint(x, y);
+  const box = el.getBoundingClientRect();
+  const top = at(box.left + box.width / 2, box.top + box.height / 2);
+  if (!top || top === el || el.contains(top) || top.contains(el)) return '';
+  const cs = getComputedStyle(top);
+  const tb = top.getBoundingClientRect();
+  const wide = tb.width >= innerWidth * 0.9 && tb.height >= innerHeight * 0.9;
+  if (!wide || (cs.position !== 'fixed' && cs.position !== 'absolute')) return '';
+  for (const c of document.querySelectorAll(
+      'input, textarea, select, button, [role=button]')) {
+    const r = c.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    if (r.bottom < 0 || r.top > innerHeight) continue;
+    const hit = at(r.left + r.width / 2, r.top + r.height / 2);
+    if (hit && (hit === c || c.contains(hit))) {
+      return top.className || top.id || top.tagName;
+    }
+  }
+  return '';
+}
+"""
+
+
+class BlockedByOverlay(RuntimeError):
+    """The page is foregrounding another panel and refusing this control."""
+
+
 def click(locator, timeout: int = 10000, fallback_timeout: int = 3000) -> str:
     """Click, and when the real click cannot land (an overlay or a stale
     popup intercepts pointer events - one dentsu Workday page blocked Accept
@@ -859,6 +896,20 @@ def click(locator, timeout: int = 10000, fallback_timeout: int = 3000) -> str:
         blocked = "intercepts pointer events" in message or "Timeout" in message
         if not blocked:
             raise
+        # Dispatching on the element bypasses the overlay, which is the point
+        # when the overlay is dead - and a bug when it is not. On USP's UKG
+        # board it drove Add, Save and Delete while the page was refusing
+        # them, until the panel it had raised collapsed to 0x0 with the
+        # overlay still up and nothing left to dismiss it, for anybody.
+        try:
+            live = locator.evaluate(BLOCKING_OVERLAY_JS, timeout=fallback_timeout) or ""
+        except Exception:
+            live = ""
+        if live:
+            raise BlockedByOverlay(
+                f"the page has put an overlay ({live}) over this control and is "
+                "waiting on the panel it raised instead; finish or close that first"
+            ) from exc
         try:
             locator.evaluate("el => el.click()", timeout=fallback_timeout)
         except Exception:

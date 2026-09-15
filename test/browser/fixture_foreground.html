@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>A foregrounded panel, and a stale overlay</title></head>
+<body>
+<!--
+  UKG/UltiPro's job board, rebuilt from the USP dump of Sep 15 2026.
+
+  While a Work Experience entry is being edited the page raises that one panel
+  and drops a fixed, viewport-sized overlay over everything else - measured on
+  the real page as position:fixed, z-index:9, opacity:0.8, 1900x900. That is
+  the site saying "finish this panel first", and it is also why the page looked
+  washed out and refused every scroll and click.
+
+  browser.click's fallback dispatches the click on the element itself when an
+  overlay intercepts pointer events. That exists for a STALE overlay - a
+  dentsu Workday page left one behind that blocked Accept Cookies, the phone
+  code and the skills box alike, with nothing live underneath. Punching through
+  a LIVE one is different: it drove Add, Save and Delete while the page was
+  refusing them, until knockout's state came apart and the panel collapsed to
+  0x0 with the overlay still up. Nothing left to click, for anybody.
+
+  What tells the two apart is whether anything is reachable: a live overlay
+  foregrounds a panel you can still use, a stale one covers the lot.
+
+  Both are on this page. #live-overlay covers everything except #panel;
+  pressing "Leave" swaps in #stale-overlay, which covers everything.
+-->
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 0; padding: 24px; }
+  .bring-to-foreground-overlay {
+    position: fixed; inset: 0; background: #fff; opacity: .8; z-index: 9;
+  }
+  #panel {
+    position: relative; z-index: 10; background: #fff; border: 1px solid #888;
+    padding: 16px; width: 420px;
+  }
+  #stale-overlay { position: fixed; inset: 0; background: #fff; opacity: .8; z-index: 99; }
+  .bg { margin-top: 20px; }
+</style>
+
+<div id="live-overlay" class="bring-to-foreground-overlay"></div>
+
+<!-- Raised above the overlay: the one thing the page still wants you to use. -->
+<div id="panel" role="dialog" aria-label="Work Experience">
+  <h2>Work Experience</h2>
+  <label>Job Title <input id="job-title" type="text"></label>
+  <p><button id="save" type="button" onclick="document.getElementById('log').textContent += 'save '">Save</button></p>
+</div>
+
+<!-- Behind the overlay. Every one of these is what the agent kept clicking. -->
+<div class="bg">
+  <button id="bg-add" type="button" onclick="document.getElementById('log').textContent += 'add '">Add Experience</button>
+  <button id="bg-delete" type="button" onclick="document.getElementById('log').textContent += 'delete '">Delete Work Experience 1</button>
+  <label>Skills <input id="bg-skills" type="text"></label>
+</div>
+
+<pre id="log"></pre>
+
+<script>
+  // The stale case: the panel goes, the overlay stays, and nothing anywhere
+  // on the page is reachable. That is the one worth punching through.
+  function goStale() {
+    document.getElementById('panel').remove();
+    document.getElementById('live-overlay').id = 'stale-overlay';
+  }
+</script>
+</body>
+</html>
