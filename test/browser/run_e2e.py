@@ -421,12 +421,12 @@ assert "Submit application" in s14.asked[-1], s14.asked
 # Workday's address block: selecting State wipes City/Postal Code. The sweep
 # must fill them again (they were "handled"), and no "Filled" line may be a
 # lie - the value is read back after every write.
-answers.remember("Postal Code", "122003")
+answers.remember("Postal Code", "560001")
 rerender_url = (E2E / "fixture_rerender.html").as_uri()
 s15 = run("rerender", rerender_url, ["done", "done"], expect_calls=0)
 logs15 = "\n".join(s15.logs)
 assert logs15.count("Filled City* = Bangalore") == 2, logs15
-assert logs15.count("Filled Postal Code* = 122003") == 2, logs15
+assert logs15.count("Filled Postal Code* = 560001") == 2, logs15
 assert "[again] Filled City* = Bangalore" in logs15, logs15
 assert "Selected 'Karnātaka' for State*" in logs15, logs15
 assert "Submit application" in s15.asked[-1], s15.asked
