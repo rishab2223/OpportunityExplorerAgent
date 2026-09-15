@@ -23,6 +23,31 @@ SECRET_HINTS = (
     "security code",
 )
 
+# Government identifiers. These are never stored - the profile is plaintext on
+# disk - and never guessed, so the only place an answer can come from is the
+# candidate. On a REQUIRED field that is worth stopping to ask; on an optional
+# one it is not, and a Worldline application parked in the chat waiting on an
+# optional "Permanent account number" that nobody had to answer.
+# Each hint is a whole phrase on purpose: a bare "pan" is inside "Company
+# Name", and an optional field silently skipped is worse than one asked about.
+IDENTIFIER_HINTS = (
+    "pan number",
+    "pan card",
+    "permanent account number",
+    "aadhaar",
+    "aadhar",
+    "passport",
+    "social security",
+    "ssn",
+    "national insurance",
+    "national id",
+    "driving licence",
+    "driver's license",
+    "drivers license",
+    "tax id",
+    "uan number",
+)
+
 # Answered questions live in the answer bank (src/answers.py, SQLite), not
 # here; this file is the curated, hand-edited part of the candidate's data.
 # Every key a rule can read is listed, empty, so the file the candidate opens
@@ -136,6 +161,11 @@ def fingerprint(label: str) -> str:
 def is_secret(label: str) -> bool:
     text = (label or "").lower()
     return any(hint in text for hint in SECRET_HINTS)
+
+
+def is_identifier(label: str) -> bool:
+    text = (label or "").lower()
+    return any(hint in text for hint in IDENTIFIER_HINTS)
 
 
 def _job_lines(jobs: list[Any]) -> list[str]:

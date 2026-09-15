@@ -153,6 +153,9 @@ Rules:
   salary, demographic or yes/no questions.
 - Use "ask" for one-time passwords, captchas, consent or legal checkboxes, and anything
   you are unsure about.
+- Government identifiers - PAN, Aadhaar, passport, SSN, national insurance, driving
+  licence - are never held here and must never be invented. Ask only when the field
+  is required; when it is optional, leave it out of the plan entirely.
 - Resume and cover-letter fields are handled for you and arrive marked
   already_handled - never touch them. For any OTHER file input (portfolio,
   certificates), use action "ask"; never upload the resume there.
@@ -1506,8 +1509,22 @@ def _upload_tile_kind(field: dict[str, Any], page_text: str = "") -> str:
         return ""
     text = f"{field.get('text', '')} {field.get('label', '')}"
     generic = _is_picker_button(field)
+    # Taleo's tile is an ICON: no text, and the label it points at is the bare
+    # noun ("Resume/CV"), because the only part of its aria-labelledby holding
+    # a verb - "Upload a Resume Opens a dialog" - is screen-reader-only and is
+    # dropped with the rest of that filler. The verb survives in the visible
+    # caption beside it, which the snapshot reads as group.
+    #
+    # Borrowing the verb from the group is allowed ONLY for a control that
+    # names the noun itself. `group` is proximity, not ownership: the Next
+    # button one step of a wizard reads as group "Upload resume", and letting
+    # it borrow the verb made the agent click Next as if it were a file tile
+    # and swallow the rest of the form. Naming the noun is what tells the
+    # tile from its neighbours.
     if not generic and not UPLOAD_VERB_RE.search(text):
-        return ""
+        names_it = _resume_words(text) or _letter_words(text)
+        if not (names_it and UPLOAD_VERB_RE.search(str(field.get("group") or ""))):
+            return ""
     # Greenhouse-style tiles just say "Attach"; the section heading the
     # snapshot captured as group ("Resume/CV", "Cover Letter") names the noun.
     scope = f"{text} {field.get('group', '')}"
@@ -2774,6 +2791,20 @@ def _run_action(
                 "I never ask for one, and nothing of the sort is stored."
             )
             notes.append(f"'{label}' is a secret the candidate types on the page")
+            if key:
+                handled.add(key)
+            return "skipped"
+        # A government identifier is never stored and never guessed, so a
+        # required one is a fair question. An OPTIONAL one is not: the
+        # Worldline application stopped dead in the chat on a "Permanent
+        # account number" the form was perfectly happy to receive empty, and
+        # the session was parked without a resume on it.
+        if not (field or {}).get("required") and profile.is_identifier(label):
+            sess.log(
+                f"'{label}' wants a government identifier and the form does not "
+                "require it, so it is left blank. Type it in yourself if you want it there."
+            )
+            notes.append(f"'{label}' is an optional government identifier; leave it blank")
             if key:
                 handled.add(key)
             return "skipped"

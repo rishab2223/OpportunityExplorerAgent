@@ -2254,3 +2254,30 @@ class SiteSearchGuardTests(unittest.TestCase):
     def test_the_name_counts_too(self) -> None:
         self.assertTrue(worker._is_site_search(
             self._field(label="", name="job_search_keyword")))
+
+
+class GovernmentIdentifierTests(unittest.TestCase):
+    """PAN, Aadhaar and their kin are never stored and never guessed, so the
+    only question is whether the form insists. A Worldline application parked
+    in the chat on an OPTIONAL "Permanent account number" and went no further:
+    no resume on the form, nothing submitted, waiting on a number the site had
+    not asked for."""
+
+    def test_the_ones_a_form_asks_for_are_recognised(self) -> None:
+        for label in ("Permanent account number", "PAN Number", "PAN Card",
+                      "Aadhaar Number", "Passport Number", "Social Security Number",
+                      "SSN", "National Insurance Number", "Driving Licence"):
+            self.assertTrue(profile.is_identifier(label), label)
+
+    def test_an_ordinary_field_is_not_one(self) -> None:
+        # "Company Name" contains "pan", which is why every hint is a whole
+        # phrase: a field wrongly read as an identifier is silently skipped.
+        for label in ("Company Name", "Position Title", "Panel interview",
+                      "Expected CTC", "First Name", "Japan"):
+            self.assertFalse(profile.is_identifier(label), label)
+
+    def test_a_secret_is_still_a_secret(self) -> None:
+        # The two lists are separate: a password is never asked for at all,
+        # required or not, while a required identifier is a fair question.
+        self.assertTrue(profile.is_secret("Choose Password:"))
+        self.assertFalse(profile.is_identifier("Choose Password:"))

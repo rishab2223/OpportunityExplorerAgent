@@ -39,7 +39,7 @@ GROUPS: dict[str, list[str]] = {
         "redo_check.py", "amount_check.py", "snapshot_check.py",
         "dump_check.py", "fallback_check.py",
     ],
-    "attach": ["chooser_check.py", "jobvite_upload_check.py"],
+    "attach": ["chooser_check.py", "jobvite_upload_check.py", "taleo_check.py"],
     "linkedin": ["li_ready_e2e.py", "li_noisy_repro.py", "li_rerender_repro.py"],
     "submit": [                       # "was it sent?", every shape of it
         "sent_no_model_repro.py", "sent_dialog_repro.py",

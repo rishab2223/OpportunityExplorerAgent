@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Dummy Apply - an optional government identifier</title></head>
+<body>
+<h1>Career Opportunities: Back-End Developer - Professional</h1>
+
+<!--
+  The Worldline form of Sep 15 2026, reduced to the box that stopped it.
+
+  "Permanent account number" is OPTIONAL: the site is perfectly happy to take
+  the application without it. But it is a government identifier, so no rule
+  holds one and none is ever guessed, and the model did the only other thing
+  it could - it asked. The session then sat in the chat waiting for a number
+  nobody needed, and was parked with no resume on the form.
+
+  A required identifier is still a fair question; this one is not.
+-->
+<form>
+  <label>First Name: * <input type="text" name="firstname" autocomplete="given-name" required></label>
+  <label>Last Name: * <input type="text" name="lastname" autocomplete="family-name" required></label>
+  <label>Email Address: * <input type="email" name="email" autocomplete="email" required></label>
+  <label>Permanent account number <input type="text" name="tor__fINpan" autocomplete="off"></label>
+  <!-- Worldline's real one: the word "Apply" alone is not a submit word (an
+       "Apply for this job" link that OPENS the form says it too), and what
+       marks this button is its type. -->
+  <button type="submit" onclick="event.preventDefault();document.title='SUBMITTED'">Apply</button>
+</form>
+</body>
+</html>

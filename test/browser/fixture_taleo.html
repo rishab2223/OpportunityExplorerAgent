@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Taleo attachment tiles</title>
+<!--
+  The Worldline / IGT attachment widget, lifted verbatim out of the dump of
+  Sep 15 2026 (both sites run Oracle Taleo, so both carry the same one).
+
+  The tile is an ICON. Its own text is empty and the label it points at is the
+  bare noun - "Resume/CV" - because the only part of its aria-labelledby that
+  carries the verb, "Upload a Resume Opens a dialog", is hiddenAriaContent and
+  is dropped by the screen-reader-only filter. The verb survives only in the
+  visible attachmentLabel div beside it, which the snapshot reads as `group`.
+
+  There is no input[type=file] anywhere on the page: clicking the icon fires
+  juic and Taleo builds the dialog, with the real input inside it, into the
+  empty _attachForm div. The script at the bottom is that, and nothing else.
+-->
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  .hiddenAriaContent { position:absolute; width:1px; height:1px; overflow:hidden;
+                       clip:rect(0 0 0 0); white-space:nowrap; }
+  .displayNone { display: none; }
+  .rcmFormFieldLabel { display:block; font-weight:600; margin-bottom:4px; }
+  .attachmentBtn { display:inline-block; }
+  .attachActions { display:inline-block; margin-left:8px; }
+  .addAttachments { cursor:pointer; color:#06c; }
+  .addAttachments::after { content:"+"; font-size:20px; }
+  .RCMFormField { margin-bottom:28px; }
+  .oea-dialog { border:1px solid #999; padding:12px; margin-top:8px; }
+</style>
+<h1>Career Opportunities: Back-End Developer - Professional (304821)</h1>
+<div class="RCMFormField rcmFormElement  attachmentField"><label id="32:" for="" class="rcmFormFieldLabel"><span class="requiredField" aria-hidden="true" role="presentation">*</span> Resume/CV</label><div class="attachmentComponentInput" id="31:_fieldComponentInput"><div id="40:_attachWrapper" class="attachWrapper"><div id="40:_requiredfieldWrapper" class="requiredFieldWrapper"><div id="40:_attach" class="attachmentBtn" style="display:inline-block;"><div id="40:_attachDeleting" aria-live="polite" role="alert" class="attachLoading displayNone"><strong class="icon_loading"> </strong></div><div id="40:_attachLoading" aria-live="polite" role="alert" class="attachLoading displayNone"><strong class="icon_loading">Uploading...</strong></div><div tabindex="-1" id="40:_attachSuccess" role="alert" class="glyphicon glyphicon-ok-circle attachSuccessIcon displayNone"><span class="hiddenAriaContent">File is uploaded successfully</span></div><span role="tooltip" class="hiddenAriaContent" id="40:_ariaAttachLabel">Upload a Resume  Required</span><div tabindex="-1" id="40:_attachLabel" class="attachmentLabel attachmentText"><span>Upload a Resume</span></div><div role="button" aria-labelledby="32: 40:_ariaAttachLabel" tabindex="0" id="40:_attachDownloadLabel" class="attachmentLabel attachmentText  displayNone" onclick="juic.fire(&quot;40:&quot;,&quot;downloadAttachmnt&quot;,event);" onkeypress="juic.fire(&quot;40:&quot;,&quot;_handleKeypressAction&quot;,&quot;downloadAttachmnt&quot;,event);"><span id="40:_attachDownloadLabelLink">Upload a Resume</span><span id="40:_lastModifiedDate" class="attachmentLastModified"></span></div><div class="attachActions" onclick="juic.fire(&quot;40:&quot;,&quot;action&quot;,event);"><span tabindex="0" role="button" aria-labelledby="32: 40:_ariaActionLabel" id="40:_attachIcon" class="glyphicon glyphicon-plus-sign addAttachments" onclick="juic.fire(&quot;40:&quot;,&quot;action&quot;,event);" onkeypress="juic.fire(&quot;40:&quot;,&quot;_handleKeypressAction&quot;,&quot;action&quot;,event);" data-oea-id="3"></span><span class="hiddenAriaContent" role="tooltip" id="40:_ariaActionLabel">Upload a Resume Opens a dialog</span></div><div id="40:_attachForm" class="displayNone"></div><div class="clear"></div></div><div tabindex="-1" id="40:_validationMsg" role="alert" class="rcmValidationMsgArea displayNone qaResume"></div></div></div><div tabindex="-1" aria-live="assertive" role="alert" id="33:" class="rcmValidationMsgArea displayNone"></div></div></div>
+
+<div class="RCMFormField rcmFormElement  attachmentField"><label id="37:" for="" class="rcmFormFieldLabel">Cover Letter</label><div class="attachmentComponentInput" id="36:_fieldComponentInput"><div id="42:_attachWrapper" class="attachWrapper"><div id="42:_requiredfieldWrapper" class="requiredFieldWrapper"><div id="42:_attach" class="attachmentBtn" style="display:inline-block;"><div id="42:_attachDeleting" aria-live="polite" role="alert" class="attachLoading displayNone"><strong class="icon_loading"> </strong></div><div id="42:_attachLoading" aria-live="polite" role="alert" class="attachLoading displayNone"><strong class="icon_loading">Uploading...</strong></div><div tabindex="-1" id="42:_attachSuccess" role="alert" class="glyphicon glyphicon-ok-circle attachSuccessIcon displayNone"><span class="hiddenAriaContent">File is uploaded successfully</span></div><span role="tooltip" class="hiddenAriaContent" id="42:_ariaAttachLabel">Attach a Cover Letter </span><div tabindex="-1" id="42:_attachLabel" class="attachmentLabel attachmentText"><span>Attach a Cover Letter</span></div><div role="button" aria-labelledby="37: 42:_ariaAttachLabel" tabindex="0" id="42:_attachDownloadLabel" class="attachmentLabel attachmentText  displayNone" onclick="juic.fire(&quot;42:&quot;,&quot;downloadAttachmnt&quot;,event);" onkeypress="juic.fire(&quot;42:&quot;,&quot;_handleKeypressAction&quot;,&quot;downloadAttachmnt&quot;,event);"><span id="42:_attachDownloadLabelLink">Attach a Cover Letter</span><span id="42:_lastModifiedDate" class="attachmentLastModified"></span></div><div class="attachActions" onclick="juic.fire(&quot;42:&quot;,&quot;action&quot;,event);"><span tabindex="0" role="button" aria-labelledby="37: 42:_ariaActionLabel" id="42:_attachIcon" class="glyphicon glyphicon-plus-sign addAttachments" onclick="juic.fire(&quot;42:&quot;,&quot;action&quot;,event);" onkeypress="juic.fire(&quot;42:&quot;,&quot;_handleKeypressAction&quot;,&quot;action&quot;,event);" data-oea-id="4"></span><span class="hiddenAriaContent" role="tooltip" id="42:_ariaActionLabel">Attach a Cover Letter Opens a dialog</span></div><div id="42:_attachForm" class="displayNone"></div><div class="clear"></div></div><div tabindex="-1" id="42:_validationMsg" role="alert" class="rcmValidationMsgArea displayNone qaCoverLetter"></div></div></div><div tabindex="-1" aria-live="assertive" role="alert" id="38:" class="rcmValidationMsgArea displayNone"></div></div></div>
+<script>
+  // Taleo's juic.fire("40:", "action") builds the upload dialog on demand.
+  // Before the click the page holds no file input at all, which is why
+  // looking for a hidden one beside the tile finds nothing.
+  var juic = {
+    fire: function (id) {
+      var host = document.getElementById(id + "_attachForm");
+      if (!host || host.querySelector("input[type=file]")) return;
+      host.classList.remove("displayNone");
+      host.className = "oea-dialog";
+      host.setAttribute("role", "dialog");
+      host.innerHTML =
+        '<label>Choose a file <input type="file" ' +
+        'accept=".doc,.docx,.pdf,.rtf,.txt"></label>';
+    }
+  };
+</script>

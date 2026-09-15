@@ -66,7 +66,8 @@ def fake_invoke(system: str, user: str, schema):
         text = (f.get("text") or "").lower()
         if f.get("already_handled"):
             continue  # the prompt marks these; a real model leaves them alone
-        if ("favourite programming language" in label or "favourite editor" in label) and not f.get("value"):
+        if ("favourite programming language" in label or "favourite editor" in label
+                or "permanent account number" in label) and not f.get("value"):
             actions.append(ApplyAction(action="ask", field_id=f["id"],
                                        question="", reason="unknown", confidence=0.9,
                                        reusable=True))
@@ -481,11 +482,26 @@ assert "Everything I can fill is done" in s19.asked[-1], s19.asked
 assert all("not making progress" not in q for q in s19.asked), s19.asked
 assert "[profile] Filled Full name = Test User" in logs19, logs19
 
+# An OPTIONAL government identifier. The model asks about it, exactly as it
+# did on Worldline, and the answer is not to put that question to the
+# candidate: nothing here holds a PAN, nothing may guess one, and the form
+# does not want it. It is left blank and the rest of the form is finished.
+optid_url = (E2E / "fixture_optional_id.html").as_uri()
+s20 = run("optional-identifier", optid_url, ["done", "done"], expect_calls=1)
+logs20 = "\n".join(s20.logs)
+assert "Permanent account number" in logs20, logs20
+assert "left blank" in logs20, logs20
+assert all("Permanent account number" not in q for q in s20.asked), s20.asked
+# The point of not asking is that the form is finished instead: filled, and
+# handed over the same way a form with nothing missing is.
+assert "[profile] Filled First Name: * = Test" in logs20, logs20
+assert "Everything I can fill is done" in s20.asked[-1], s20.asked
+
 for name, sess in (("pass1", s1), ("pass2", s2), ("skip", s3), ("external", s4), ("modal", s5),
                    ("greenhouse", s6), ("popup", s7), ("late-modal", s8), ("shadow-modal", s9),
                    ("sent", s10), ("workday", s11), ("stuck-next", s12), ("experience", s13),
                    ("apply-choice", s14), ("rerender", s15), ("typeahead", s16), ("confirm-next", s17), ("question-sent", s18),
-                   ("stuck-required", s19)):
+                   ("stuck-required", s19), ("optional-identifier", s20)):
     joined = "\n".join(sess.logs)
     assert "Clicked Submit application" not in joined, f"{name} clicked submit!"
 
