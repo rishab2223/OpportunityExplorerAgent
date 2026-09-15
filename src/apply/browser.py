@@ -969,6 +969,59 @@ def wait_quiet(page, timeout: int = 8000, step: int = 250, quiet: int = 1000) ->
     return False
 
 
+# The panel an overlay is foregrounding, brought on screen.
+#
+# UKG raises its Work Experience editor to z-index 10 over a fixed z-index 9
+# overlay - and leaves it 1400px down a 6800px page. The overlay is fixed, so
+# every scroll position looks identically washed out, and the panel that is
+# perfectly alive and perfectly clickable is simply not where anyone is
+# looking. Measured on the dump: 0 of 3 controls reachable at the top of the
+# page, 10 of 11 with the panel scrolled in.
+#
+# So this is what a person does - find the thing that is raised, and look at
+# it. Only runs when nothing in the viewport can be hit, which is rare enough
+# that walking the document costs nothing worth counting.
+REVEAL_FOREGROUND_JS = """
+() => {
+  const mid = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+  if (!mid) return '';
+  const ms = getComputedStyle(mid), mr = mid.getBoundingClientRect();
+  const wide = mr.width >= innerWidth * 0.9 && mr.height >= innerHeight * 0.9;
+  if (!wide || (ms.position !== 'fixed' && ms.position !== 'absolute')) return '';
+  const over = parseInt(ms.zIndex) || 0;
+  let best = null, bestTop = Infinity, seen = 0;
+  for (const e of document.querySelectorAll('*')) {
+    if (++seen > 4000) break;
+    const r = e.getBoundingClientRect();
+    if (r.width < 200 || r.height < 80) continue;
+    const cs = getComputedStyle(e);
+    if (cs.position === 'static') continue;
+    const z = parseInt(cs.zIndex);
+    if (!(z > over)) continue;
+    if (!e.querySelector('input, textarea, select, button, [role=button]')) continue;
+    const top = r.top + scrollY;
+    if (top < bestTop) { best = e; bestTop = top; }
+  }
+  if (!best) return '';
+  best.scrollIntoView({block: 'center'});
+  return best.className || best.id || best.tagName;
+}
+"""
+
+
+def reveal_foreground(page) -> str:
+    """Scroll whatever an overlay is foregrounding into view. Its name, or ''.
+
+    Call this before deciding a page is blocked: the usual reason nothing can
+    be clicked is not that the page is dead but that the one panel you are
+    allowed to touch is off screen.
+    """
+    try:
+        return target(page).evaluate(REVEAL_FOREGROUND_JS) or ""
+    except Exception:
+        return ""
+
+
 def page_blocked(page) -> str:
     """The name of the overlay holding the page hostage, or ''.
 

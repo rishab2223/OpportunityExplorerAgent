@@ -531,6 +531,9 @@ def run_session(
         noop_streak = 0
         empty_snapshots = 0
         fields: list[dict[str, Any]] = []
+        # Whether the candidate has already been told about the overlay
+        # currently in the way; cleared as soon as the page is usable.
+        blocked_told = False
         closed_prompted: set[str] = set()
         last_llm_sig = ""
         outcome = ""
@@ -592,28 +595,42 @@ def run_session(
             # form the candidate could neither see nor correct - and the
             # session ended on "I am not making progress", which is true but
             # says nothing about what to do. A reload is what to do.
+            if browser.page_blocked(page):
+                # Almost always this: the panel the overlay is foregrounding
+                # is simply off screen. UKG puts its Work Experience editor
+                # 1400px down a 6800px page, and because the overlay is fixed
+                # every scroll position looks identically washed out - so the
+                # page reads as dead from the top and is perfectly usable one
+                # scroll away. Look at the panel before calling it dead.
+                shown = browser.reveal_foreground(page)
+                if shown:
+                    sess.log(f"The form put '{_brief(shown, 40)}' in front; scrolled to it.")
             blocked = browser.page_blocked(page)
-            if blocked:
+            if blocked and not blocked_told:
+                # Asked once per episode. Re-asking on every page change gave
+                # the candidate the same sentence twelve times in thirty
+                # seconds, because a page with an overlay animating on it
+                # never stops changing.
+                blocked_told = True
                 reply = _ask_watching(
                     sess, holder, page, handled, fields,
-                    f"The site has an overlay up ({blocked}) and nothing on the page "
-                    "can be clicked - by me or by you. Reload it in the browser (F5); "
-                    "this kind of form keeps what you have entered on their side. "
-                    "Type done once it is back, or abort to stop.",
+                    f"The site has an overlay up ({blocked}) and I cannot reach "
+                    "anything under it, even after scrolling to what it put in "
+                    "front. Try scrolling the form yourself - the panel it wants "
+                    "you to finish may be further down. If there is nothing to "
+                    "click, reload it (F5); this kind of form keeps what you have "
+                    "entered on their side. Type done when you are ready.",
                 )
-                if reply is None:
-                    continue
-                if reply.lower() in FINISHED_WORDS:
-                    # Reloaded, or finished by hand: re-read and carry on.
+                if reply is not None:
+                    if reply.lower().startswith("http"):
+                        page.goto(reply.strip(), wait_until="domcontentloaded", timeout=60000)
+                        sess.log(f"Opened {reply.strip()}")
+                    elif reply.lower() not in FINISHED_WORDS:
+                        notes.append(f"guidance from the candidate: {reply}")
                     last_llm_sig = ""
-                    continue
-                if reply.lower().startswith("http"):
-                    page.goto(reply.strip(), wait_until="domcontentloaded", timeout=60000)
-                    sess.log(f"Opened {reply.strip()}")
-                    continue
-                notes.append(f"guidance from the candidate: {reply}")
-                last_llm_sig = ""
                 continue
+            if not blocked:
+                blocked_told = False
 
             # Once an attachment has been vetted in its modal, fill any file
             # picker the user opens (tile-style uploads hide the real input).

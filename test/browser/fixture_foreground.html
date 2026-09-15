@@ -40,6 +40,21 @@
 
 <div id="live-overlay" class="bring-to-foreground-overlay"></div>
 
+<!-- The site's own header, as USP has it: buttons that sit in the viewport
+     when you are at the top of the page and are covered like everything else.
+     Without these the top of the page holds no controls at all, and "nothing
+     here" is not the same question as "nothing reachable". -->
+<div id="site-header">
+  <button id="nav-find" type="button">Find Opportunities</button>
+  <button id="nav-me" type="button">My Presence</button>
+</div>
+
+<!-- Pushes the panel below the fold, the way UKG leaves its editor 1400px
+     down a 6800px page. The overlay is fixed, so every scroll position looks
+     identically washed out and the panel reads as missing rather than as
+     off screen. -->
+<div id="spacer" style="height:0"></div>
+
 <!-- Raised above the overlay: the one thing the page still wants you to use. -->
 <div id="panel" role="dialog" aria-label="Work Experience">
   <h2>Work Experience</h2>
@@ -59,6 +74,10 @@
 <script>
   // The stale case: the panel goes, the overlay stays, and nothing anywhere
   // on the page is reachable. That is the one worth punching through.
+  function pushDown() {
+    document.getElementById('spacer').style.height = '1600px';
+  }
+
   function goStale() {
     document.getElementById('panel').remove();
     document.getElementById('live-overlay').id = 'stale-overlay';

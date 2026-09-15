@@ -92,7 +92,45 @@ with sync_playwright() as pw:
         check(f"  and {what} never fired", log_of(page) == before,
               f"{before!r} -> {log_of(page)!r}")
 
+    print("\nan off-screen panel is looked at, not declared dead")
+    # The commonest shape by far, and the one a false positive ruins: the
+    # panel is alive, clickable and above the overlay - just 1400px down the
+    # page. From the top nothing can be hit, which reads exactly like a dead
+    # page, and telling the candidate to reload a form they could have
+    # finished by scrolling would be the worst answer available.
+    page.goto((HERE / "fixture_foreground.html").as_uri())
+    page.evaluate("() => pushDown()")
+    page.wait_for_timeout(200)
+    check("from the top it looks blocked",
+          browser.page_blocked(page) == "bring-to-foreground-overlay",
+          repr(browser.page_blocked(page)))
+    shown = browser.reveal_foreground(page)
+    page.wait_for_timeout(200)
+    check("the raised panel is found and scrolled to", shown != "", repr(shown))
+    check("and then the page is not blocked at all",
+          browser.page_blocked(page) == "", repr(browser.page_blocked(page)))
+    out = browser.click(page.locator("#save"), timeout=3000, fallback_timeout=1000)
+    check("its Save clicks normally once it is on screen", out == "clicked", repr(out))
+    check("and the page saw it", "save" in log_of(page), repr(log_of(page)))
+
+    print("\nbut a panel with no size is not rescued by scrolling")
+    # Both earlier USP dumps: the panel really had collapsed to 0x0, so there
+    # was nothing to reveal and nothing to click. That page IS dead, and
+    # saying so is right.
+    page.goto((HERE / "fixture_foreground.html").as_uri())
+    page.evaluate("() => { const p = document.getElementById('panel');"
+                  " p.style.height = '0'; p.style.width = '0';"
+                  " p.style.overflow = 'hidden'; }")
+    page.wait_for_timeout(200)
+    check("nothing is revealed", browser.reveal_foreground(page) == "",
+          repr(browser.reveal_foreground(page)))
+    check("and it is still reported blocked",
+          browser.page_blocked(page) == "bring-to-foreground-overlay",
+          repr(browser.page_blocked(page)))
+
     print("\na STALE overlay is still punched through")
+    page.goto((HERE / "fixture_foreground.html").as_uri())
+    page.wait_for_timeout(200)
     # dentsu: the overlay is a leftover, nothing on the page is reachable, and
     # refusing here would strand every form that ends up in this state.
     page.evaluate("() => goStale()")
