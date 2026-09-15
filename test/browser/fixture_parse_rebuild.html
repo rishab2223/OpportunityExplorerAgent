@@ -46,21 +46,46 @@
     document.getElementById('log').textContent += (parsing ? 'add-during-parse ' : 'add ');
   }
 
-  document.getElementById('resume').addEventListener('change', function () {
+  // With ?manual the parse never starts on its own, and the test says when.
+  // Timers race the poll loop: under a full sweep this machine runs a dozen
+  // browsers, wait_quiet's polling stretches, and a parse on a 1.8s timer can
+  // finish before it returns - so "the parse had not begun" stopped being
+  // true and the check failed for a reason that had nothing to do with the
+  // code. A parse that cannot start until it is called cannot race anything.
+  var manual = location.search.indexOf('manual') >= 0;
+
+  function startParse() {
     parsing = true;
-    document.getElementById('log').textContent += 'upload ';
-    // Two beats, like a real parse: the section grows, then is replaced.
-    setTimeout(function () {
-      document.getElementById('entries').innerHTML =
-        '<div class="entry"><label>Job Title <input class="title" type="text" value="Parsing..."></label></div>';
-    }, 400);
+    document.getElementById('entries').innerHTML =
+      '<div class="entry"><label>Job Title <input class="title" type="text" value="Parsing..."></label></div>';
     setTimeout(function () {
       document.getElementById('entries').innerHTML =
         '<div class="entry"><label>Job Title <input class="title" type="text" value="Software Engineer"></label></div>' +
         '<div class="entry"><label>Job Title <input class="title" type="text" value="Software Engineer Intern"></label></div>';
       parsing = false;
       document.getElementById('log').textContent += 'parsed ';
-    }, 1400);
+    }, 1000);
+  }
+
+  document.getElementById('resume').addEventListener('change', function () {
+    document.getElementById('log').textContent += 'upload ';
+    if (manual) return;
+    parsing = true;
+    // Two beats, like a real parse: the section grows, then is replaced.
+    // Nothing happens for a while. This is the part that caught me: a parse
+    // that has not begun looks exactly like a page that has finished, so
+    // waiting for "quiet" alone returns before the site has touched anything.
+    setTimeout(function () {
+      document.getElementById('entries').innerHTML =
+        '<div class="entry"><label>Job Title <input class="title" type="text" value="Parsing..."></label></div>';
+    }, 1800);
+    setTimeout(function () {
+      document.getElementById('entries').innerHTML =
+        '<div class="entry"><label>Job Title <input class="title" type="text" value="Software Engineer"></label></div>' +
+        '<div class="entry"><label>Job Title <input class="title" type="text" value="Software Engineer Intern"></label></div>';
+      parsing = false;
+      document.getElementById('log').textContent += 'parsed ';
+    }, 2800);
   });
 </script>
 </body>

@@ -26,6 +26,11 @@ MAX_STEPS = 80
 # Education from it) take seconds over it, and this is a cap, not a sleep:
 # browser.settle returns as soon as the page stops changing.
 RESUME_PARSE_WAIT_MS = 12000
+# How long the site gets to START rewriting the form. Waiting only for quiet
+# is not enough: a parse that has not begun reads as perfectly quiet, which is
+# exactly how a click landed 0.6s after an upload and 1.1s of "settled" page.
+# A site that never touches the form pays this once per application.
+RESUME_PARSE_START_MS = 6000
 LOW_CONFIDENCE = 0.6
 HISTORY_LIMIT = 12
 MAX_ATTEMPTS_PER_FIELD = 3
@@ -799,15 +804,21 @@ def run_session(
             # 1) Attachments the form is asking for, built on the spot.
             if _handle_attachments(page, fields, handled, attach, sess, notes):
                 # A site that READS the resume rewrites the form from it. UKG
-                # fills Work Experience and Education out of the parse and
-                # re-renders both; the agent clicked "Add Experience" 0.6s
-                # after the upload, into a section still being built, and the
-                # panel that opened never finished - overlay up, nothing
-                # clickable, for the candidate as much as for us. Wait for the
-                # shape to stop moving before touching anything.
-                if not browser.wait_quiet(page, timeout=RESUME_PARSE_WAIT_MS):
-                    sess.log("The form is still rebuilding itself after the upload; "
-                             "carrying on with what is on the page now.")
+                # fills Work Experience and Education out of the parse, and
+                # takes seconds to start: waiting only for the page to go
+                # QUIET returned in 1.1s, before the parse had begun, and the
+                # agent then clicked "Add Experience" into a section about to
+                # be rebuilt - which is where the foregrounded panel, and the
+                # washed-out page, come from.
+                #
+                # So wait for the rebuild to START, then for it to finish. A
+                # site that does nothing with the resume pays the first window
+                # and no more, once per application.
+                after_upload = browser.page_shape(page)
+                if browser.settle(page, after_upload, RESUME_PARSE_START_MS):
+                    sess.log("The site is reading the resume into the form; "
+                             "waiting for it to finish before filling anything.")
+                    browser.wait_quiet(page, timeout=RESUME_PARSE_WAIT_MS)
                 errors_in_a_row = 0
                 noop_streak = 0
                 last_llm_sig = ""
