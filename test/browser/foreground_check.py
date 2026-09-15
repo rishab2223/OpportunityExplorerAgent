@@ -110,7 +110,34 @@ with sync_playwright() as pw:
     check("and the page received it", log_of(page) == (before + " add").strip(),
           repr(log_of(page)))
 
+    print("\nand a page nobody can use is recognised as one")
+    # The state USP reached twice: overlay up, the panel it raised collapsed
+    # to nothing, not one control hittable anywhere. Forcing clicks through
+    # THIS only takes it further from something the candidate can rescue, so
+    # what matters is that it is named - the answer is a reload.
+    check("the dead page reports which overlay has it",
+          browser.page_blocked(page) == "bring-to-foreground-overlay",
+          repr(browser.page_blocked(page)))
+
     b.close()
+
+    print("\nand an ordinary page is not")
+    # The cost of a false positive is stopping a working session dead, so
+    # this must stay quiet on a page that is merely busy or modal.
+    plain = b2 = None
+    b2 = pw.chromium.launch()
+    plain = b2.new_page(viewport={"width": 1280, "height": 900})
+    plain.goto((HERE / "fixture_form.html").as_uri())
+    plain.wait_for_timeout(200)
+    check("a normal form is not blocked", browser.page_blocked(plain) == "",
+          repr(browser.page_blocked(plain)))
+    plain.goto((HERE / "fixture_foreground.html").as_uri())
+    plain.wait_for_timeout(200)
+    # A LIVE overlay is not a dead page: the panel it raised is still usable,
+    # and stopping the session there would be wrong.
+    check("a live overlay with a usable panel is not blocked either",
+          browser.page_blocked(plain) == "", repr(browser.page_blocked(plain)))
+    b2.close()
 TMP.cleanup()
 
 print()

@@ -579,6 +579,37 @@ def run_session(
 
             holder["page"] = page
 
+            # A page nobody can use. USP's UKG board got here twice: the panel
+            # it had raised collapsed to 0x0 with its overlay still up, so
+            # there was no Save and no Cancel and not one control anywhere
+            # could be hit. Every action after that failed slowly - three
+            # ten-second fill timeouts and two clicks forced through onto a
+            # form the candidate could neither see nor correct - and the
+            # session ended on "I am not making progress", which is true but
+            # says nothing about what to do. A reload is what to do.
+            blocked = browser.page_blocked(page)
+            if blocked:
+                reply = _ask_watching(
+                    sess, holder, page, handled, fields,
+                    f"The site has an overlay up ({blocked}) and nothing on the page "
+                    "can be clicked - by me or by you. Reload it in the browser (F5); "
+                    "this kind of form keeps what you have entered on their side. "
+                    "Type done once it is back, or abort to stop.",
+                )
+                if reply is None:
+                    continue
+                if reply.lower() in FINISHED_WORDS:
+                    # Reloaded, or finished by hand: re-read and carry on.
+                    last_llm_sig = ""
+                    continue
+                if reply.lower().startswith("http"):
+                    page.goto(reply.strip(), wait_until="domcontentloaded", timeout=60000)
+                    sess.log(f"Opened {reply.strip()}")
+                    continue
+                notes.append(f"guidance from the candidate: {reply}")
+                last_llm_sig = ""
+                continue
+
             # Once an attachment has been vetted in its modal, fill any file
             # picker the user opens (tile-style uploads hide the real input).
             if attach.resume_path or attach.letter_pdf:

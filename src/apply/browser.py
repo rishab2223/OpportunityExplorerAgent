@@ -876,6 +876,52 @@ class BlockedByOverlay(RuntimeError):
     """The page is foregrounding another panel and refusing this control."""
 
 
+# Is the page usable AT ALL? A viewport-sized overlay with nothing reachable
+# behind or above it is a page nobody can use - not the agent, not the
+# candidate. USP's UKG board reached that state twice: the panel it had raised
+# collapsed to 0x0 with the overlay still up, so there was no Save and no
+# Cancel, and every click after that was forced through onto a page the
+# candidate could neither see nor correct.
+PAGE_BLOCKED_JS = """
+() => {
+  const at = (x, y) => document.elementFromPoint(x, y);
+  let reachable = 0, seen = 0;
+  for (const c of document.querySelectorAll(
+      'input, textarea, select, button, [role=button], a[href]')) {
+    const r = c.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    if (r.bottom < 0 || r.top > innerHeight) continue;
+    seen++;
+    const hit = at(r.left + r.width / 2, r.top + r.height / 2);
+    if (hit && (hit === c || c.contains(hit))) reachable++;
+  }
+  if (!seen || reachable) return '';
+  // Nothing is reachable. Only call it blocked when something is visibly in
+  // the way: a page still painting has nothing to hit either, and that
+  // resolves itself.
+  const mid = at(innerWidth / 2, innerHeight / 2);
+  if (!mid) return '';
+  const cs = getComputedStyle(mid), r = mid.getBoundingClientRect();
+  const wide = r.width >= innerWidth * 0.9 && r.height >= innerHeight * 0.9;
+  if (!wide || (cs.position !== 'fixed' && cs.position !== 'absolute')) return '';
+  return mid.className || mid.id || mid.tagName;
+}
+"""
+
+
+def page_blocked(page) -> str:
+    """The name of the overlay holding the page hostage, or ''.
+
+    Cheap, and worth running before acting: once this is true nothing the
+    agent does can land, and forcing clicks through only takes the page
+    further from a state the candidate can rescue.
+    """
+    try:
+        return target(page).evaluate(PAGE_BLOCKED_JS) or ""
+    except Exception:
+        return ""
+
+
 def click(locator, timeout: int = 10000, fallback_timeout: int = 3000) -> str:
     """Click, and when the real click cannot land (an overlay or a stale
     popup intercepts pointer events - one dentsu Workday page blocked Accept
