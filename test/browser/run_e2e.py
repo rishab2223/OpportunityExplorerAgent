@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # Windows consoles default to cp1252: printing "Karnātaka" in a log line raised
@@ -196,8 +197,12 @@ class ScriptedSession(ApplySession):
         super().finish(status, text)
 
 
+TIMES: list[tuple[str, float]] = []
+
+
 def run(name, url, script, expect_calls, expect_status="applied"):
     print(f"\n== {name} ==")
+    started = time.time()
     LLM_CALLS.clear()
     sess = ScriptedSession(script)
     job = {"job_id": f"test:{name}", "company": "DummyCo",
@@ -209,6 +214,7 @@ def run(name, url, script, expect_calls, expect_status="applied"):
     assert sess.status == expect_status, f"status {sess.status}, wanted {expect_status}"
     assert len(LLM_CALLS) == expect_calls, f"{len(LLM_CALLS)} LLM calls, wanted {expect_calls}"
     assert not sess.queue, f"unused scripted answers: {sess.queue}"
+    TIMES.append((name, time.time() - started))
     return sess
 
 
@@ -525,6 +531,13 @@ for name, sess in (("pass1", s1), ("pass2", s2), ("skip", s3), ("external", s4),
                    ("cf7-nameless-upload", s21)):
     joined = "\n".join(sess.logs)
     assert "Clicked Submit application" not in joined, f"{name} clicked submit!"
+
+# This script is the sweep's critical path, so where its time goes is worth
+# printing rather than guessing at.
+print("\nslowest scenarios:")
+for _name, _took in sorted(TIMES, key=lambda t: -t[1])[:8]:
+    print(f"  {_took:6.1f}s  {_name}")
+print(f"  {sum(t for _, t in TIMES):6.1f}s  across {len(TIMES)} scenarios")
 
 print("\nALL E2E CHECKS PASSED")
 print(f"scratch dir: {SCRATCH}")

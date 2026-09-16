@@ -167,6 +167,7 @@ No model is called by any of it. The harness swaps in a scripted stand-in, which
 python check.py            # only the groups your working tree touches
 python check.py sites      # one group by name
 python check.py all        # everything
+python check.py all -j6    # the same, six scripts at a time (~147s, not ~480s)
 python check.py --list     # the groups and what is in them
 ```
 

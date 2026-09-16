@@ -821,11 +821,19 @@ def run_session(
                 # So wait for the rebuild to START, then for it to finish. A
                 # site that does nothing with the resume pays the first window
                 # and no more, once per application.
-                after_upload = browser.page_shape(page)
-                if browser.settle(page, after_upload, RESUME_PARSE_START_MS):
-                    sess.log("The site is reading the resume into the form; "
-                             "waiting for it to finish before filling anything.")
-                    browser.wait_quiet(page, timeout=RESUME_PARSE_WAIT_MS)
+                #
+                # Only where a parse would have somewhere to go. What the
+                # wait protects is the next thing the loop does - clicking
+                # Add on a repeating section - so a form with no Work
+                # Experience or Education on it has nothing to be caught
+                # mid-rebuild, and waiting there bought six seconds of
+                # nothing per upload. That was 100s across the e2e suite.
+                if _parse_could_rewrite(fields):
+                    after_upload = browser.page_shape(page)
+                    if browser.settle(page, after_upload, RESUME_PARSE_START_MS):
+                        sess.log("The site is reading the resume into the form; "
+                                 "waiting for it to finish before filling anything.")
+                        browser.wait_quiet(page, timeout=RESUME_PARSE_WAIT_MS)
                 errors_in_a_row = 0
                 noop_streak = 0
                 last_llm_sig = ""
@@ -1783,6 +1791,23 @@ def _is_sign_in_page(fields: list[dict[str, Any]]) -> bool:
     # A form that registers you inline has plenty else to fill; a sign-in page
     # has the credentials and almost nothing else.
     return fillable <= 3
+
+
+def _parse_could_rewrite(fields: list[dict[str, Any]]) -> bool:
+    """Has this form anywhere a resume parse would fill?
+
+    A site reads the resume into Work Experience and Education, and those are
+    also the sections the loop is about to click Add on. A form without them
+    cannot be caught mid-rebuild, so there is nothing to wait for - and that
+    is most forms.
+    """
+    for field in fields:
+        where = f"{field.get('section') or ''} {field.get('group') or ''}"
+        if resolver.REPEATING_SECTION_RE.search(where):
+            return True
+        if resolver.in_repeating_section(field):
+            return True
+    return False
 
 
 def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
@@ -4562,6 +4587,16 @@ def _wait_for_options(page, locator, timeout: int = 600, step: int = 100):
     return visible, shown
 
 
+# Reading an open dropdown off a locator that may already be stale. Playwright
+# waits 30 SECONDS by default for an element to appear, and this does three
+# such reads - two attributes and an evaluate - so a re-rendered widget cost
+# ninety seconds before the page-wide fallback below even started. Workday
+# swaps the search box node whenever its list opens, so that is not a rare
+# case; it was most of one check's runtime and would have been a ninety-second
+# stall in a real session. A widget that IS there answers instantly.
+OPTION_READ_MS = 1000
+
+
 def _visible_options(page, locator):
     """Visible option rows for an open dropdown (marked by ROWS_JS): scoped
     to the widget's own listbox (aria-controls/aria-owns) when it names one
@@ -4571,13 +4606,13 @@ def _visible_options(page, locator):
     listbox = ""
     for attr in ("aria-controls", "aria-owns"):
         try:
-            listbox = (locator.get_attribute(attr) or "").strip()
+            listbox = (locator.get_attribute(attr, timeout=OPTION_READ_MS) or "").strip()
         except Exception:
             listbox = ""
         if listbox:
             break
     try:
-        count = int(locator.evaluate(ROWS_JS, listbox) or 0)
+        count = int(locator.evaluate(ROWS_JS, listbox, timeout=OPTION_READ_MS) or 0)
     except Exception:
         # The box was re-rendered under us (Workday swaps the search box
         # node when its list opens): scan the whole page, chips excluded.
