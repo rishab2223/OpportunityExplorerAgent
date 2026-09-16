@@ -4,7 +4,16 @@
     python check.py unit         one group by name
     python check.py unit ui      several
     python check.py all          everything (slow: the browser groups)
+    python check.py all -j6      the same, six scripts at a time
     python check.py --list       the groups, their scripts and what they cost
+
+-j runs the browser scripts concurrently. They are safe to overlap - each one
+keeps its state in its own temp directory, none of them reads localData, and
+the two that serve a page use their own fixed port. What they are NOT immune
+to is the clock: a handful assert on how long something took, and a loaded
+machine slows everything. settle_check failed that way twice before its
+timing assumptions were taken out. So -j is opt-in, and if a check starts
+failing only under -j, suspect its assertions before its subject.
 
 The unit suite is ten seconds for all of it, so it is never worth splitting:
 every run includes it. The browser groups are the expensive ones, and those
@@ -17,10 +26,12 @@ nothing else.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -50,6 +61,25 @@ GROUPS: dict[str, list[str]] = {
     "ui": ["ui_check.py", "queue_ui_check.py", "chat_ui_check.py",
            "pager_check.py", "readme_check.py"],
 }
+
+# The slow ones, worst first, so -j starts them before it starts anything it
+# can finish quickly. Measured on a serial `check.py all`; each of these is
+# slow because it waits out a real timeout or runs a whole apply session, not
+# because it sleeps.
+LONGEST = [
+    "run_e2e.py",             # ~114s: 21 apply sessions
+    "fallback_check.py",      # ~92s: waits out Playwright's own timeouts
+    "longlist_check.py",      # ~37s: server-side dropdown search
+    "keystroke_check.py",     # ~35s: the typing fallback after a failed fill
+    "submitted_tail_check.py",  # ~25s
+    "async_check.py",         # ~21s
+    "ui_check.py",            # ~20s
+    "queue_e2e.py",           # ~17s
+    "rdp_probe.py",           # ~13s
+    "material_check.py",      # ~11s
+    "phenom_check.py",        # ~11s
+    "queue_ui_check.py",      # ~10s
+]
 
 # Which groups a changed file puts at risk. First match wins, so the specific
 # paths come before the general ones.
@@ -130,21 +160,52 @@ def main() -> int:
         wanted = groups_for(paths)
         print(f"{len(paths)} changed file(s) -> {', '.join(wanted)}\n")
 
+    jobs = 1
+    for arg in sys.argv[1:]:
+        if arg.startswith("-j"):
+            tail = arg[2:].lstrip("=") or "0"
+            jobs = int(tail) if tail.isdigit() and int(tail) > 0 else (os.cpu_count() or 4)
+
     failed: list[str] = []
     started = time.time()
-    for group in wanted:
-        print(f"== {group} ==")
-        if group == "unit":
-            ok, took, what = run_unit()
-            print(f"  {'PASS' if ok else 'FAIL'}  {what}  {took:.1f}s")
-            if not ok:
-                failed.append("unit")
-            continue
-        for script in GROUPS[group]:
-            ok, took, last = run_script(script)
-            print(f"  {'PASS' if ok else 'FAIL'}  {script:28} {took:6.1f}s  {last}")
-            if not ok:
-                failed.append(script)
+
+    if "unit" in wanted:
+        # Its own command, and ten seconds: no reason to fold it into the pool.
+        print("== unit ==")
+        ok, took, what = run_unit()
+        print(f"  {'PASS' if ok else 'FAIL'}  {what}  {took:.1f}s")
+        if not ok:
+            failed.append("unit")
+
+    tasks = [(g, s) for g in wanted if g != "unit" for s in GROUPS[g]]
+    # Longest first, or the run ends waiting on a 92-second script that a pool
+    # with nothing left to do picked up last. A hint only: getting this list
+    # wrong or letting it go stale costs seconds, never correctness.
+    tasks.sort(key=lambda t: LONGEST.index(t[1]) if t[1] in LONGEST else len(LONGEST))
+    if jobs > 1 and len(tasks) > 1:
+        # Across groups, not within them: `apply` is one 114s script, and a
+        # pool that finished each group before starting the next would sit
+        # behind it for most of the run.
+        print(f"== {len(tasks)} scripts, {jobs} at a time ==")
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            running = {pool.submit(run_script, s): (g, s) for g, s in tasks}
+            for done in as_completed(running):
+                group, script = running[done]
+                ok, took, last = done.result()
+                print(f"  {'PASS' if ok else 'FAIL'}  {script:28} {took:6.1f}s  "
+                      f"[{group}] {last}")
+                if not ok:
+                    failed.append(script)
+    else:
+        for group in wanted:
+            if group == "unit":
+                continue
+            print(f"== {group} ==")
+            for script in GROUPS[group]:
+                ok, took, last = run_script(script)
+                print(f"  {'PASS' if ok else 'FAIL'}  {script:28} {took:6.1f}s  {last}")
+                if not ok:
+                    failed.append(script)
 
     print(f"\n{time.time() - started:.0f}s total")
     if failed:

@@ -634,8 +634,15 @@ def run_session(
                         notes.append(f"guidance from the candidate: {reply}")
                     last_llm_sig = ""
                 continue
-            if not blocked:
-                blocked_told = False
+            if blocked:
+                # Told already. Saying it again is the twelve-times-in-thirty-
+                # seconds bug, but falling through is worse: that is acting on
+                # a page where nothing can be hit, which is how three
+                # ten-second timeouts and two forced clicks happened. Wait for
+                # the candidate to free it; MAX_STEPS bounds the waiting.
+                page.wait_for_timeout(1000)
+                continue
+            blocked_told = False
 
             # Once an attachment has been vetted in its modal, fill any file
             # picker the user opens (tile-style uploads hide the real input).

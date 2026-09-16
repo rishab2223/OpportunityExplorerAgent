@@ -107,16 +107,12 @@ with sync_playwright() as pw:
     check("and pays the quiet window, not the cap",
           waited < 12.0, f"{waited:.1f}s of a 12s cap")
 
-    print("\nand a page that never stops moving is not waited on forever")
-    page.set_content(
-        "<div id='x'></div><script>setInterval(() => {"
-        " document.getElementById('x').innerHTML = '<input value=\"' +"
-        " Math.random() + '\">'; }, 100);</script>")
-    page.wait_for_timeout(200)
-    started = time.time()
-    quiet = browser.wait_quiet(page, timeout=2000)
-    waited = time.time() - started
-    check("it gives up rather than waiting for ever", quiet is False)
+    # The cap - "a page that never stops moving is not waited on for ever" -
+    # is proved in WaitQuietTests instead. It lived here, as a page rewriting
+    # itself on a 100ms timer, and failed twice inside a parallel sweep: a
+    # starved Chromium throttles that timer, the DOM stops changing, and the
+    # premise stops being true. A real browser under load cannot promise to
+    # never settle; a fake page can.
 
     b.close()
 TMP.cleanup()

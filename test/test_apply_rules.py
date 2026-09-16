@@ -2316,3 +2316,72 @@ class ApplyChoiceTests(unittest.TestCase):
         # the chip's removal fix the session rather than merely tidy the list.
         self.assertEqual(
             len(worker._apply_choices([self._link("Apply on company website")])), 1)
+
+
+class WaitQuietTests(unittest.TestCase):
+    """wait_quiet waits for change to STOP, without caring whether any
+    happened - the question after an upload, where a site that ignores the
+    resume must not pay the whole cap.
+
+    These use a fake page rather than a browser on purpose. The browser check
+    tried to prove the cap with a page rewriting itself on a 100ms timer, and
+    it failed twice inside a parallel sweep: a starved Chromium throttles that
+    timer, the DOM stops changing, and "never settles" quietly stops being
+    true. A fake page cannot be throttled.
+    """
+
+    class Page:
+        """Yields a different shape every poll unless `settles_at` is reached."""
+
+        def __init__(self, settles_at=None):
+            self.url = "https://example.invalid/form"
+            self.polls = 0
+            self.slept = 0
+            self.settles_at = settles_at
+
+        def wait_for_timeout(self, ms):
+            self.slept += ms
+            self.polls += 1
+
+        def shape(self):
+            if self.settles_at is not None and self.polls >= self.settles_at:
+                return "settled"
+            return f"moving-{self.polls}"
+
+    def _patched(self, page):
+        from src.apply import browser
+
+        class Frame:
+            def evaluate(self, js):
+                return page.shape()
+
+        return unittest.mock.patch.object(browser, "target", lambda p: Frame())
+
+    def test_a_page_that_never_settles_gives_up_at_the_cap(self) -> None:
+        from src.apply import browser
+
+        page = self.Page()                      # never the same shape twice
+        with self._patched(page):
+            self.assertFalse(browser.wait_quiet(page, timeout=2000, step=250))
+        self.assertEqual(page.slept, 2000)      # the cap, and not a step more
+
+    def test_a_still_page_costs_only_the_quiet_window(self) -> None:
+        from src.apply import browser
+
+        page = self.Page(settles_at=0)          # quiet from the first poll
+        with self._patched(page):
+            self.assertTrue(browser.wait_quiet(page, timeout=12000, step=250,
+                                               quiet=1000))
+        # Four identical polls to make up the quiet window, not the 12s cap:
+        # this is what keeps the wait off every upload on every other site.
+        self.assertEqual(page.slept, 1000)
+
+    def test_a_page_that_settles_late_is_waited_out_then_returns(self) -> None:
+        from src.apply import browser
+
+        page = self.Page(settles_at=8)
+        with self._patched(page):
+            self.assertTrue(browser.wait_quiet(page, timeout=12000, step=250,
+                                               quiet=1000))
+        # Eight polls of movement, then four of quiet.
+        self.assertEqual(page.slept, 250 * 12)
