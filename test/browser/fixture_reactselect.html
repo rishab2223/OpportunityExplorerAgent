@@ -131,7 +131,15 @@
       list.className = "select__menu-list remix-css-qr46ko";
       list.setAttribute("role", "listbox");
       list.id = "react-select-" + id + "-listbox";
-      OPTIONS[id].forEach(function (text, n) {
+      // react-select FILTERS as you type. This is what the first version of
+      // this fixture left out, and why it passed while the real form failed:
+      // "Immediate Joiner" typed at "Immediate / Available to join" matches
+      // nothing, so the list empties and there is nothing left to pick.
+      var typed = (input.value || "").toLowerCase();
+      var showing = OPTIONS[id].filter(function (t) {
+        return !typed || t.toLowerCase().indexOf(typed) >= 0;
+      });
+      showing.forEach(function (text, n) {
         var o = document.createElement("div");
         o.className = "select__option remix-css-174espb-option";
         o.setAttribute("role", "option");
@@ -144,6 +152,12 @@
         });
         list.appendChild(o);
       });
+      if (!showing.length) {
+        var none = document.createElement("div");
+        none.className = "select__menu-notice";
+        none.textContent = "No options";
+        list.appendChild(none);
+      }
       menu.appendChild(list);
       shellOf(input).appendChild(menu);
     }, MOUNT_DELAY);
@@ -169,7 +183,12 @@
     input.setAttribute("aria-controls", "react-select-" + input.id + "-listbox");
     input.addEventListener("focus", function () { openMenu(input); });
     input.addEventListener("mousedown", function () { openMenu(input); });
-    input.addEventListener("input", function () { openMenu(input); });
+    input.addEventListener("input", function () {
+      var m = shellOf(input).querySelector(".select__menu");
+      if (m) m.remove();                  // re-filter on every keystroke
+      input.setAttribute("aria-expanded", "false");
+      openMenu(input);
+    });
   });
 </script>
 <pre id="log"></pre>

@@ -155,6 +155,89 @@ with sync_playwright() as pw:
           "LinkedIn" in page.locator("#log").inner_text(),
           repr(page.locator("#log").inner_text()))
 
+    print("\nand a filtering box does not lose the list by being typed at")
+    # The one the first version of this fixture missed, which is why it passed
+    # while the real form failed three runs running: react-select FILTERS as
+    # you type. "Immediate Joiner" matches no option, so the list empties, and
+    # matching against an empty list can only refuse. The list worth matching
+    # is the one from before the typing.
+    page.goto((HERE / "fixture_reactselect.html").as_uri())
+    page.wait_for_timeout(200)
+    page.evaluate("() => { const box = document.querySelector('#q2')"
+                  ".closest('.select__value-container');"
+                  " box.querySelector('.select__single-value').outerHTML ="
+                  " '<div class=\"select__placeholder\">Select...</div>'; }")
+    page.wait_for_timeout(100)
+    notice_box = {str(f.get("label") or "").split("*")[0].strip(): f
+                  for f in browser.snapshot(page)}["What is your notice period?"]
+    check("it starts out unanswered", not (notice_box.get("value") or ""),
+          repr(notice_box.get("value")))
+    # Typing the profile's wording really does empty this list - if it did
+    # not, the rest of this proves nothing. Shown on its own page, because
+    # typing into the box and then clearing it leaves the widget in a state
+    # the real flow never starts from, and the first version of this check
+    # failed on its own setup rather than on the code.
+    probe = b.new_page(viewport={"width": 1280, "height": 900})
+    probe.goto((HERE / "fixture_reactselect.html").as_uri())
+    probe.wait_for_timeout(200)
+    probe.fill("#q2", "Immediate Joiner")
+    probe.wait_for_timeout(500)
+    filtered = probe.locator("[role=option]").count()
+    check("typing the profile's wording empties the list", filtered == 0,
+          f"{filtered} options still shown")
+    probe.close()
+
+    sess2 = Sess()
+    loc2 = browser.locate(page, notice_box["id"], str(notice_box.get("elid") or ""))
+    try:
+        worker._commit_combobox(page, loc2, "Immediate Joiner",
+                                "What is your notice period?", "", sess2, [])
+        took = True
+    except Exception as exc:
+        took = False
+        sess2.log(f"refused: {exc}")
+    check("the profile's wording still reaches the option", took is True,
+          str(sess2.lines)[:120])
+    check("and the form received it",
+          "Immediate / Available to join" in page.locator("#log").inner_text(),
+          repr(page.locator("#log").inner_text()))
+
+    print("\nand a dropdown that took nothing is never reported as filled")
+    # Found by disabling the control-open above and watching what was left:
+    # Enter at a widget whose list never opened does nothing, and the agent
+    # logged "Selected 'Immediate Joiner'" - a value that is not one of the
+    # four options - for a box the form had received nothing into. A wrong
+    # answer is bad; a wrong answer the candidate is told is right, on a
+    # required field, is worse.
+    page.goto((HERE / "fixture_reactselect.html").as_uri())
+    page.wait_for_timeout(200)
+    page.evaluate("() => { const box = document.querySelector('#q2')"
+                  ".closest('.select__value-container');"
+                  " box.querySelector('.select__single-value').outerHTML ="
+                  " '<div class=\"select__placeholder\">Select...</div>'; }")
+    page.wait_for_timeout(100)
+    stuck = {str(f.get("label") or "").split("*")[0].strip(): f
+             for f in browser.snapshot(page)}["What is your notice period?"]
+    loc3 = browser.locate(page, stuck["id"], str(stuck.get("elid") or ""))
+    real_open = worker._open_via_control
+    worker._open_via_control = lambda _loc: False      # the widget will not open
+    sess3 = Sess()
+    try:
+        worker._commit_combobox(page, loc3, "Immediate Joiner",
+                                "What is your notice period?", "", sess3, [])
+        claimed = True
+    except Exception as exc:
+        claimed = False
+        sess3.log(f"refused: {exc}")
+    finally:
+        worker._open_via_control = real_open
+    got = page.locator("#log").inner_text()
+    check("it refuses rather than claiming a pick", claimed is False,
+          str(sess3.lines)[:140])
+    check("and nothing was chosen", "Immediate" not in got, repr(got))
+    check("and no line says it selected anything",
+          not any("Selected" in line for line in sess3.lines), str(sess3.lines)[:140])
+
     print("\nand the profile's own wording reaches the option")
     # "Immediate Joiner" is how the profile puts it; the form offers
     # "Immediate / Available to join". Neither is a prefix of the other, so

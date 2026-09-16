@@ -4959,6 +4959,47 @@ OPEN_CONTROL_JS = """
 """
 
 
+# What the widget is SHOWING as its answer: its own box if it keeps the text
+# there, else the choice rendered beside it (react-select's singleValue, a
+# chip list). The same places browser.snapshot looks, asked of one element.
+COMBOBOX_SHOWS_JS = """
+(el) => {
+  // The rendered choice FIRST. The box's own text is the search term we just
+  // typed, and reading that back as proof is how "Selected 'Immediate
+  // Joiner'" was logged for a field the form had nothing in: our own input,
+  // echoed, mistaken for an answer.
+  let n = el.parentElement;
+  for (let d = 0; n && d < 5; d++, n = n.parentElement) {
+    const picked = n.querySelector(
+        '[class*="singleValue"], [class*="single-value"],'
+        + ' [data-automation-id=selectedItem]');
+    if (picked) {
+      const shown = (picked.innerText || '').trim();
+      if (shown) return shown;
+    }
+  }
+  // Only then the box itself, for the widgets that really do put the choice
+  // there. The caller discounts it when it is merely what was typed.
+  return (el.value || '').trim();
+}
+"""
+
+
+def _combobox_shows(locator, typed: str = "") -> str:
+    """The answer the dropdown is displaying, or '' if it is still empty.
+
+    `typed` is discounted: a box still holding the search term has not
+    answered anything, however much it looks like it has.
+    """
+    try:
+        shown = (locator.evaluate(COMBOBOX_SHOWS_JS, timeout=OPTION_READ_MS) or "").strip()
+    except Exception:
+        return ""
+    if typed and resolver.plain(shown) == resolver.plain(typed):
+        return ""
+    return shown
+
+
 def _open_via_control(locator) -> bool:
     """Click the widget's own control instead of its search box. True if one
     was found and clicked."""
@@ -5013,6 +5054,30 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         was = ""
     visible, shown = _type_to_filter(page, locator, value, opening, sess, label, prefix)
     index = _choose_option(shown, value, prefer)
+    if index < 0 and opening and not _real_suggestions(shown):
+        # The box filters on what is typed, and the profile's wording is not
+        # the option's: "Immediate Joiner" typed at a list of "Immediate /
+        # Available to join", "30 days", "60 days", "90 days" matches nothing,
+        # so the list empties and there is nothing left to match against. The
+        # right list is the one that was there BEFORE typing, which is already
+        # in hand. Clear the box to get it back, then take that option by its
+        # own name.
+        want = _choose_option(opening, value, prefer)
+        if want >= 0:
+            wanted_text = opening[want]
+            try:
+                locator.fill("", timeout=10000)
+            except Exception:
+                pass
+            visible, shown = _wait_for_options(page, locator)
+            if not _real_suggestions(shown):
+                _open_via_control(locator)
+                visible, shown = _wait_for_options(page, locator)
+            index = _choose_option(shown, wanted_text, prefer)
+            if index >= 0:
+                sess.log(f"{prefix}{_brief(label, LOG_LABEL)}: typing "
+                         f"'{_brief(value, 24)}' left the list empty; took "
+                         f"'{_brief(wanted_text, 40)}' from the unfiltered list.")
     decisive = resolver.plain(prefer[0]) if prefer else ""
     if decisive and (index < 0 or decisive not in resolver.plain(shown[index])):
         # The list filters on what was typed, so the right-state entry may
@@ -5091,7 +5156,20 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         )
     # One option or an invisible list: the widget highlights it; Enter takes it.
     locator.press("Enter")
-    sess.log(f"{prefix}Selected '{value}' for {_brief(label, LOG_LABEL)} (dropdown, keyboard)")
+    # And then CHECK, because Enter at a widget that never opened does
+    # nothing at all. This logged "Selected 'Immediate Joiner'" - a value that
+    # is not one of the four options - for a box the form had received nothing
+    # into, so the candidate was told a required dropdown was answered when it
+    # still read "Select...". What the widget shows is the only evidence, and
+    # it is worth logging in place of what we typed.
+    taken = _combobox_shows(locator, value)
+    if not taken:
+        raise ValueError(
+            f"'{value}' was typed at this dropdown but it took nothing; "
+            "its list never opened"
+        )
+    sess.log(f"{prefix}Selected '{_brief(taken, 40)}' for "
+             f"{_brief(label, LOG_LABEL)} (dropdown, keyboard)")
     return "picked"
 
 
