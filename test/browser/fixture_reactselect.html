@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Greenhouse react-select</title></head>
+<body>
+<!--
+  The Fospha application on Greenhouse, Sep 16 2026, rebuilt from the dump.
+
+  react-select CLEARS its search box when you choose something and renders the
+  choice in a sibling div. So the box the snapshot reads is empty on a
+  dropdown that has been answered, and three fields the agent had set
+  correctly - Country, notice period, and the Mumbai office question - all
+  read as untouched. It filled them again from the profile, failed because
+  "Immediate Joiner" is not the option's wording, and then told the candidate
+  to fill in by hand three boxes that were already right.
+
+  The markup here is react-select's: an input[role=combobox] whose value is
+  "", beside a div whose class carries singleValue, holding the visible
+  choice. Both the classNamePrefix form (select__single-value) and the
+  emotion-hashed one (remix-css-1dimb5e-singleValue) are on the real page.
+-->
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  .field-wrapper { margin-bottom: 18px; }
+  .select__control { border: 1px solid #999; padding: 6px; width: 420px; }
+  .select__single-value { display: inline-block; }
+  .select__input { border: 0; outline: 0; }
+</style>
+
+<form>
+  <div class="field-wrapper">
+    <label id="q1-label" for="q1" class="label select__label">Country<span aria-hidden="true">*</span></label>
+    <div class="select-shell remix-css-b62m3t-container">
+      <div class="select__control">
+        <div class="select__value-container">
+          <!-- The country one shows a flag beside the dial code. -->
+          <div class="select__single-value remix-css-1dimb5e-singleValue"><div class="iti__flag iti__in"></div>+91</div>
+          <div class="select__input-container">
+            <input id="q1" class="select__input" role="combobox" aria-haspopup="true"
+                   aria-required="true" autocomplete="off" value="">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="field-wrapper">
+    <label id="q2-label" for="q2" class="label select__label">What is your notice period?<span aria-hidden="true">*</span></label>
+    <div class="select-shell remix-css-b62m3t-container">
+      <div class="select__control">
+        <div class="select__value-container">
+          <div class="select__single-value remix-css-1dimb5e-singleValue">Immediate / Available to join</div>
+          <div class="select__input-container">
+            <input id="q2" class="select__input" role="combobox" aria-haspopup="true"
+                   aria-required="true" autocomplete="off" value="">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="field-wrapper">
+    <label id="q3-label" for="q3" class="label select__label">Please confirm you are happy to work from our Andheri, Mumbai office 4 days a week?<span aria-hidden="true">*</span></label>
+    <div class="select-shell remix-css-b62m3t-container">
+      <div class="select__control">
+        <div class="select__value-container">
+          <div class="select__single-value remix-css-1dimb5e-singleValue">Yes</div>
+          <div class="select__input-container">
+            <input id="q3" class="select__input" role="combobox" aria-haspopup="true"
+                   aria-required="true" autocomplete="off" value="">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Not yet answered: react-select shows a placeholder, NOT a singleValue,
+       and this one must still read as empty or the agent would skip it. -->
+  <div class="field-wrapper">
+    <label id="q4-label" for="q4" class="label select__label">How did you hear about us?<span aria-hidden="true">*</span></label>
+    <div class="select-shell remix-css-b62m3t-container">
+      <div class="select__control">
+        <div class="select__value-container">
+          <div class="select__placeholder remix-css-1jqq78o-placeholder">Select...</div>
+          <div class="select__input-container">
+            <input id="q4" class="select__input" role="combobox" aria-haspopup="true"
+                   aria-required="true" autocomplete="off" value="">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A plain text box must not pick up a neighbour's rendered value. -->
+  <div class="field-wrapper">
+    <label for="q5" class="label">First Name<span aria-hidden="true">*</span></label>
+    <input id="q5" type="text" autocomplete="given-name" aria-required="true" value="">
+  </div>
+</form>
+
+<script>
+  // react-select, reduced to what matters here: the menu does not exist until
+  // the box is opened, it mounts a beat later (React renders on the next
+  // frame, and the real one is slower than that), the options are
+  // div[role=option] inside a div[role=listbox] the input names through
+  // aria-controls, and choosing one unmounts the menu and writes the choice
+  // into the singleValue div while the search box goes back to empty.
+  var OPTIONS = {
+    q2: ["Immediate / Available to join", "30 days", "60 days", "90 days"],
+    q4: ["LinkedIn", "Job board", "Referral", "Other"]
+  };
+  var MOUNT_DELAY = 250;
+
+  function shellOf(input) { return input.closest(".select-shell"); }
+
+  function closeAll() {
+    document.querySelectorAll(".select__menu").forEach(function (m) { m.remove(); });
+    document.querySelectorAll("input[role=combobox]").forEach(function (i) {
+      i.setAttribute("aria-expanded", "false");
+    });
+  }
+
+  function openMenu(input) {
+    var id = input.id;
+    if (!OPTIONS[id] || shellOf(input).querySelector(".select__menu")) return;
+    input.setAttribute("aria-expanded", "true");
+    setTimeout(function () {
+      if (input.getAttribute("aria-expanded") !== "true") return;
+      var menu = document.createElement("div");
+      menu.className = "select__menu remix-css-1oc7h4y-menu";
+      var list = document.createElement("div");
+      list.className = "select__menu-list remix-css-qr46ko";
+      list.setAttribute("role", "listbox");
+      list.id = "react-select-" + id + "-listbox";
+      OPTIONS[id].forEach(function (text, n) {
+        var o = document.createElement("div");
+        o.className = "select__option remix-css-174espb-option";
+        o.setAttribute("role", "option");
+        o.setAttribute("aria-selected", "false");
+        o.id = "react-select-" + id + "-option-" + n;
+        o.textContent = text;
+        o.addEventListener("mousedown", function (e) {
+          e.preventDefault();
+          choose(input, text);
+        });
+        list.appendChild(o);
+      });
+      menu.appendChild(list);
+      shellOf(input).appendChild(menu);
+    }, MOUNT_DELAY);
+  }
+
+  function choose(input, text) {
+    var box = shellOf(input).querySelector(".select__value-container");
+    var ph = box.querySelector(".select__placeholder");
+    if (ph) ph.remove();
+    var sv = box.querySelector(".select__single-value");
+    if (!sv) {
+      sv = document.createElement("div");
+      sv.className = "select__single-value remix-css-1dimb5e-singleValue";
+      box.insertBefore(sv, box.firstChild);
+    }
+    sv.textContent = text;
+    input.value = "";                       // react-select clears the search box
+    closeAll();
+    document.getElementById("log").textContent += text + " | ";
+  }
+
+  document.querySelectorAll("input[role=combobox]").forEach(function (input) {
+    input.setAttribute("aria-controls", "react-select-" + input.id + "-listbox");
+    input.addEventListener("focus", function () { openMenu(input); });
+    input.addEventListener("mousedown", function () { openMenu(input); });
+    input.addEventListener("input", function () { openMenu(input); });
+  });
+</script>
+<pre id="log"></pre>
+</body>
+</html>

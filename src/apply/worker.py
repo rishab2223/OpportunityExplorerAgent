@@ -4486,6 +4486,19 @@ def _band_index(texts: list[str], value: str) -> int:
     return -1
 
 
+# Words long enough to look distinctive and far too common to be. A shared
+# "available" or "experience" says nothing about which option was meant.
+VAGUE_OPTION_WORDS = frozenset({
+    "about", "above", "after", "already", "another", "answer", "available",
+    "before", "below", "between", "current", "currently", "during", "either",
+    "experience", "following", "least", "level", "months", "never", "notice",
+    "option", "other", "others", "period", "please", "prefer", "select",
+    "should", "since", "something", "there", "these", "those", "under",
+    "until", "using", "value", "where", "which", "while", "would", "years",
+    "yours",
+})
+
+
 def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None) -> int:
     """Index of the option for `value`: exact, then case-insensitive, then
     the option that STARTS with it ("India" -> "India (+91)", never "British
@@ -4550,6 +4563,36 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
         # every Indian city and would have settled for the wrong state.
         return not wants or wants[0] in flat[i]
 
+    def one_distinctive_word() -> int:
+        """The value and exactly ONE option share a long, specific word.
+
+        The profile says "Immediate Joiner"; Greenhouse offers "Immediate /
+        Available to join", "30 days", "60 days", "90 days". Nothing above
+        matches - it is not exact, does not start the option, and is not a
+        whole token inside it - so a notice period everyone would call
+        obvious went unanswered and was handed back to the candidate.
+
+        Strict on purpose: two options sharing the word means no answer
+        rather than a guess, and the word must be long enough to mean
+        something. "Faridabad, Haryana" beside "Gurugram, Haryana" shares
+        only "haryana" with both, so it picks neither.
+        """
+        words = {w for w in re.split(r"[^a-z0-9]+", lowered)
+                 if len(w) >= 5 and w not in VAGUE_OPTION_WORDS}
+        if not words:
+            return -1
+        hits = [i for i, t in enumerate(flat)
+                # Only a PHRASE may be matched this way. A one-word option is
+                # not a rewording of anything: "Mobile phone" against
+                # "Mobile" / "Home" / "Work" leaves the word "phone"
+                # unaccounted for, and the list may well mean something else
+                # entirely. Two tests have said so since long before this.
+                if len(t.split()) > 1
+                and any(re.search(rf"(?<![a-z0-9]){re.escape(w)}", t) for w in words)]
+        if len({flat[i] for i in hits}) != 1:
+            return -1
+        return hits[0]
+
     best = match(wanted)
     if best >= 0 and satisfied(best):
         return best
@@ -4560,7 +4603,14 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
         stem = re.sub(r"('s|s)$", "", lowered.split()[0]) if lowered.split() else ""
         if len(stem) >= 5:
             starts = re.compile(rf"^\s*{re.escape(stem)}")
-            best = pick([i for i, t in enumerate(flat) if starts.match(t)], False)
+            # "Bachelor's Degree" may take any member of the family - that is
+            # the whole point of the rule. "Bachelor of ARTS" may not: this
+            # picked the first match and turned it into "Bachelor of Science",
+            # silently, on a form. A named subject has to find its own option
+            # or none, so the strictness depends on whether one was named.
+            named = [w for w in lowered.split()[1:]
+                     if w not in ("degree", "degrees", "of", "in", "the")]
+            best = pick([i for i, t in enumerate(flat) if starts.match(t)], bool(named))
             if best >= 0 and satisfied(best):
                 return best
             best = -1
@@ -4570,6 +4620,10 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
         other = match(alias)
         if other >= 0 and satisfied(other):
             return other
+    if best < 0:
+        shared = one_distinctive_word()
+        if shared >= 0 and satisfied(shared):
+            return shared
     return best
 
 
@@ -4885,6 +4939,35 @@ def _type_to_filter(page, locator, text: str, baseline: list[str] | None = None,
     return visible, shown
 
 
+# The control a custom dropdown really listens to. react-select renders its
+# search input as a transparent overlay and puts the click handlers on the
+# control around it, with a "Toggle flyout" button beside it - both are in the
+# Greenhouse dump. Walks up a few ancestors only, and clicks nothing that is
+# not one of those two, so it cannot wander into the form.
+OPEN_CONTROL_JS = """
+(el) => {
+  let n = el.parentElement;
+  for (let d = 0; n && d < 4; d++, n = n.parentElement) {
+    const toggle = n.querySelector(
+        'button[aria-label*="flyout" i], button[aria-label*="toggle" i]');
+    if (toggle) { toggle.click(); return 'toggle'; }
+    const cls = (n.className || '').toString();
+    if (/(^|[\\s_-])control([\\s_-]|$)|__control/i.test(cls)) { n.click(); return 'control'; }
+  }
+  return '';
+}
+"""
+
+
+def _open_via_control(locator) -> bool:
+    """Click the widget's own control instead of its search box. True if one
+    was found and clicked."""
+    try:
+        return bool(locator.evaluate(OPEN_CONTROL_JS, timeout=OPTION_READ_MS))
+    except Exception:
+        return False
+
+
 def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
                      prefer: list[str] | None = None) -> str:
     """Pick `value` in a custom dropdown (react-select on Greenhouse, the
@@ -4903,13 +4986,27 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
     """
     try:
         locator.click(timeout=3000)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Never silent. A swallowed failure here reads downstream as "this
+        # dropdown has no options", which is what the candidate was told
+        # twice on Greenhouse about a list of four that was sitting right
+        # there - and the log said nothing about why.
+        sess.log(f"{prefix}{_brief(label, LOG_LABEL)}: could not click the box "
+                 f"open ({_short(exc)}); trying the control around it.")
     # What the widget shows before anything is typed. A box that had rows and
     # then has none has told us the value matches nothing; a box that never
     # had any is one whose list this cannot read, which is a different thing
     # and keeps the keyboard fallback at the end.
     _, opening = _visible_options(page, locator)
+    if not opening and _open_via_control(locator):
+        # react-select's search box is a transparent overlay sitting on top of
+        # the control; the control and its toggle button are what the widget
+        # actually listens to. Only tried when the click above opened nothing,
+        # so it costs a working widget nothing.
+        _, opening = _wait_for_options(page, locator)
+        if opening:
+            sess.log(f"{prefix}{_brief(label, LOG_LABEL)}: opened it by its own "
+                     "control rather than the search box.")
     try:
         was = locator.input_value(timeout=2000)   # to put back if we refuse
     except Exception:
@@ -4982,9 +5079,15 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
             locator.fill(was, timeout=10000)
         except Exception:
             pass
+        # Say which of the two it was. "matches none of the options; pick one
+        # of:" followed by nothing is the message a Greenhouse run produced
+        # three times, and it reads as "your answer is wrong" when what
+        # actually happened is that no list was ever read.
+        listed = ", ".join(t for t in shown[:12] if t)
         raise ValueError(
-            f"'{value}' matches none of the dropdown's options; pick one of: "
-            + ", ".join(shown[:12])
+            f"'{value}' matches none of the dropdown's options; pick one of: {listed}"
+            if listed else
+            f"could not read this dropdown's options, so '{value}' was not entered"
         )
     # One option or an invisible list: the widget highlights it; Enter takes it.
     locator.press("Enter")

@@ -289,6 +289,18 @@ SNAPSHOT_JS = """
           value = Array.from(chips).map(c => (c.innerText || '').trim()).filter(Boolean).join('; ');
           break;
         }
+        // react-select (Greenhouse) CLEARS its search box on choosing and
+        // renders the choice in a sibling. Reading the box alone said empty,
+        // so a dropdown the agent had just set correctly looked untouched: it
+        // filled it again from the profile, failed because the profile's
+        // wording is not the option's, and then told the candidate to fill in
+        // by hand three fields that were already answered.
+        const picked = n.querySelector(
+            '[class*="singleValue"], [class*="single-value"]');
+        if (picked) {
+          const shown = (picked.innerText || '').trim();
+          if (shown) { value = shown; break; }
+        }
       }
     }
     // Stable identity across snapshots: ids are renumbered as the DOM changes,

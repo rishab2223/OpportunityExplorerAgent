@@ -48,7 +48,7 @@ GROUPS: dict[str, list[str]] = {
         "combo_check.py", "radio_check.py", "rdp_probe.py", "work_check.py",
         "contact_check.py", "rewipe_check.py", "optional_check.py",
         "redo_check.py", "amount_check.py", "snapshot_check.py",
-        "dump_check.py", "fallback_check.py", "cf7_check.py", "foreground_check.py", "settle_check.py",
+        "dump_check.py", "fallback_check.py", "cf7_check.py", "foreground_check.py", "settle_check.py", "reactselect_check.py",
     ],
     "attach": ["chooser_check.py", "jobvite_upload_check.py", "taleo_check.py"],
     "linkedin": ["li_ready_e2e.py", "li_noisy_repro.py", "li_rerender_repro.py"],
@@ -67,8 +67,7 @@ GROUPS: dict[str, list[str]] = {
 # slow because it waits out a real timeout or runs a whole apply session, not
 # because it sleeps.
 LONGEST = [
-    "run_e2e.py",             # ~114s: 21 apply sessions
-    "fallback_check.py",      # ~92s: waits out Playwright's own timeouts
+    "run_e2e.py",             # ~128s: 22 apply sessions
     "longlist_check.py",      # ~37s: server-side dropdown search
     "keystroke_check.py",     # ~35s: the typing fallback after a failed fill
     "submitted_tail_check.py",  # ~25s
