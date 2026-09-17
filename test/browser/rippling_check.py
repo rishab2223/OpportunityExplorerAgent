@@ -160,6 +160,40 @@ with sync_playwright() as pw:
     check("the other unlabelled box gets its question too",
           "university" in (uni.get("label") or "").lower(), repr(uni.get("label")))
 
+    print("\n  a <select>'s options are never its label")
+    # The guard for this existed - "a <select>'s innerText is every option it
+    # has" - and was undone by a trailing `|| el.innerText` in its own
+    # expression. Sixteen selects across the dumps came out labelled
+    # "0 years\n1 year\n2 years\n3 years..." : unresolvable by any rule,
+    # useless in the transcript, sixty characters of noise in every prompt.
+    # Closing it exposed a second one - an unlabelled control was inheriting
+    # the PREVIOUS field's <label for=...> - and a wrong name is worse than
+    # none, because a rule can match it and fill the wrong box.
+    # Its own page: the upload checks below still need this one, and writing
+    # over it left them attaching files to a form that no longer existed.
+    selects = b.new_page(viewport={"width": 1280, "height": 900})
+    selects.set_content("""<form>
+      <label for="ctry">Country</label>
+      <select id="ctry"><option>India</option><option>United Kingdom</option></select>
+      <select id="bare"><option>0 years</option><option>1 year</option><option>2 years</option></select>
+      <p>How many years of Agile experience?</p>
+      <select id="asked"><option>0 years</option><option>1 year</option></select>
+      <label for="deg">Degree</label><select id="deg"><option>BSc</option></select>
+    </form>""")
+    selects.wait_for_timeout(200)
+    labels = {f.get("elid"): (f.get("label") or "") for f in browser.snapshot(selects)}
+    selects.close()
+    check("a labelled select keeps its own label", labels.get("ctry") == "Country",
+          repr(labels.get("ctry")))
+    check("an unlabelled one is not labelled with its options",
+          "0 years" not in labels.get("bare", ""), repr(labels.get("bare")))
+    check("nor with the label of the field before it",
+          labels.get("bare") == "", repr(labels.get("bare")))
+    check("but a real question above it is still found",
+          "Agile" in labels.get("asked", ""), repr(labels.get("asked")))
+    check("and the field after is unaffected", labels.get("deg") == "Degree",
+          repr(labels.get("deg")))
+
     print("\n== the two upload buttons ==")
     tiles = [f for f in fields if f.get("tag") == "button"
              and "Drop or select" in (f.get("text") or "")]

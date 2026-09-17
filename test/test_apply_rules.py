@@ -8,7 +8,7 @@ import unittest.mock
 from pathlib import Path
 
 from src import answers, history
-from src.apply import profile, worker
+from src.apply import browser, profile, worker
 from src.apply.worker import (
     ApplyAction,
     SubmitBlocked,
@@ -2462,3 +2462,217 @@ class UkgEntryNumberingTests(unittest.TestCase):
                           "section": "Work Experience", "group": "", "value": ""})
         resolver.tag_work_entries(fields, self.JOBS)
         self.assertEqual(self._positions(fields), {0})
+
+
+class LongRadioGroupTests(unittest.TestCase):
+    """One question may not spend the whole field budget.
+
+    USP's application on UKG asks "What is your country of origin?" with 46
+    radios sharing a name. MAX_FIELDS is 60 and they took every slot from 46
+    on, so the six REQUIRED questions below them - and the form's own Submit
+    button - were invisible to the model, to the profile and to the llm: flow.
+    The candidate's report was "nothing was filled by system on this page".
+
+    A group longer than MAX_GROUP_OPTIONS is carried as ONE field listing its
+    options, the way a <select> already is. Shorter ones are untouched, so
+    every Yes/No on every form keeps the shape the rest of the code expects.
+    """
+
+    @staticmethod
+    def _group(name, labels, question="What is your country of origin?", checked=None):
+        return [
+            {"id": 10 + n, "tag": "input", "type": "radio", "name": name,
+             "label": label, "group": question, "section": "Questions",
+             "required": True, "value": str(n), "checked": label == checked}
+            for n, label in enumerate(labels)
+        ]
+
+    def test_a_long_group_becomes_one_field(self):
+        countries = [f"Country {n}" for n in range(46)]
+        fields = self._group("MCR0", countries)
+        out = browser.collapse_long_groups(fields)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["options"], countries)
+        self.assertEqual(len(out[0]["group_ids"]), 46)
+
+    def test_it_is_labelled_with_the_question_not_an_option(self):
+        fields = self._group("MCR0", [f"Country {n}" for n in range(46)])
+        out = browser.collapse_long_groups(fields)
+        self.assertEqual(out[0]["label"], "What is your country of origin?")
+
+    def test_the_ids_stay_lined_up_with_the_options(self):
+        # The pick clicks group_ids[i] for options[i]. A shuffle here answers
+        # a 46-country question with the wrong country.
+        labels = [f"Country {n}" for n in range(46)]
+        out = browser.collapse_long_groups(self._group("MCR0", labels))
+        self.assertEqual(out[0]["group_ids"], list(range(10, 56)))
+        self.assertEqual(out[0]["options"][13], labels[13])
+
+    def test_an_answered_group_carries_its_answer(self):
+        labels = [f"Country {n}" for n in range(46)]
+        out = browser.collapse_long_groups(self._group("MCR0", labels, checked="Country 13"))
+        self.assertEqual(out[0]["value"], "Country 13")
+        self.assertIs(out[0]["checked"], True)
+        # The ticked option represents the group; reading the first one would
+        # report an answered question as empty and fill it again.
+        self.assertEqual(out[0]["id"], 23)
+
+    def test_an_unanswered_group_reads_as_empty(self):
+        out = browser.collapse_long_groups(
+            self._group("MCR0", [f"Country {n}" for n in range(46)]))
+        self.assertEqual(out[0]["value"], "")
+        self.assertIs(out[0]["checked"], False)
+
+    def test_a_short_group_is_untouched(self):
+        fields = self._group("sponsor", ["Yes", "No"],
+                             question="Do you require sponsorship?")
+        self.assertEqual(browser.collapse_long_groups(fields), fields)
+
+    def test_a_group_exactly_at_the_limit_is_untouched(self):
+        fields = self._group("x", [f"Option {n}" for n in range(browser.MAX_GROUP_OPTIONS)])
+        self.assertEqual(browser.collapse_long_groups(fields), fields)
+
+    def test_everything_that_is_not_the_group_is_kept_in_order(self):
+        before = [{"id": 1, "tag": "input", "type": "text", "label": "First Name"}]
+        after = [{"id": 90, "tag": "textarea", "type": "", "required": True,
+                  "label": "What are your salary expectations for this position?"},
+                 {"id": 91, "tag": "button", "type": "button", "label": "Submit"}]
+        out = browser.collapse_long_groups(
+            before + self._group("MCR0", [f"C{n}" for n in range(46)]) + after)
+        self.assertEqual([f["label"] for f in out],
+                         ["First Name", "What is your country of origin?",
+                          "What are your salary expectations for this position?",
+                          "Submit"])
+
+    def test_a_nameless_radio_is_left_alone(self):
+        # Without a shared name there is nothing to say these belong together,
+        # and guessing from the label would merge unrelated questions.
+        fields = self._group("", [f"C{n}" for n in range(46)])
+        for field in fields:
+            field.pop("name")
+        self.assertEqual(browser.collapse_long_groups(fields), fields)
+
+    def test_two_long_groups_stay_separate(self):
+        fields = (self._group("MCR0", [f"C{n}" for n in range(46)])
+                  + self._group("MCR1", [f"L{n}" for n in range(20)],
+                                question="Which languages do you speak?"))
+        out = browser.collapse_long_groups(fields)
+        self.assertEqual(len(out), 2)
+        self.assertEqual([f["label"] for f in out],
+                         ["What is your country of origin?",
+                          "Which languages do you speak?"])
+        self.assertEqual([len(f["options"]) for f in out], [46, 20])
+
+
+class SkillsBoxTests(unittest.TestCase):
+    """"Skill level" is not a skills box.
+
+    A six-option proficiency dropdown was offered the profile's eleven skills,
+    which logged "none of your skills match the 6 options of 'Skill level'"
+    five times in one session while the real question went unanswered.
+    """
+
+    @staticmethod
+    def _box(label, tag="input", section=""):
+        return {"tag": tag, "type": "text", "label": label, "section": section}
+
+    def test_a_list_of_skills_is_still_recognised(self):
+        for label in ("Skills", "Skills*", "Skills (required)", "Key Skills",
+                      "Type to Add Skills", "Add skills", "Your skills",
+                      "Skills (comma separated)"):
+            with self.subTest(label=label):
+                self.assertTrue(worker._is_skills_box(self._box(label)), label)
+
+    def test_a_question_about_skills_is_not(self):
+        for label in ("Skill level", "Skill rating", "Skill proficiency",
+                      "Years of skill use"):
+            with self.subTest(label=label):
+                self.assertFalse(worker._is_skills_box(self._box(label)), label)
+
+    def test_a_proficiency_dropdown_in_the_skills_section_is_not(self):
+        # The section-based branch needs the label to invite a list; "Skill
+        # level" under Skills is the dropdown beside the box, not the box.
+        self.assertFalse(
+            worker._is_skills_box(self._box("Skill level", tag="select", section="Skills")))
+
+
+class StatedLimitTests(unittest.TestCase):
+    """A length the form states in prose, not in maxlength.
+
+    _clip_to_limit read maxlength and nothing else, so a box saying "Max 250
+    words" with no attribute got the whole answer - and the form either
+    refused it or truncated it mid-sentence. The pattern mirrors _skill_cap,
+    which already reads "up to 10 skills" the same way.
+
+    The maxlength path is here too: it had no direct test of its own.
+    """
+
+    class Sess:
+        def __init__(self):
+            self.lines = []
+
+        def log(self, line):
+            self.lines.append(line)
+
+    LONG = " ".join(f"w{n}" for n in range(400))
+
+    def clip(self, field, value):
+        sess = self.Sess()
+        return worker._clip_to_limit(field, value, "Essay", sess), sess.lines
+
+    def test_a_ceiling_in_words_is_read(self):
+        for label, want in (
+                ("Tell us about a time you handled conflict. Max 250 words.", (250, "words")),
+                ("Cover note - no more than 100 words", (100, "words")),
+                ("Summary (200 words max)", (200, "words")),
+                ("Why this role? (500 characters maximum)", (500, "characters")),
+                ("Describe your experience, limited to 300 characters", (300, "characters"))):
+            with self.subTest(label=label):
+                self.assertEqual(worker._stated_limit({"label": label}), want)
+
+    def test_a_floor_is_never_read_as_a_ceiling(self):
+        # "minimum of 250 words" is the opposite instruction; clipping to it
+        # would cut an answer the form wanted longer.
+        for label in ("Your answer must be a minimum of 250 words",
+                      "At least 100 words please"):
+            with self.subTest(label=label):
+                self.assertEqual(worker._stated_limit({"label": label}), (0, ""))
+
+    def test_an_ordinary_label_states_nothing(self):
+        for label in ("What is your notice period", "Salary expectation in LPA",
+                      "Tell us about yourself"):
+            with self.subTest(label=label):
+                self.assertEqual(worker._stated_limit({"label": label}), (0, ""))
+
+    def test_the_section_is_not_searched(self):
+        # A limit written about one field must not travel to its neighbours,
+        # so only the field's own words count.
+        self.assertEqual(
+            worker._stated_limit({"label": "Your answer", "section": "Max 50 words"}),
+            (0, ""))
+
+    def test_a_word_ceiling_clips_to_words(self):
+        out, lines = self.clip({"label": "Essay. Max 250 words."}, self.LONG)
+        self.assertEqual(len(out.split()), 250)
+        self.assertTrue(any("250 words or fewer" in line for line in lines), lines)
+
+    def test_a_character_ceiling_clips_to_characters(self):
+        out, _ = self.clip({"label": "Note (100 characters maximum)"}, "x" * 400)
+        self.assertEqual(len(out), 100)
+
+    def test_maxlength_still_works_on_its_own(self):
+        out, lines = self.clip({"label": "Essay", "maxlength": 50}, self.LONG)
+        self.assertLessEqual(len(out), 50)
+        self.assertTrue(any("50 characters" in line for line in lines), lines)
+
+    def test_the_stricter_of_the_two_wins(self):
+        # A form may set maxlength AND say something tighter beside the box.
+        out, _ = self.clip({"label": "Note (40 characters max)", "maxlength": 200}, "x" * 400)
+        self.assertEqual(len(out), 40)
+        out, _ = self.clip({"label": "Note (400 characters max)", "maxlength": 30}, "x" * 400)
+        self.assertLessEqual(len(out), 30)
+
+    def test_an_answer_that_already_fits_is_untouched(self):
+        out, lines = self.clip({"label": "Essay. Max 250 words."}, "A short answer.")
+        self.assertEqual(out, "A short answer.")
+        self.assertEqual(lines, [])

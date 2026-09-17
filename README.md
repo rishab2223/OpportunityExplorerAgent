@@ -159,7 +159,7 @@ They write JSON under `test/output/`.
 
 ### Browser checks
 
-The unit suite never runs the apply loop, so it cannot catch a mistake inside it. `test/browser/` does: each script drives a real Chromium against a local fixture and asserts what the agent did. `run_e2e.py` is the main one — 20 scenarios through the real `run_session`, about 110 seconds.
+The unit suite never runs the apply loop, so it cannot catch a mistake inside it. `test/browser/` does: each script drives a real Chromium against a local fixture and asserts what the agent did. `run_e2e.py` and `run_e2e_b.py` are the main ones — 23 scenarios through the real `run_session`, about 65 seconds each. They share their rig (`e2e_common.py`) and run as two scripts so `check.py -j` can overlap them.
 
 No model is called by any of it. The harness swaps in a scripted stand-in, which is why every scenario asserts an exact model-call count; the unit suite has no route to a model at all. A full run costs time and nothing else.
 

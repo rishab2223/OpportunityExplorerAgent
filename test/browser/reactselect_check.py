@@ -238,6 +238,46 @@ with sync_playwright() as pw:
     check("and no line says it selected anything",
           not any("Selected" in line for line in sess3.lines), str(sess3.lines)[:140])
 
+    print("\nand a click that cannot land normally still opens the menu")
+    # The bottom rung of browser.click is not a click. el.click() fires ONE
+    # event - 'click'. A real press fires pointerdown, mousedown, focus,
+    # mouseup, click, and react-select opens its menu on MOUSEDOWN. So when
+    # the normal click could not land, the fallback drove nothing at all and
+    # "clicked (direct)" went into the transcript anyway.
+    page.goto((HERE / "fixture_reactselect.html").as_uri())
+    page.wait_for_timeout(200)
+    fired = page.evaluate("""() => { const el = document.querySelector('#q4');
+        window.SEEN = [];
+        for (const e of ['pointerdown','mousedown','mouseup','click','focus'])
+          el.addEventListener(e, () => window.SEEN.push(e));
+        el.click(); return window.SEEN; }""")
+    check("el.click() fires only 'click'", fired == ["click"], str(fired))
+    check("so the menu it was meant to open stays shut",
+          page.locator("[role=option]").count() == 0)
+
+    # An element Playwright will not call stable: click() times out, which is
+    # what sends a real session down the ladder, while a real press still
+    # lands on it.
+    page.goto((HERE / "fixture_reactselect.html").as_uri())
+    page.wait_for_timeout(200)
+    page.evaluate("""() => { const s = document.createElement('style');
+        s.textContent = '@keyframes jig{0%{transform:translateY(0)}'
+          + '50%{transform:translateY(1px)}100%{transform:translateY(0)}}'
+          + '#q4{animation:jig .12s infinite}';
+        document.head.appendChild(s); }""")
+    page.wait_for_timeout(200)
+    rung = browser.click(page.locator("#q4"), timeout=2500, fallback_timeout=900)
+    page.wait_for_timeout(600)
+    opened = page.locator("[role=option]").count()
+    check("the ladder takes the mouse rung", rung == "clicked (mouse)", repr(rung))
+    check("and the menu actually opens", opened > 0, f"{opened} options")
+    if opened:
+        page.locator("[role=option]", has_text="Referral").first.click()
+        page.wait_for_timeout(250)
+        check("and a choice can be taken from it",
+              "Referral" in page.locator("#log").inner_text(),
+              repr(page.locator("#log").inner_text()))
+
     print("\nand the profile's own wording reaches the option")
     # "Immediate Joiner" is how the profile puts it; the form offers
     # "Immediate / Available to join". Neither is a prefix of the other, so
