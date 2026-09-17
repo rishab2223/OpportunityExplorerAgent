@@ -2763,3 +2763,56 @@ class DoneNeedsEvidenceTests(unittest.TestCase):
             result = self.fire(sess, holder={"submitted_seen": seen})
         self.assertEqual(result, "skipped")
         self.assertEqual(len(sess.asked), 1)
+
+
+class NoFieldsReasonTests(unittest.TestCase):
+    """"I cannot see any form fields on this page" named no cause.
+
+    Four different problems wore that one sentence, and they have four
+    different answers: the scan threw, the tab is blank, the page is still
+    rendering, or the page is fine and simply has no form on it. The last is
+    what a job-description page IS - career.infosys.com/jobdesc - and the
+    answer there is to click Apply, not to wait or to reload.
+
+    The code knew which it was. browser.last_snapshot_error() was already
+    populated and only ever used in the give-up path, so the candidate never
+    saw it.
+    """
+
+    class Page:
+        url = "https://career.infosys.com/jobdesc?jobReferenceCode=X"
+
+    def reason(self, text="", error="", page=None):
+        with unittest.mock.patch.object(worker.browser, "last_snapshot_error",
+                                        return_value=error), \
+             unittest.mock.patch.object(worker.browser, "full_page_text",
+                                        return_value=text):
+            return worker._no_fields_reason(page or self.Page())
+
+    def test_a_scan_that_threw_says_so(self):
+        got = self.reason(error="Execution context was destroyed")
+        self.assertIn("reading it failed", got)
+        self.assertIn("Execution context", got)
+
+    def test_a_page_still_rendering_is_not_called_empty(self):
+        self.assertIn("still loading", self.reason(text="Loading..."))
+
+    def test_a_blank_tab_is_named_as_one(self):
+        blank = type("P", (), {"url": "about:blank"})()
+        self.assertIn("still blank", self.reason(text="", page=blank))
+
+    def test_a_loaded_page_with_no_form_points_at_the_apply_button(self):
+        # The Infosys case: 59,825 characters of job description, two
+        # controls, no form. Waiting longer would never have helped.
+        got = self.reason(text="Job description. " * 4000)
+        self.assertIn("carries no form", got)
+        self.assertIn("Apply button", got)
+
+    def test_the_size_is_reported_so_a_stub_page_is_obvious(self):
+        self.assertIn("68,000 characters", self.reason(text="x" * 68000))
+
+    def test_the_error_wins_over_everything_else(self):
+        # A scan that threw tells you nothing about the page, so the page's
+        # own text must not be read as a diagnosis.
+        self.assertIn("reading it failed",
+                      self.reason(text="Job description. " * 4000, error="Timeout 30000ms"))

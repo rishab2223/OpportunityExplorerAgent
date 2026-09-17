@@ -39,6 +39,16 @@ MAX_PLAN_ACTIONS = 15
 MAX_CONSECUTIVE_ERRORS = 5
 MAX_NOOP_STREAK = 4
 MAX_EMPTY_SNAPSHOTS = 3
+# How long a page that has just been navigated to may take to put its first
+# control on screen, before the candidate is asked about it. Infosys's job
+# page renders in 2.4s here and did not make it inside the old fixed 6s in a
+# real session - a headed Chrome on the candidate's own profile, in a tab
+# LinkedIn had just opened, is a good deal slower than this harness. Polled,
+# so a page that is ready in 300ms still costs 300ms.
+FIRST_RENDER_WAIT_MS = 15000
+# After that first look the page is not "still loading" any more, so a page
+# with genuinely nothing on it does not pay the long budget on every pass.
+RETRY_RENDER_WAIT_MS = 4000
 DIALOG_LOAD_RETRIES = 4   # x1.5s: how long an open modal may take to show its form
 # Stop at every filled step and wait for "next" (or the candidate's own click)
 # before advancing a wizard. "auto next" in the chat turns it off for a session.
@@ -325,6 +335,34 @@ def _take_submitted_baseline(page, fields: list[dict[str, Any]], holder: dict[st
         return
     marks = _submitted_marks(browser.full_page_text(page))
     holder["submitted_seen"] = marks if _has_fillable(fields) else frozenset()
+
+
+def _no_fields_reason(page) -> str:
+    """Why the snapshot came back empty, in words the candidate can act on.
+
+    Four different problems wore the same sentence: the scan threw, the tab is
+    blank, the page is still rendering, or the page is perfectly fine and has
+    no form on it - which is what a job-description page IS, and the answer
+    there is to click Apply, not to wait.
+    """
+    error = browser.last_snapshot_error()
+    if error:
+        return f"reading it failed: {_brief(error, 90)}"
+    try:
+        text = browser.full_page_text(page)
+    except Exception:
+        return "the tab could not be read at all"
+    # What is ON the page decides, not the URL: a popup opened by the apply
+    # flow carries about:blank while it loads its content, and a page built by
+    # script keeps that URL for good.
+    if len(text.strip()) < 200:
+        url = _safe_url(page)
+        if not url or url == "about:blank":
+            return "the tab is still blank"
+        return "it has almost nothing on it yet, so it is probably still loading"
+    return (f"it has loaded ({len(text):,} characters) but carries no form - "
+            "a job description page looks like this, and the form is behind its "
+            "Apply button")
 
 
 def _looks_closed(page_text: str) -> bool:
@@ -777,16 +815,27 @@ def run_session(
                 # the URL settles, and apply flows spawn tabs that start
                 # blank - re-look before bothering the user.
                 sess.log("No fields visible yet; waiting for the page to load…")
-                for _ in range(3):
+                budget = (FIRST_RENDER_WAIT_MS if empty_snapshots == 0
+                          else RETRY_RENDER_WAIT_MS)
+                waited = 0
+                while waited < budget:
                     if sess.aborted():
                         raise Aborted("user aborted")
-                    page.wait_for_timeout(2000)
+                    page.wait_for_timeout(500)
+                    waited += 500
                     active = browser.current_page(context, page)
                     if active is not None and active is not page:
                         page = active
                         sess.log(f"Switched to {_safe_url(page)}")
+                        waited = 0          # a new page gets the whole budget
                     fields = browser.snapshot(page)
                     if fields:
+                        # Worth seeing: a page that took twelve seconds to
+                        # show a control is the reason a later step is slow,
+                        # and the old fixed wait gave up at six without
+                        # saying it had been close.
+                        if waited >= 3000:
+                            sess.log(f"The page took {waited / 1000:.1f}s to show anything.")
                         last_llm_sig = ""
                         break
             if not fields:
@@ -811,10 +860,17 @@ def run_session(
                         outcome, outcome_text = "applied", "confirmed by you"
                         break
                 else:
+                    # Name the cause. "I cannot see any form fields" was all
+                    # the candidate got when Infosys's job page was slow to
+                    # render, and it is the same sentence whether the snapshot
+                    # threw, the page is blank, or the page is fine and simply
+                    # has no form on it - three different problems with three
+                    # different answers. The code knew which; it just never
+                    # said.
                     answer = _ask_watching(
                         sess, holder, page, handled, fields,
-                        "I cannot see any form fields on this page. Open the form "
-                        "yourself and I will pick it up, paste the form's URL, type "
+                        f"I cannot see any form fields on this page ({_no_fields_reason(page)}). "
+                        "Open the form yourself and I will pick it up, paste the form's URL, type "
                         "submitted if the application already went through, or type abort."
                     )
                     if answer is None:
