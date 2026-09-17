@@ -2947,8 +2947,40 @@ def _run_action(
         acted_keys.add(key)
 
     if action.action == "done":
-        sess.log(f"Agent reports the application is complete: {action.reason}")
-        return "done"
+        # A claim, not evidence. Everything else that records an application
+        # is corroborated - _newly_submitted compares the page against the
+        # baseline taken before anything was typed, so wording that was there
+        # all along proves nothing - and this one path skipped all of it and
+        # wrote the history row on the model's word alone.
+        #
+        # On the BioSpace listing that is exactly what happened: the candidate
+        # was still following the Apply Now link to reach the form, the page
+        # had no fields on it yet, and one model call came back "the page
+        # states the application was already submitted on Tuesday, September
+        # 15, 2026". The session closed and the job was recorded as applied,
+        # 27 seconds in, on a form nobody had opened.
+        #
+        # An ALREADY-applied page is a different claim again: it is about some
+        # earlier application, not this session. Either way the page has to
+        # say so, or the candidate does.
+        confirmed = _newly_submitted(page, holder if holder is not None else {})
+        if confirmed:
+            sess.log(f"The page confirms the application was sent: "
+                     f"'{_brief(confirmed, 80)}'")
+            return "done"
+        sess.log(f"The agent thinks this is finished: {action.reason}")
+        reply = sess.ask(
+            "I cannot see anything on this page confirming an application was "
+            "sent, so I have NOT recorded one. Type done if you submitted it "
+            "yourself, or tell me what to do next."
+        )
+        if reply.strip().lower() in FINISHED_WORDS:
+            return "done"
+        notes.append(
+            f"the claim that this is finished was not confirmed by the candidate: {reply}"
+            " - do not report it done again unless the page itself says so"
+        )
+        return "skipped"
     if action.action == "wait":
         page.wait_for_timeout(1500)
         return "skipped"

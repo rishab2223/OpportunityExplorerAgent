@@ -2676,3 +2676,90 @@ class StatedLimitTests(unittest.TestCase):
         out, lines = self.clip({"label": "Essay. Max 250 words."}, "A short answer.")
         self.assertEqual(out, "A short answer.")
         self.assertEqual(lines, [])
+
+
+class DoneNeedsEvidenceTests(unittest.TestCase):
+    """The model saying "done" is a claim, not a confirmation.
+
+    Every other route to a history row is corroborated: _newly_submitted
+    compares the page against a baseline taken before anything was typed, so
+    wording that was there all along proves nothing. This one path skipped all
+    of it.
+
+    On the BioSpace listing the candidate was still following the Apply Now
+    link to reach the form. The page had no fields on it yet, one model call
+    came back "the page states the application was already submitted on
+    Tuesday, September 15, 2026", and the session closed with the job recorded
+    as applied - 27 seconds in, on a form nobody had opened.
+    """
+
+    class Sess:
+        def __init__(self, reply="no, I was still navigating"):
+            self.reply, self.logs, self.asked = reply, [], []
+
+        def log(self, text):
+            self.logs.append(text)
+
+        def ask(self, question, suggestion=""):
+            self.asked.append(question)
+            return self.reply
+
+    def fire(self, sess, holder=None, notes=None):
+        return worker._run_action(
+            page=None,
+            action=ApplyAction(action="done", field_id=0, confidence=0.9,
+                               reason="Page states the application was already "
+                                      "submitted on Tuesday, September 15, 2026"),
+            fields=[], job={}, pdf_path="", sess=sess, history=[],
+            notes=notes if notes is not None else [], handled=set(), attempts={},
+            session_answers={}, acted_keys=set(), holder=holder,
+        )
+
+    def test_an_unconfirmed_claim_does_not_finish_the_session(self):
+        sess = self.Sess()
+        self.assertEqual(self.fire(sess), "skipped")
+
+    def test_and_the_candidate_is_asked_rather_than_told(self):
+        sess = self.Sess()
+        self.fire(sess)
+        self.assertEqual(len(sess.asked), 1)
+        self.assertIn("have NOT recorded", sess.asked[0])
+
+    def test_the_claim_is_shown_so_it_can_be_judged(self):
+        sess = self.Sess()
+        self.fire(sess)
+        self.assertTrue(any("September 15" in line for line in sess.logs), sess.logs)
+
+    def test_a_refusal_is_fed_back_to_the_model(self):
+        sess, notes = self.Sess(), []
+        self.fire(sess, notes=notes)
+        self.assertTrue(any("not confirmed" in n for n in notes), notes)
+
+    def test_the_candidate_can_confirm_it(self):
+        # They may well have submitted it by hand; "done" still means done.
+        self.assertEqual(self.fire(self.Sess("done")), "done")
+
+    def test_a_page_that_says_so_needs_no_question(self):
+        # The corroborated route is unchanged: a confirmation that was NOT
+        # there at the baseline is evidence, and is quoted in the transcript.
+        sess = self.Sess()
+        with unittest.mock.patch.object(
+                worker.browser, "full_page_text",
+                return_value="Your application has been submitted. Reference 4821."):
+            result = self.fire(sess, holder={"submitted_seen": frozenset()})
+        self.assertEqual(result, "done")
+        self.assertEqual(sess.asked, [])
+        self.assertTrue(any("confirms the application was sent" in line
+                            for line in sess.logs), sess.logs)
+
+    def test_wording_that_was_there_all_along_is_not_evidence(self):
+        # The baseline holds the phrase, so it is not new and cannot confirm -
+        # the same rule boilerplate_repro enforces end to end.
+        sess = self.Sess()
+        text = "Thank you for your application; shortlisted candidates will be contacted."
+        with unittest.mock.patch.object(
+                worker.browser, "full_page_text", return_value=text):
+            seen = worker._submitted_marks(text)
+            result = self.fire(sess, holder={"submitted_seen": seen})
+        self.assertEqual(result, "skipped")
+        self.assertEqual(len(sess.asked), 1)
