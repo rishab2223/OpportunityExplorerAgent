@@ -7,6 +7,15 @@ from src.config import ROOT
 
 CHROME_PROFILE_DIR = ROOT / "localData" / "chrome-profile"
 MAX_FIELDS = 60
+# One question may not spend the whole budget. UKG's "What is your country of
+# origin?" is 46 radios sharing a name; on a 102-field page they took every
+# slot from 46 on, and what sat BELOW them - six required questions and the
+# form's own Submit button - reached neither the model, the profile, nor the
+# llm: flow. The candidate was told "nothing was filled" and was right.
+# A group longer than this is carried as ONE field listing its options, which
+# is what a <select> already is. At or under it, nothing changes: every Yes/No
+# on every form is still one field per option.
+MAX_GROUP_OPTIONS = 8
 
 # Tags each interactive element with data-oea-id so the LLM can address it by number.
 SNAPSHOT_JS = """
@@ -28,6 +37,47 @@ SNAPSHOT_JS = """
     };
     walk(start);
     return found;
+  };
+  // The smallest element holding every radio that shares this one's name.
+  // UKG writes neither fieldset nor role=radiogroup: "What is your country of
+  // origin?" is 46 bare radios in sibling divs under a heading that belongs
+  // to none of them. Without this the question fell through to "the first
+  // line of my own div", so every country became its own question - and
+  // ticking India left the other 45 looking unanswered.
+  const sameNameBox = (el) => {
+    const name = el.getAttribute('name');
+    if (!name || !window.CSS || !CSS.escape) return null;
+    const root = el.getRootNode();
+    const kin = root.querySelectorAll(
+      'input[type=radio][name="' + CSS.escape(name) + '"]');
+    if (kin.length < 2) return null;
+    let box = el.parentElement;
+    for (let d = 0; box && d < 8; d++, box = box.parentElement) {
+      let all = true;
+      for (const k of kin) { if (!box.contains(k)) { all = false; break; } }
+      if (all) return box;
+    }
+    return null;
+  };
+  // A question written inside the group's own box, above its first option: a
+  // <legend> in all but name, and what UKG writes (LABEL.control-label). Only
+  // text above the FIRST option counts - measured from the option in hand,
+  // "the nearest label above" is the PREVIOUS option's label.
+  const boxLegend = (box) => {
+    if (!box) return '';
+    const first = box.querySelector(
+      'input[type=radio], input[type=checkbox], [role=radio], [role=checkbox]');
+    if (!first) return '';
+    let best = '';
+    for (const h of box.querySelectorAll(
+        'label, legend, p, h1, h2, h3, h4, h5, h6, div, span')) {
+      if (h.contains(first)) continue;
+      if (h.querySelector('input, select, textarea, button, [role=radio], [role=checkbox]')) continue;
+      if (!(h.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+      const t = (h.innerText || '').trim();
+      if (t.length >= 3 && t.length <= 200) best = t;   // nearest above wins
+    }
+    return best;
   };
   // Clear ids from earlier snapshots first: a hidden wizard step keeps its old
   // attributes, and a stale [data-oea-id] match would act on the wrong element.
@@ -180,8 +230,16 @@ SNAPSHOT_JS = """
         el.getAttribute('role') === 'button' ||
         /^(submit|button|reset)$/.test(type);
       const ownText = carries ? (el.innerText || '').trim() : '';
+      // The `carries` guard above is undone by a trailing `|| el.innerText`,
+      // which is how sixteen <select>s in the dumps came out labelled
+      // "0 years\\n1 year\\n2 years\\n3 years..." - the option list, verbatim,
+      // as the question. Unresolvable by any rule, useless in the transcript,
+      // and sixty characters of noise in every prompt. A select's text is
+      // ALWAYS its options; no label at all is the honest answer, and the
+      // options are captured in item.options either way.
+      const lastResort = el.tagName === 'SELECT' ? '' : (el.innerText || '');
       label = el.getAttribute('placeholder') || ownText ||
-        el.getAttribute('name') || el.innerText || '';
+        el.getAttribute('name') || lastResort;
     }
     // A label that names the WIDGET instead of the question, or an id a
     // framework generated, is worse than none: the text that IS the question
@@ -238,6 +296,14 @@ SNAPSHOT_JS = """
         for (const h of box.querySelectorAll('label, legend, p, span, div, h1, h2, h3, h4, h5, h6')) {
           if (h === el || h.contains(el)) continue;
           if (h.querySelector('input, select, textarea, button')) continue;
+          // A <label for=...> is spoken for. Taking one as "the nearest text
+          // above" handed an unlabelled <select> the label of the field
+          // BEFORE it, and a wrong name is worse than none: a rule can match
+          // it and fill the wrong box, silently and plausibly.
+          if (h.tagName === 'LABEL') {
+            const owns = h.getAttribute('for');
+            if (owns && owns !== el.id) continue;
+          }
           // Text INSIDE another control is that control's value, not a label
           // for this one: the span in a Radix dropdown button reads "Remote",
           // which turned the notice-period box into "Remote Notice Period".
@@ -328,10 +394,17 @@ SNAPSHOT_JS = """
       const fs = el.closest('fieldset');
       const legend = fs ? fs.querySelector('legend') : null;
       if (legend) group = legend.innerText;
+      // A name-grouped set with no wrapper of its own is still a group; its
+      // question sits above the box holding ALL of its options, never above
+      // one option's div.
+      const rg = el.closest('[role=radiogroup], [role=group]') || fs || sameNameBox(el);
+      // Inside the box first: UKG's question is a label there, and the scan
+      // below only looks outside, so every one of its 46 countries came back
+      // as its own question and ticking India left 45 looking unanswered.
+      if (!group) group = boxLegend(rg);
       // A radiogroup is a fieldset by another name, and its question sits in
       // a block above it rather than inside it.
       if (!group) {
-        const rg = el.closest('[role=radiogroup], [role=group]');
         let box = rg ? rg.parentElement : null;
         for (let d = 0; box && d < 4 && !group; d++, box = box.parentElement) {
           const before = [];
@@ -559,6 +632,7 @@ def close(pw, context) -> None:
 
 
 _last_snapshot_error = ""
+_last_dropped = 0
 
 # Visible form controls in a document - the measure of which frame holds
 # the application form.
@@ -673,14 +747,76 @@ def target(page, refresh: bool = False):
 
 
 def snapshot(page) -> list[dict[str, Any]]:
-    global _last_snapshot_error
+    global _last_snapshot_error, _last_dropped
     try:
         fields = target(page, refresh=True).evaluate(SNAPSHOT_JS)
         _last_snapshot_error = ""
     except Exception as exc:
         _last_snapshot_error = str(exc).splitlines()[0][:300]
+        _last_dropped = 0
         return []
+    fields = collapse_long_groups(fields)
+    # Say so when the budget bites. A silent cut is how a whole form went
+    # missing: USP's had 102 controls, the last 42 of them - six required
+    # questions and the Submit button - were dropped here without a word, and
+    # the session spent six minutes being unable to see what it was asked
+    # about. Collapsing long groups bought a lot of headroom, but a big enough
+    # form still does not fit, and the candidate should hear about it the
+    # first time rather than the third session.
+    _last_dropped = max(0, len(fields) - MAX_FIELDS)
     return fields[:MAX_FIELDS]
+
+
+def last_dropped() -> int:
+    """Controls the last snapshot had to leave out. 0 when it all fitted."""
+    return _last_dropped
+
+
+def collapse_long_groups(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A radio group longer than MAX_GROUP_OPTIONS becomes one field.
+
+    It keeps its own id, so it is still clickable, and gains `options` (every
+    label in the group) and `group_ids` (the snapshot id of each, in the same
+    order) so any one of them can be reached. The representative is the ticked
+    option when there is one - otherwise the answer would read as empty on a
+    group that has been answered.
+
+    Groups at or under the limit are returned untouched, so nothing that
+    already works changes shape.
+    """
+    members: dict[str, list[dict[str, Any]]] = {}
+    for field in fields:
+        if (field.get("type") or "").lower() != "radio":
+            continue
+        name = field.get("name") or ""
+        if name:
+            members.setdefault(name, []).append(field)
+    long_groups = {n: m for n, m in members.items() if len(m) > MAX_GROUP_OPTIONS}
+    if not long_groups:
+        return fields
+
+    out: list[dict[str, Any]] = []
+    for field in fields:
+        group = (long_groups.get(field.get("name") or "")
+                 if (field.get("type") or "").lower() == "radio" else None)
+        if group is None:
+            out.append(field)
+            continue
+        chosen = next((m for m in group if m.get("checked")), group[0])
+        if field is not chosen:
+            continue
+        kept = dict(field)
+        kept["options"] = [str(m.get("label") or "").strip() for m in group]
+        kept["group_ids"] = [m.get("id") for m in group]
+        kept["checked"] = bool(chosen.get("checked"))
+        kept["value"] = str(chosen.get("label") or "") if chosen.get("checked") else ""
+        question = str(field.get("group") or "").strip()
+        if question and question.lower() != str(field.get("label") or "").strip().lower():
+            # The question is what this field now IS; the option's own name
+            # would read as a label for a control offering 46 of them.
+            kept["label"] = question
+        out.append(kept)
+    return out
 
 
 def last_snapshot_error() -> str:
@@ -1047,11 +1183,40 @@ def page_blocked(page) -> str:
         return ""
 
 
+ON_TOP_AT_CENTRE_JS = """
+  el => {
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
+    const top = document.elementFromPoint(x, y);
+    // A <label> wrapping the input is on top and activating it IS the click.
+    return !!top && (top === el || el.contains(top) || top.contains(el));
+  }
+"""
+
+
 def click(locator, timeout: int = 10000, fallback_timeout: int = 3000) -> str:
     """Click, and when the real click cannot land (an overlay or a stale
     popup intercepts pointer events - one dentsu Workday page blocked Accept
-    Cookies, Prefix, the phone code and the skills box alike), dispatch the
-    click on the element itself. Returns 'clicked' or 'clicked (direct)'.
+    Cookies, Prefix, the phone code and the skills box alike), try a plain
+    mouse click at the element's own centre, and only then dispatch the click
+    on the element itself. Returns 'clicked', 'clicked (mouse)' or
+    'clicked (direct)'.
+
+    The middle rung exists because the bottom one is not a click. el.click()
+    fires ONE event - 'click'. A real press fires pointerdown, mousedown,
+    focus, mouseup, click. react-select opens its menu on MOUSEDOWN, so
+    driven by el.click() the menu never opens, nothing is chosen, and
+    "clicked (direct)" goes in the transcript anyway. Measured on
+    fixture_reactselect: 0 options against 8.
+
+    The rung is also the safer of the two. A mouse click lands on whatever is
+    genuinely on top, so it cannot reach a control the candidate cannot -
+    which el.click() can, and did: on USP's UKG board it drove Add, Save and
+    Delete while the page was refusing them. Hence the hit test before it,
+    which is also what keeps the stale-overlay case (dentsu) falling through
+    to the bottom rung, where punching through is the right answer.
 
     `fallback_timeout` is worth setting low wherever the element is expected
     to be mid-rebuild: a node React has already discarded will never resolve,
@@ -1081,6 +1246,24 @@ def click(locator, timeout: int = 10000, fallback_timeout: int = 3000) -> str:
                 f"the page has put an overlay ({live}) over this control and is "
                 "waiting on the panel it raised instead; finish or close that first"
             ) from exc
+        # Scroll first: both the hit test and the mouse take viewport
+        # coordinates, and an element 1400px down the page has neither.
+        try:
+            locator.scroll_into_view_if_needed(timeout=fallback_timeout)
+        except Exception:
+            pass
+        try:
+            on_top = locator.evaluate(ON_TOP_AT_CENTRE_JS, timeout=fallback_timeout)
+            box = locator.bounding_box(timeout=fallback_timeout) if on_top else None
+        except Exception:
+            box = None
+        if box:
+            try:
+                locator.page.mouse.click(box["x"] + box["width"] / 2,
+                                         box["y"] + box["height"] / 2)
+                return "clicked (mouse)"
+            except Exception:
+                pass
         try:
             locator.evaluate("el => el.click()", timeout=fallback_timeout)
         except Exception:

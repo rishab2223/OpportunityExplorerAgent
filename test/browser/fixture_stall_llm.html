@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Dummy Apply - stalled, with a question to draft</title></head>
+<body>
+<h1>Apply to DummyCo - Software Engineer</h1>
+
+<!--
+  The shape the USP application on UKG ended up in, Sep 17 2026.
+
+  Contact fills from the profile. Two REQUIRED questions are left that neither
+  a rule nor the model can answer, and there is no Submit and no Next on the
+  page (on the real form both existed, below the 46-option country group that
+  had eaten the whole field budget). So the loop hands the questions back,
+  finds nothing to click, makes no progress four rounds running, and asks
+  "I am not making progress on this form. Tell me what to do next...".
+
+  That prompt is where the candidate then typed:
+
+      llm : Have you ever been terminated, discharged, or asked to resign
+            from any position?
+
+  and got the same sentence back. redo and llm: were wired into the review
+  prompt and the hand-off prompt but not into this one - the only prompt you
+  reach when the form is NOT finished, which is exactly when there is a
+  question worth drafting.
+-->
+<form>
+  <label>Full name <input type="text" name="full_name" autocomplete="name"></label>
+  <label>Email address <input type="email" name="email" autocomplete="email"></label>
+  <label>Mobile phone number <input type="tel" name="phone" autocomplete="tel"></label>
+  <label>Have you ever been employed by USP? If so, please provide previous dates of employment and the manager's name.
+    <textarea name="usp" rows="3" required></textarea></label>
+  <label>Have you ever been terminated, discharged, or asked to resign from any position? Please indicate yes or no below. If yes, please explain.
+    <textarea name="terminated" rows="3" required></textarea></label>
+</form>
+</body>
+</html>

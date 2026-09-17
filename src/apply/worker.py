@@ -539,6 +539,7 @@ def run_session(
         # Whether the candidate has already been told about the overlay
         # currently in the way; cleared as soon as the page is usable.
         blocked_told = False
+        told_dropped = 0
         closed_prompted: set[str] = set()
         last_llm_sig = ""
         outcome = ""
@@ -681,6 +682,21 @@ def run_session(
                     continue
                 if _manual_attachment(reply, attach, page, sess, notes):
                     continue
+                # redo and llm: work at the review prompt and at the submit
+                # prompt; this is the third one the candidate can be sitting
+                # at, and the only one they reach when the form is NOT
+                # finished - which is exactly when there is a question to
+                # draft. Typing "llm: <the question>" here filed it as a note
+                # for a model call that had nothing left to act on, and the
+                # same sentence came back.
+                if _redo_answer(page, fields, holder, job, attach, sess, reply):
+                    continue
+                if _llm_instruction(reply) is not None:
+                    _answer_on_request(
+                        page, fields, handled, reply, job, attach, sess, holder
+                    )
+                    last_llm_sig = ""
+                    continue
                 notes.append(f"guidance from the candidate: {reply}")
                 # Force the next model call so the guidance is actually read;
                 # an unchanged page would otherwise skip it forever.
@@ -706,6 +722,21 @@ def run_session(
                 continue
 
             fields = browser.snapshot(page)
+            dropped = browser.last_dropped()
+            if dropped and dropped != told_dropped:
+                # Once per size, not once per pass: a page that keeps growing
+                # would otherwise repeat this every loop. Said at all because
+                # a silent cut is how six required questions and the Submit
+                # button went missing on USP's form while the session
+                # reported, accurately and uselessly, that it could see
+                # nothing left to do.
+                told_dropped = dropped
+                sess.log(
+                    f"This page has more controls than I can hold at once: "
+                    f"{dropped} of {len(fields) + dropped} are not in view for me. "
+                    "I work through what I can see; anything below it is yours to "
+                    "check before you submit."
+                )
             # Before anything is typed. A site that appends "Your application
             # has been submitted." and RESETS the form leaves a page that
             # looks like work to do: a real session re-typed the candidate's
@@ -862,6 +893,21 @@ def run_session(
 
             unresolved = _unresolved_fields(fields, handled)
             submit_field = next((f for f in fields if _is_submit(f)), None)
+            if (submit_field is not None and submit_field.get("tag") == "a"
+                    and not any(_accepts_value(f) for f in fields)):
+                # A LINK on a page with nothing to fill is navigation, not the
+                # end of an application: an application's submit button is a
+                # button, and a link would navigate away from the form rather
+                # than send it. On the BioSpace listing pages "Submit a Press
+                # Release" and "APPLY NOW" were both announced as the
+                # application's submit control - "Everything I can fill is
+                # done. Review the form and click 'Submit a Press Release'
+                # yourself" - three times, on three pages, before the form was
+                # reached at all. Both halves are needed: the final step of a
+                # real form has no fields either, and its Submit is a button.
+                # Refusing to CLICK anything submit-worded stays unconditional;
+                # this only stops one being called the form's when it is not.
+                submit_field = None
             advance_field = _find_advance(fields, handled)
             # "Add" under Work Experience / Education (Workday's My
             # Experience) is work to do, not decoration: with no empty inputs
@@ -1216,9 +1262,26 @@ def run_session(
                 for f in fields
             )
             adds_done = [] if (refused or (executed and busy_with_sections)) else pending_adds
+            # One option of a radio group IS the group's answer. `unresolved`
+            # was read before the plan ran, so every option the plan did not
+            # tick still looks untouched: the USP form's "What is your country
+            # of origin?" was answered India and the candidate was then told
+            # to fill in Argentina, Bangladesh, Brazil and eleven more
+            # themselves. Keyed on `name` where there is one, exactly as
+            # _unresolved_fields keys it.
+            answered_groups = {
+                (f.get("name") or f.get("group") or "")
+                for f in fields
+                if (f.get("type") or "").lower() == "radio"
+                and _field_key(f, _field_label(f)) in acted_keys
+            } - {""}
             for field in unresolved + adds_done:
                 key = _field_key(field, _field_label(field))
                 if not key or key in acted_keys:
+                    continue
+                if ((field.get("type") or "").lower() == "radio"
+                        and (field.get("name") or field.get("group") or "") in answered_groups):
+                    handled.add(key)
                     continue
                 if not field.get("required"):
                     handled.add(key)
@@ -2688,12 +2751,11 @@ def _warn_if_meant_earlier(holder, instruction: str, sess) -> None:
             return
 
 
-def _unanswered_questions(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Empty optional boxes that ask a real question ("Is there anything else
-    you'd like us to know?"), not spare name or extension boxes."""
+def _empty_question_boxes(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every empty box that asks a real question, required or not."""
     out = []
     for field in fields:
-        if field.get("tag") not in ("input", "textarea") or field.get("required"):
+        if field.get("tag") not in ("input", "textarea"):
             continue
         if (field.get("type") or "").lower() not in ("", "text", "search", "url", "email", "tel"):
             continue
@@ -2706,6 +2768,13 @@ def _unanswered_questions(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue   # conditional follow-ups belong to a "yes" we did not give
         out.append(field)
     return out
+
+
+def _unanswered_questions(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Empty OPTIONAL boxes that ask a real question ("Is there anything else
+    you'd like us to know?"), for reporting what was left out. A required one
+    is not "left empty (optional)" - it is the form refusing to go on."""
+    return [f for f in _empty_question_boxes(fields) if not f.get("required")]
 
 
 def _answer_on_request(page, fields, handled, reply: str, job, attach, sess,
@@ -2790,7 +2859,13 @@ def _settle_draft(sess, attach, job, label: str, draft: str, question: str) -> s
 def _field_for_question(fields: list[dict[str, Any]], text: str):
     """The empty box whose label the candidate just quoted. Word overlap, so
     a paraphrase still finds it; the only empty question wins by default."""
-    candidates = _unanswered_questions(fields)
+    # Required boxes included. _unanswered_questions deliberately drops them -
+    # it reports what was left out - and reusing it here made "llm: <the
+    # question>" structurally unable to answer a REQUIRED question, which is
+    # the only kind anyone bothers to ask for help with. On the USP form all
+    # six were required, and every request came back "I could not find that
+    # box on the page".
+    candidates = _empty_question_boxes(fields)
     if not candidates:
         return None
     words = {w for w in re.findall(r"[a-z]{4,}", resolver.plain(text))}
@@ -3353,7 +3428,8 @@ def _build_prompt(
         # they are all there. 0 and False do mean something (ordinal 0 is the
         # first entry, checked false is an unticked box), so they stay.
         item = {k: v for k, v in field.items()
-                if k != "path" and v != "" and v is not None and v != []}
+                if k not in ("path", "group_ids")
+                and v != "" and v is not None and v != []}
         if _field_key(field, _field_label(field)) in handled:
             item["already_handled"] = True
         annotated.append(item)
@@ -3378,6 +3454,12 @@ def _build_prompt(
 
 
 def _default_question(action: ApplyAction, field: dict[str, Any] | None, label: str) -> str:
+    # A control with no label and no name (a bare icon button) put
+    # "Should I click ''? (yes/no)" in the chat - a question with nothing in
+    # it to answer. _field_label always has something to say; it is not used
+    # for the field KEY, which must stay on the DOM path when there is no
+    # text, because snapshot ids are renumbered on every page change.
+    label = label or (_field_label(field) if field is not None else "")
     group = (field or {}).get("group") or ""
     where = f"'{label}' under '{group}'" if group and group.lower() != label.lower() else f"'{label}'"
     if action.action == "click":
@@ -3385,6 +3467,14 @@ def _default_question(action: ApplyAction, field: dict[str, Any] | None, label: 
     if action.action in ("check", "uncheck"):
         if (field or {}).get("type", "").lower() == "radio" and group:
             # Ask the group's question, so the stored answer means what it says.
+            # A collapsed long group already IS the question, and naming it as
+            # its own option ("options include 'What is your country of
+            # origin?'") says nothing: list some real ones instead.
+            offered = [str(o) for o in ((field or {}).get("options") or [])]
+            if offered:
+                return (f"'{group}' - what is your answer? (options include "
+                        + ", ".join(repr(o) for o in offered[:4])
+                        + (f" and {len(offered) - 4} more)" if len(offered) > 4 else ")"))
             return f"'{group}' - what is your answer? (options include '{label}')"
         return f"Should I {action.action} {where}? (yes/no)"
     return f"What should I enter for {where}?"
@@ -3470,7 +3560,12 @@ def _execute(
 
     if action.action == "click":
         how = browser.click(locator, timeout=15000)
-        sess.log(f"Clicked {label}" + (" (direct)" if "direct" in how else ""))
+        # Name the rung. Anything but a plain click means the normal one could
+        # not land, which is worth seeing in the transcript when the form then
+        # behaves oddly - and "(direct)" in particular fires only 'click', so
+        # a widget that opens on mousedown will not have opened.
+        rung = how.partition("(")[2].rstrip(")")
+        sess.log(f"Clicked {label}" + (f" ({rung})" if rung else ""))
         return
     if action.action == "upload":
         if not pdf_path:
@@ -3490,6 +3585,36 @@ def _execute(
     _apply_value(page, field, chosen, pdf_path, sess)
 
 
+# A ceiling the form states in words instead of in maxlength: "Max 250
+# words", "(500 characters maximum)", "no more than 100 words". Both orders,
+# because forms write it both ways. Never a floor - "minimum 250 words" must
+# not be read as a limit to cut to, so only ceiling words appear here.
+_CEILING = r"(?:max(?:imum)?|no more than|up to|within|limit(?:ed)?\s*(?:to)?|at most|or fewer|or less)"
+STATED_LIMIT_RE = re.compile(
+    rf"{_CEILING}[^.\n]{{0,24}}?(\d{{2,5}})\s*(words?|characters?|chars?)"
+    rf"|(\d{{2,5}})\s*(words?|characters?|chars?)[^.\n]{{0,16}}?{_CEILING}",
+    re.IGNORECASE,
+)
+
+
+def _stated_limit(field: dict[str, Any]) -> tuple[int, str]:
+    """The length this box asks for in words, and the unit it asks in.
+
+    maxlength is the only limit read today, so a box that says "Max 250
+    words" and sets no attribute got the whole answer - and the form either
+    rejected it or truncated it mid-sentence. `section` is deliberately not
+    searched: a limit written about one field must not travel to its
+    neighbours.
+    """
+    scope = " ".join(str(field.get(k) or "") for k in ("label", "group", "text"))
+    found = STATED_LIMIT_RE.search(scope)
+    if found is None:
+        return 0, ""
+    size = found.group(1) or found.group(3) or ""
+    unit = (found.group(2) or found.group(4) or "").lower()
+    return int(size), ("words" if unit.startswith("word") else "characters")
+
+
 def _clip_to_limit(field: dict[str, Any], value: str, label: str, sess) -> str:
     """A value cut to what the box will actually hold, at a word boundary.
 
@@ -3498,6 +3623,17 @@ def _clip_to_limit(field: dict[str, Any], value: str, label: str, sess) -> str:
     is seconds of nonsense on a role description that was simply too long.
     """
     limit = int(field.get("maxlength") or 0)
+    stated, unit = _stated_limit(field)
+    if stated and unit == "words":
+        words = value.split()
+        if len(words) > stated:
+            value = " ".join(words[:stated]).rstrip(" ,;.")
+            sess.log(f"{_brief(label, LOG_LABEL)} asks for {stated} words or fewer; "
+                     "shortening to fit.")
+    elif stated:
+        # Whichever ceiling is lower wins: a form may set maxlength AND say
+        # something stricter in words beside the box.
+        limit = stated if limit <= 0 else min(limit, stated)
     if limit <= 0 or len(value) <= limit:
         return value
     cut = value[:limit]
@@ -3542,6 +3678,15 @@ def _apply_value(
     tag = field.get("tag")
     field_type = (field.get("type") or "").lower()
     prefix = f"[{source}] " if source else ""
+
+    if field_type == "radio" and field.get("group_ids"):
+        # A long radio group the snapshot carries as one field (see
+        # browser.collapse_long_groups). Ticking the field itself would tick
+        # whichever option happens to represent it - Argentina, on the group
+        # the answer to which is India - so the option is chosen by name and
+        # clicked where it actually lives.
+        _pick_grouped_radio(page, field, value, label, prefix, sess)
+        return
 
     if field_type == "file":
         if source != "letter" and not is_resume_field(field) and not sole_upload:
@@ -3747,6 +3892,35 @@ def _aria_checked(locator) -> bool | None:
     except Exception:
         return None
     return None if value is None else value == "true"
+
+
+def _pick_grouped_radio(page, field: dict[str, Any], value: str, label: str,
+                        prefix: str, sess: ApplySession) -> None:
+    """Tick the option a collapsed radio group's answer names.
+
+    The group arrived as one field listing every option; `group_ids` says
+    which snapshot id each of them has, so the chosen one is addressed the
+    same way any other control is. Refuses rather than ticking something
+    approximate: on a 46-country question a near miss is a wrong answer the
+    candidate is told is right.
+    """
+    options = [str(o) for o in (field.get("options") or [])]
+    ids = list(field.get("group_ids") or [])
+    index = _choose_option(options, value)
+    if index < 0 or index >= len(ids):
+        shown = ", ".join(_near_options(value, options)) or "(no options captured)"
+        raise ValueError(
+            f"'{value}' matches none of the {len(options)} options of '{label}'; "
+            f"pick one of: {shown}"
+        )
+    target = browser.locate(page, ids[index], "")
+    if target.count() == 0:
+        raise StaleField(f"{label} / {options[index]}")
+    # The representative's elid belongs to the representative; _set_checked's
+    # label fallback would use it to click the wrong option.
+    _set_checked(page, target, {**field, "elid": "", "label": options[index]}, True)
+    sess.log(f"{prefix}Selected '{_brief(options[index], LOG_VALUE)}' "
+             f"for {_brief(label, LOG_LABEL)}")
 
 
 def _set_checked(page, locator, field: dict[str, Any], on: bool) -> None:
@@ -4173,10 +4347,17 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
 # was filled with the comma-separated list.
 SKILLS_BOX_RE = re.compile(
     r"^\s*(?:your |my |key |core |technical |relevant |top |primary )?"
-    r"(?:type to add |add |enter |list |select )?skills?\b"
+    r"(?:type to add |add |enter |list |select )?skills?"
+    r"\s*[:*]?\s*(?:\(?\s*required\s*\)?)?\s*[:*]?\s*$"
     r"|\bseparate each skill\b|\badd(?: your)? skills\b|\bskills? \(.*\)\s*$",
     re.IGNORECASE,
 )
+# The bare-noun branch is anchored at BOTH ends on purpose. With only
+# \bskills?\b, "Skill level" was a skills box: the profile's eleven skills
+# were offered to a six-option proficiency dropdown, which logged "none of
+# your skills match the 6 options of 'Skill level'" five times in one session
+# while the real question went unanswered. A box wanting a list of skills says
+# so and stops; "skill <something else>" is asking ABOUT them.
 
 
 def _is_skills_box(field: dict[str, Any]) -> bool:
@@ -5218,6 +5399,13 @@ def _option_agrees(field: dict[str, Any] | None, answer: str) -> bool:
     if field is None:
         return True
     if (field.get("type") or "").lower() not in ("checkbox", "radio"):
+        return True
+    if field.get("group_ids"):
+        # A long group carried as one field is a CHOICE, not an option: its
+        # label is the question. Matching an answer against it the way an
+        # option is matched refuses every answer there is, and the option
+        # itself is checked where it is picked, which refuses anything the
+        # form does not offer.
         return True
     label = field.get("label") or ""
     lab, ans = profile.fingerprint(label), profile.fingerprint(answer)

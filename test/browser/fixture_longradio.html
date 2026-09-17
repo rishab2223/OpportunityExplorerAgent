@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>UKG long radio group</title></head>
+<body>
+<!--
+  The USP application on UKG/UltiPro, Sep 17 2026, rebuilt from the dump.
+
+  "What is your country of origin?" is 46 radios that share a name and have
+  no fieldset, no legend and no role=radiogroup. Two things went wrong.
+
+  The question: with nothing to read it from, the snapshot fell back to "the
+  first line of my own div", so every country became its own question. Ticking
+  India left the other 45 looking unanswered, and the candidate was told to
+  fill in Argentina, Bangladesh, Brazil and eleven more by hand.
+
+  The budget: MAX_FIELDS is 60 and the countries took every slot from 46 on.
+  Everything below them - six REQUIRED questions and the form's own Submit
+  button - reached neither the model, the profile, nor the llm: flow. The
+  candidate reported "nothing was filled by system on this page" and was
+  right: the fields did not exist as far as the agent was concerned.
+
+  The counts here are the real ones: 46 options, six questions, 63 controls.
+-->
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  .form-group { margin-bottom: 20px; }
+  .control-label { display: block; font-weight: 600; margin-bottom: 6px; }
+  .radio-line { margin: 2px 0; }
+  textarea { width: 460px; height: 48px; }
+</style>
+
+<form>
+  <!-- Contact, filled from the profile: these are the ones that DID work. -->
+  <div class="form-group"><label class="control-label" for="fn">First Name</label>
+    <input id="fn" type="text" required></div>
+  <div class="form-group"><label class="control-label" for="ln">Last Name</label>
+    <input id="ln" type="text" required></div>
+  <div class="form-group"><label class="control-label" for="ph">Primary Phone</label>
+    <input id="ph" type="tel" required></div>
+  <div class="form-group"><label class="control-label" for="a1">Address 1</label>
+    <input id="a1" type="text" required></div>
+  <div class="form-group"><label class="control-label" for="ci">City</label>
+    <input id="ci" type="text" required></div>
+  <div class="form-group"><label class="control-label" for="zp">Zip / Postal Code</label>
+    <input id="zp" type="text" required></div>
+  <div class="form-group"><label class="control-label" for="lo">Location</label>
+    <input id="lo" type="text"></div>
+  <div class="form-group"><label class="control-label" for="ti">Title</label>
+    <select id="ti"><option value=""></option><option>Mr.</option><option>Ms.</option></select></div>
+  <div class="form-group"><label class="control-label" for="pn">Preferred Name</label>
+    <input id="pn" type="text"></div>
+  <div class="form-group"><label class="control-label" for="mi">Middle</label>
+    <input id="mi" type="text"></div>
+  <div class="form-group"><label class="control-label" for="su">Suffix</label>
+    <select id="su"><option value=""></option><option>Jr.</option></select></div>
+  <div class="form-group"><label class="control-label" for="fm">Former Name</label>
+    <input id="fm" type="text"></div>
+  <div class="form-group"><label class="control-label" for="co">Country</label>
+    <select id="co" required><option value=""></option><option>India</option></select></div>
+  <div class="form-group"><label class="control-label" for="st">State / Province</label>
+    <select id="st" required><option value=""></option><option>Haryana</option></select></div>
+
+  <!-- A SHORT group. Two options, so nothing about it may change: every
+       Yes/No on every form is still one field per option. -->
+  <div class="form-group">
+    <label class="control-label">Were you referred by a current employee?</label>
+    <div class="radio-line"><label><input type="radio" name="employeereferral" value="true"> Yes</label></div>
+    <div class="radio-line"><label><input type="radio" name="employeereferral" value="false"> No</label></div>
+  </div>
+
+  <!-- The long one. The question is a LABEL inside the group's own box,
+       above the first option - a <legend> in all but name. -->
+  <div class="form-group" id="origin">
+    <label class="control-label required">What is your country of origin?</label>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="0" required> Argentina</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="1" required> Bangladesh</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="2" required> Brazil</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="3" required> Cambodia</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="4" required> Canada</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="5" required> Chile</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="6" required> China</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="7" required> Colombia</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="8" required> Ethiopia</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="9" required> France</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="10" required> Germany</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="11" required> Ghana</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="12" required> Guatemala</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="13" required> India</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="14" required> Indonesia</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="15" required> Italy</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="16" required> Japan</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="17" required> Jordan</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="18" required> Kenya</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="19" required> Loa Peoples Democratic Republic</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="20" required> Liberia</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="21" required> Madagascar</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="22" required> Mexico</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="23" required> Morocco</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="24" required> Myanmar</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="25" required> Nepal</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="26" required> Nigeria</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="27" required> Pakistan</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="28" required> Philippines</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="29" required> Republic of Korea</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="30" required> Russian Federation</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="31" required> Rwanda</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="32" required> Senegal</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="33" required> Singapore</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="34" required> South Africa</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="35" required> Spain</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="36" required> Switzerland</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="37" required> Tajikistan</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="38" required> Thailand</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="39" required> Ukraine</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="40" required> United Republic of Tanzania</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="41" required> United States</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="42" required> Uzbekistan</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="43" required> Zambia</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="44" required> Zimbabwe</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse0" value="45" required> Other</label></div>
+  </div>
+
+  <!-- Everything from here down is what the truncation ate. All six are
+       REQUIRED, which is also why llm: could not reach them: the box it
+       searched held empty OPTIONAL questions only. -->
+  <div class="form-group"><label class="control-label" for="q1">Have you ever been employed by USP? If so, please provide previous dates of employment and the manager's name.</label>
+    <textarea id="q1" required></textarea></div>
+  <div class="form-group"><label class="control-label" for="q2">Have you ever been terminated, discharged, or asked to resign from any position? Please indicate yes or no below. If yes, please explain.</label>
+    <textarea id="q2" required></textarea></div>
+  <div class="form-group"><label class="control-label" for="q3">What is your experience in Full Stack development and what technologies have you used?</label>
+    <textarea id="q3" required></textarea></div>
+  <div class="form-group"><label class="control-label" for="q4">What is your current CTC</label>
+    <textarea id="q4" required></textarea></div>
+  <div class="form-group"><label class="control-label" for="q5">What are your salary expectations for this position?</label>
+    <textarea id="q5" required></textarea></div>
+  <div class="form-group"><label class="control-label" for="q6">What is your notice period</label>
+    <textarea id="q6" required></textarea></div>
+
+  <div class="form-group">
+    <label class="control-label">Are you willing to relocate?</label>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse3" value="0" required> Yes</label></div>
+    <div class="radio-line"><label><input type="radio" name="MultipleChoiceResponse3" value="1" required> No</label></div>
+  </div>
+
+  <button type="button" id="send">Submit</button>
+</form>
+
+<pre id="log"></pre>
+<script>
+  document.querySelectorAll('input[type=radio]').forEach(function (r) {
+    r.addEventListener('change', function () {
+      document.getElementById('log').textContent +=
+        r.name + '=' + (r.closest('label').innerText || '').trim() + ' | ';
+    });
+  });
+</script>
+</body>
+</html>
