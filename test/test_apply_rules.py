@@ -2782,9 +2782,11 @@ class NoFieldsReasonTests(unittest.TestCase):
     class Page:
         url = "https://career.infosys.com/jobdesc?jobReferenceCode=X"
 
-    def reason(self, text="", error="", page=None):
+    def reason(self, text="", error="", page=None, spinner=""):
         with unittest.mock.patch.object(worker.browser, "last_snapshot_error",
                                         return_value=error), \
+             unittest.mock.patch.object(worker.browser, "loading_indicator",
+                                        return_value=spinner), \
              unittest.mock.patch.object(worker.browser, "full_page_text",
                                         return_value=text):
             return worker._no_fields_reason(page or self.Page())
@@ -2816,3 +2818,34 @@ class NoFieldsReasonTests(unittest.TestCase):
         # own text must not be read as a diagnosis.
         self.assertIn("reading it failed",
                       self.reason(text="Job description. " * 4000, error="Timeout 30000ms"))
+
+    def test_a_spinner_still_turning_beats_the_word_count(self):
+        # The Infosys page: shell and sidebar rendered, ngx-ui-loader started,
+        # the data never arrived. 242 characters of text and no controls sat
+        # just over the "still loading" threshold, so it was reported as a
+        # loaded page with no form - and answered with "the form is behind its
+        # Apply button", on a page that has no Apply button and never will.
+        got = self.reason(text="x" * 242, spinner="ngx-foreground-spinner")
+        self.assertIn("loading spinner", got)
+        self.assertIn("ngx-foreground-spinner", got)
+        self.assertNotIn("Apply button", got)
+
+    def test_and_it_says_what_actually_helps(self):
+        got = self.reason(text="x" * 242, spinner="ngx-foreground-spinner")
+        self.assertIn("reloading", got.lower())
+        self.assertIn("signing out", got.lower())
+
+    def test_a_long_page_with_a_spinner_is_still_stuck(self):
+        # Length proves nothing either way: a shell can be wordy.
+        self.assertIn("loading spinner",
+                      self.reason(text="Job description. " * 4000, spinner="loader"))
+
+    def test_a_page_with_no_spinner_still_points_at_apply(self):
+        got = self.reason(text="Job description. " * 4000)
+        self.assertIn("carries no form", got)
+
+    def test_a_scan_that_threw_still_wins(self):
+        # It tells you nothing about the page, so neither the spinner nor the
+        # text may be read as a diagnosis.
+        self.assertIn("reading it failed",
+                      self.reason(text="x" * 242, spinner="loader", error="Timeout 30000ms"))

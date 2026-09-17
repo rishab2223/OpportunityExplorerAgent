@@ -352,6 +352,16 @@ def _no_fields_reason(page) -> str:
         text = browser.full_page_text(page)
     except Exception:
         return "the tab could not be read at all"
+    # A spinner beats a word count. Infosys's career page mounts its shell,
+    # starts its loader and never gets its data: 242 characters of text and no
+    # controls, which a threshold read as "loaded, no form on it" and answered
+    # with "the form is behind its Apply button" - on a page that has no Apply
+    # button and never will.
+    spinner = browser.loading_indicator(page)
+    if spinner:
+        return (f"the site is still showing its loading spinner ('{_brief(spinner, 40)}') "
+                "and its content never arrived - reloading it usually helps, and if you "
+                "are signed in to that site, signing out and in again often does")
     # What is ON the page decides, not the URL: a popup opened by the apply
     # flow carries about:blank while it loads its content, and a page built by
     # script keeps that URL for good.

@@ -1183,6 +1183,43 @@ def page_blocked(page) -> str:
         return ""
 
 
+SPINNER_JS = """
+() => {
+  // A spinner the candidate can actually see. Infosys's career page mounts
+  // its shell, starts ngx-ui-loader, and never gets its data: shell and
+  // sidebar render, the detail column is never created, and the page sits on
+  // its spinner for good. 242 characters of text and no controls read as "a
+  // page with no form on it", which is confident and wrong - there was no
+  // Apply button to point at.
+  const sel = '[role=progressbar], [aria-busy=true], [class*="spinner"],' +
+    ' [class*="loader"], [class*="loading"]';
+  for (const el of document.querySelectorAll(sel)) {
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) continue;          // 0x0 leftovers
+    const name = (typeof el.className === 'string' ? el.className : '') ||
+      el.getAttribute('role') || el.tagName.toLowerCase();
+    return name.trim().split(/\\s+/)[0].slice(0, 60);
+  }
+  return '';
+}
+"""
+
+
+def loading_indicator(page) -> str:
+    """The class of a spinner still turning, or ''.
+
+    Only ever consulted when the scan found NOTHING, which is what keeps it
+    honest: a progress bar on a working wizard step is a normal part of a page
+    that has fields, and this never looks at one.
+    """
+    try:
+        return target(page).evaluate(SPINNER_JS) or ""
+    except Exception:
+        return ""
+
+
 ON_TOP_AT_CENTRE_JS = """
   el => {
     const r = el.getBoundingClientRect();
