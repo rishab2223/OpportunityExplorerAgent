@@ -341,6 +341,13 @@ _JOB_TITLE_RE = re.compile(r"\b(job )?title\b|\bposition\b|\brole\b|\bdesignatio
 # _JOB_TITLE_RE, which matches the word "role": Esko labels its description
 # box "Role description", and treating that as a title split every entry in
 # two and left the second job with nothing to fill it from.
+# A control that names one numbered entry of the list: "Delete Work
+# Experience 3", "Remove Employment 2". Anchored to a delete/remove verb, so
+# a heading that merely ends in a digit ("Employment history 2020") cannot
+# renumber the walk.
+_ENTRY_LABEL_RE = re.compile(
+    r"\b(delete|remove)\b.*\b(work|employment|experience|position|job)\b.*\d\s*$",
+    re.IGNORECASE)
 _ENTRY_START_RE = re.compile(
     r"\b(job ?title|position title|designation)\b|^\s*(job )?title\s*\*?\s*$",
     re.IGNORECASE)
@@ -527,6 +534,16 @@ def tag_work_entries(fields: list[dict[str, Any]], jobs: list[dict[str, str]]) -
         label = str(field.get("label") or "")
         if WORK_SECTION_RE.search(section) or WORK_SECTION_RE.search(group):
             numbered = re.search(r"(\d+)\s*$", section)
+            # UKG numbers the ENTRY rather than the section: its boxes carry
+            # no section at all and the only thing that says which entry they
+            # belong to is the "Delete Work Experience 3" button above them.
+            # Reading only the section collapsed all four entries onto
+            # position 0, so a form the site had already filled from the
+            # resume counted as one entry, Add Experience was clicked twice
+            # more, and the same job was written into both - three identical
+            # "Software Engineer at Acme" rows on a submitted application.
+            if not numbered and _ENTRY_LABEL_RE.search(label):
+                numbered = re.search(r"(\d+)\s*$", label)
             if numbered:
                 pos = max(0, int(numbered.group(1)) - 1)
             elif not inside:

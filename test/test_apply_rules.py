@@ -2385,3 +2385,80 @@ class WaitQuietTests(unittest.TestCase):
                                                quiet=1000))
         # Eight polls of movement, then four of quiet.
         self.assertEqual(page.slept, 250 * 12)
+
+
+class UkgEntryNumberingTests(unittest.TestCase):
+    """UKG numbers the ENTRY, not the section.
+
+    Its section heading says only "Work Experience"; the boxes inside an entry
+    carry no section at all, and the only thing naming the entry they belong
+    to is the "Delete Work Experience 3" button above them. Reading the number
+    off the section alone collapsed all four entries onto position 0, so the
+    agent counted one entry where the site had already built four from the
+    resume, clicked Add Experience twice more, and wrote the same profile job
+    into both - three identical "Software Engineer at Acme Systems"
+    rows on an application about to be submitted.
+    """
+
+    JOBS = [{"title": "Software Engineer", "company": "Acme Systems"},
+            {"title": "Software Engineer Intern", "company": "Acme Systems"}]
+
+    def _page(self, entries):
+        """The shape of the real dump: a sectioned Delete button naming the
+        entry, then that entry's boxes carrying no section whatsoever."""
+        fields = [{"label": "Add Experience", "section": "Work Experience",
+                   "tag": "button", "group": "", "value": ""}]
+        for n, (title, company) in enumerate(entries, start=1):
+            fields.append({"label": f"Delete Work Experience {n}",
+                           "section": "Work Experience", "tag": "button",
+                           "group": "", "value": ""})
+            for label, value in (("Job Title", title),
+                                 ("Company / Organization", company),
+                                 ("Location", ""), ("Year (YYYY)", "")):
+                fields.append({"label": label, "section": "", "tag": "input",
+                               "group": "", "value": value})
+        return fields
+
+    def _positions(self, fields):
+        return {f["work_pos"] for f in fields if f.get("work_pos") is not None}
+
+    def test_each_numbered_entry_is_its_own_position(self) -> None:
+        fields = self._page([("Software Engineer", "Acme Systems"),
+                             ("Software Engineer", "Acme Systems"),
+                             ("Software Engineer", "Acme Systems"),
+                             ("Software Engineer Intern", "Acme Systems")])
+        from src.apply import resolver
+        resolver.tag_work_entries(fields, self.JOBS)
+        self.assertEqual(self._positions(fields), {0, 1, 2, 3})
+
+    def test_a_page_the_site_already_filled_needs_no_more_entries(self) -> None:
+        # The count _open_profile_sections compares against the profile: two
+        # jobs, two entries already there, so Add Experience is done. Counting
+        # one is what made it click twice more.
+        from src.apply import resolver
+
+        fields = self._page([("Software Engineer", "Acme Systems"),
+                             ("Software Engineer Intern", "Acme Systems")])
+        resolver.tag_work_entries(fields, self.JOBS)
+        self.assertEqual(len(self._positions(fields)), len(self.JOBS))
+
+    def test_each_entry_gets_its_own_job(self) -> None:
+        from src.apply import resolver
+
+        fields = self._page([("", ""), ("", "")])
+        resolver.tag_work_entries(fields, self.JOBS)
+        first = {f["work_entry"] for f in fields if f.get("work_pos") == 0}
+        second = {f["work_entry"] for f in fields if f.get("work_pos") == 1}
+        self.assertEqual(first, {0})
+        self.assertEqual(second, {1})
+
+    def test_a_heading_that_merely_ends_in_a_digit_renumbers_nothing(self) -> None:
+        # The rule reads a DELETE control, not any label with a number on the
+        # end, or "Employment history 2020" would start a fifth entry.
+        from src.apply import resolver
+
+        fields = self._page([("Software Engineer", "Acme Systems")])
+        fields.insert(1, {"label": "Employment history 2020", "tag": "button",
+                          "section": "Work Experience", "group": "", "value": ""})
+        resolver.tag_work_entries(fields, self.JOBS)
+        self.assertEqual(self._positions(fields), {0})
