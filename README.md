@@ -340,7 +340,7 @@ Two limits: `redo` only reaches boxes still on the step in front of you (once yo
 | `llm: <instruction>` | draft or redraft the answer to the question being asked; at either review prompt ("This step is filled in" or "click Submit yourself"), `llm: <question>` drafts an answer to a question the form asked — into the box when it can be found, otherwise handed back for you to paste |
 | `redo` / `redo <words>` | reopen an answer you already gave, pre-filled, to edit or redraft |
 | `attach resume` / `cover letter` | start either attachment flow by hand (same as the buttons) |
-| `dump` / `dump 10` | save the page as it is (DOM, fields, screenshot) under `outputs/dom/` and keep waiting; `dump 10` waits ten seconds first so you can open a widget |
+| `dump` / `dump 10` | save the page as it is (DOM with shadow roots and live values, every frame, the field snapshot, a screenshot) under `outputs/dom/` and keep waiting; `dump 10` waits ten seconds first so you can open a widget. The **Dump** button does the same and copies the folder path to your clipboard |
 | a URL | open that page when the agent is stuck |
 | `retry` | try the model again after an outage (`try again`) |
 | `closed` | record that the posting no longer accepts applications and stop |

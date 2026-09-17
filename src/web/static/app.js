@@ -902,6 +902,7 @@ let applyJobId = "";
 let applySource = null;
 
 function setChatEnabled(enabled) {
+  $("dump").disabled = !enabled;
   $("chat").disabled = !enabled;
   $("send").disabled = !enabled;
   $("abort").disabled = !enabled;
@@ -1018,6 +1019,46 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden && applySessionId) resyncApply("tab back in front");
 });
 
+// "Page dumped to <folder> (page.html, fields.json, screenshot.png)."
+// The worker names the folder in its own log line, so the button does not have
+// to be told separately where the dump went - and typing `dump` gets the path
+// copied too, which is the same thing happening for free.
+const DUMPED_RE = /Page dumped to (.+?) \(page\.html/;
+
+function copyDumpPath(event) {
+  const found = event.type === "step" && DUMPED_RE.exec(event.text || "");
+  if (!found) return;
+  const path = found[1].trim();
+  // The clipboard write happens after a server round trip, not inside the
+  // click, so it can be refused (an unfocused tab, a browser that wants the
+  // gesture). The path is on screen either way; say which happened rather
+  // than leaving the user to guess whether Ctrl+V will have anything in it.
+  const ok = () => appendApply("(the folder path is on your clipboard)");
+  const no = () => appendApply("(could not reach the clipboard - copy the path above)");
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(path).then(ok, no);
+      return;
+    }
+  } catch (err) {
+    /* falls through to the textarea below */
+  }
+  try {
+    const box = document.createElement("textarea");
+    box.value = path;
+    box.setAttribute("readonly", "");
+    box.style.position = "fixed";
+    box.style.opacity = "0";
+    document.body.appendChild(box);
+    box.select();
+    const copied = document.execCommand("copy");
+    document.body.removeChild(box);
+    (copied ? ok : no)();
+  } catch (err) {
+    no();
+  }
+}
+
 function streamApply(sessionId) {
   if (applySource) applySource.close();
   applySessionId = sessionId;
@@ -1036,6 +1077,7 @@ function streamApply(sessionId) {
       done: "SESSION ",
     }[event.type] || "";
     appendApply(prefix + event.text, event.at);
+    copyDumpPath(event);
     if (event.type === "question" || event.type === "choice") alertUser(event.text);
     if (event.type === "question") {
       // A model-drafted answer arrives pre-filled for editing; never clobber
@@ -1451,6 +1493,16 @@ $("markapplied").addEventListener("click", () => {
   // Same words the chat accepts, so there is one path through the worker.
   postJSON(`/api/apply/${applySessionId}/chat`, { text: "i submitted" }).catch((err) =>
     appendApply(`Could not record it: ${err.message}`)
+  );
+});
+
+$("dump").addEventListener("click", () => {
+  if (!applySessionId) return;
+  // The same word the chat accepts, so there is one path through the worker
+  // and the button can never drift from what typing `dump` does. The folder
+  // it writes is copied to the clipboard when the worker reports it below.
+  postJSON(`/api/apply/${applySessionId}/chat`, { text: "dump" }).catch((err) =>
+    appendApply(`Could not dump the page: ${err.message}`)
   );
 });
 

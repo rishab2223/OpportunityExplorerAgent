@@ -37,6 +37,9 @@ failures = []
 with sync_playwright() as pw:
     b = pw.chromium.launch()
     page = b.new_page(viewport={"width": 1280, "height": 900})
+    # The Dump button copies the dump's folder to the clipboard; without this
+    # the write is refused and the check would pass on a stub.
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
     # The dashboard's data endpoints are not running here; only script errors
     # from the page itself count.
     page.on("pageerror", lambda e: failures.append(f"page error: {str(e)[:120]}")
@@ -144,6 +147,40 @@ with sync_playwright() as pw:
         failures.append("the action word is not capitalised")
     if not any("Could not fill" in c for c in caps):
         failures.append("a failure line has no capitalised head")
+    # ---- the Dump button ----
+    # One path through the worker: the button sends the same word the chat
+    # accepts, so it cannot drift from what typing `dump` does.
+    page.evaluate("() => { window.__sent = []; applySessionId = 'x'; setChatEnabled(true); }")
+    page.click("#dump")
+    page.wait_for_timeout(150)
+    sent = page.evaluate("() => window.__sent")
+    print("\n  Dump sent:", sent)
+    if sent != ["dump"]:
+        failures.append(f"the Dump button did not send 'dump' ({sent})")
+
+    # The worker names the folder in its own log line, so the button never has
+    # to be told separately where the dump went - which is also why typing
+    # `dump` gets the path copied, for free.
+    FOLDER = "/home/x/OpportunityExplorerAgent/outputs/dom/20260101T000000_20260918-0042"
+    page.evaluate(
+        "(folder) => copyDumpPath({type: 'step', text: 'Page dumped to ' + folder +"
+        " ' (page.html, fields.json, screenshot.png). Still waiting for your answer.'})",
+        FOLDER)
+    page.wait_for_timeout(250)
+    copied = page.evaluate("() => navigator.clipboard.readText()")
+    print("  clipboard:", repr(copied))
+    if copied != FOLDER:
+        failures.append(f"the folder path was not copied cleanly ({copied!r})")
+    if "on your clipboard" not in page.locator("#applylog").inner_text():
+        failures.append("the user was not told the path had been copied")
+
+    # A step line that is not a dump must leave the clipboard alone.
+    page.evaluate("() => navigator.clipboard.writeText('untouched')")
+    page.evaluate("() => copyDumpPath({type: 'step', text: 'Filled Full name = Test User'})")
+    page.wait_for_timeout(150)
+    if page.evaluate("() => navigator.clipboard.readText()") != "untouched":
+        failures.append("an ordinary log line overwrote the clipboard")
+
     b.close()
 
 if failures:
