@@ -55,10 +55,12 @@ GROUPS: dict[str, list[str]] = {
         "dump_check.py", "fallback_check.py", "cf7_check.py",
         "foreground_check.py", "settle_check.py", "reactselect_check.py",
         "longradio_check.py", "page_signals_check.py", "failfast_check.py",
+        "late_continue_check.py",
     ],
     "attach": ["chooser_check.py", "jobvite_upload_check.py", "taleo_check.py"],
     "linkedin": ["li_ready_e2e.py", "li_noisy_repro.py", "li_rerender_repro.py",
                  "li_unwired_check.py"],
+    "indeed": ["indeed_check.py"],
     "submit": [                       # "was it sent?", every shape of it
         "sent_no_model_repro.py", "sent_dialog_repro.py",
         "submitted_at_any_prompt.py", "submitted_tail_check.py",
@@ -91,10 +93,11 @@ LONGEST = [
 # Which groups a changed file puts at risk. First match wins, so the specific
 # paths come before the general ones.
 TOUCHES: list[tuple[str, tuple[str, ...]]] = [
-    ("src/apply/sites/linkedin.py", ("linkedin", "apply")),
+    ("src/apply/sites/linkedin.py", ("linkedin", "indeed", "apply")),   # indeed borrows its tab helpers
+    ("src/apply/sites/indeed.py", ("indeed",)),
     ("src/apply/cover_letter.py", ("attach", "apply")),
     ("src/apply/session.py", ("queue", "apply", "submit")),
-    ("src/apply/worker.py", ("apply", "sites", "attach", "submit", "queue")),
+    ("src/apply/worker.py", ("apply", "sites", "attach", "submit", "queue", "indeed")),
     ("src/apply/browser.py", ("apply", "sites", "attach")),
     ("src/apply/resolver.py", ("apply", "sites")),
     ("src/apply/profile.py", ("apply", "sites")),

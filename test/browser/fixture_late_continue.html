@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Add your contact information</title></head>
+<body>
+<!--
+  Indeed's contact step, Sep 18 2026: the boxes arrive filled from the
+  account, and the Continue button a moment after them. The agent read the
+  page in between, found nothing to fill and nothing to press, and asked the
+  model - 6.8 s - to find a button that turned up while it was being asked.
+-->
+<h1>Add your contact information</h1>
+<form onsubmit="return false">
+  <label for="first">First name *</label>
+  <input id="first" name="firstName" value="Test" required>
+  <label for="last">Last name *</label>
+  <input id="last" name="lastName" value="User" required>
+  <div id="actions"></div>
+</form>
+<script>
+  setTimeout(function () {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = "Continue";
+    document.getElementById("actions").appendChild(b);
+  }, 1200);
+</script>
+</body>
+</html>

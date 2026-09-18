@@ -50,6 +50,15 @@ FIRST_RENDER_WAIT_MS = 15000
 # After that first look the page is not "still loading" any more, so a page
 # with genuinely nothing on it does not pay the long budget on every pass.
 RETRY_RENDER_WAIT_MS = 4000
+# Before a model call about NOTHING - no box left to fill, and no Next or
+# Submit the script could press - give the page this long to finish drawing.
+# 15 of 58 real model calls were about zero fields, a median 7.1 s each, and
+# Indeed's contact step was one of them: its Continue button arrived while
+# the model was being asked to find it. Only a page that has not moved in
+# this time goes to the model, so a page that really needs one pays this at
+# most, and at most twice in a row.
+ZERO_FIELD_SETTLE_MS = 1500
+ZERO_FIELD_SETTLES_IN_A_ROW = 2
 DIALOG_LOAD_RETRIES = 4   # x1.5s: how long an open modal may take to show its form
 # Stop at every filled step and wait for "next" (or the candidate's own click)
 # before advancing a wizard. "auto next" in the chat turns it off for a session.
@@ -624,6 +633,8 @@ def run_session(
         blocked_told = False
         told_dropped = 0
         named_site = ""          # the tracking system last named in the transcript
+        settled_sig = ""         # the page last given time to draw before a model call
+        zero_settles = 0
         closed_prompted: set[str] = set()
         last_llm_sig = ""
         outcome = ""
@@ -1267,6 +1278,15 @@ def run_session(
                 # model again would burn a call to hear the same plan.
                 noop_streak += 1
                 continue
+            if (not unresolved and not pending_adds and sig != settled_sig
+                    and zero_settles < ZERO_FIELD_SETTLES_IN_A_ROW):
+                # Nothing to fill and nothing the script could press: exactly
+                # what a page still drawing looks like. See ZERO_FIELD_SETTLE_MS.
+                settled_sig = sig
+                zero_settles += 1
+                if browser.settle(page, browser.page_shape(page), ZERO_FIELD_SETTLE_MS):
+                    continue          # it moved: read it again before paying for a call
+            zero_settles = 0
             sess.log(
                 f"Asking the model about {len(unresolved) + len(pending_adds)} field(s)…"
                 + (" (the first call can take a minute)" if llm_calls == 0 else "")

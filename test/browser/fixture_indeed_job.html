@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Software Developer - Example City - Indeed.com</title></head>
+<body>
+<!--
+  An Indeed job page, reduced to what the agent meets on one. Structure from
+  two job pages saved on Sep 18 2026, one of each kind:
+
+    #indeed    <button id="indeedApplyButton" aria-label="Apply with Indeed">,
+               which opens Indeed's own form in the same tab
+    #company   #applyButtonLinkContainer > button "Apply on company site",
+               which opens the employer's site in a new tab
+
+  The header's What / Where search boxes are why the model used to be asked
+  about "2 field(s)" on a page with nothing to fill. The card at the bottom
+  is another job's, with an Apply of its own: the reason the agent goes by
+  id and not by the word. Both buttons do nothing for their first 0.8 s, as
+  a page's buttons can before it has wired them up.
+-->
+<header>
+  <form role="search" onsubmit="return false">
+    <label for="what">What</label><input id="what" name="q">
+    <label for="where">Where</label><input id="where" name="l">
+    <button type="submit">Find Jobs</button>
+  </form>
+</header>
+<main>
+  <h1>Software Developer</h1>
+  <div>Example Co - Example City</div>
+  <div id="apply-slot"></div>
+  <button type="button">Save job</button>
+  <p>We are looking for a Software Developer to join our team.</p>
+</main>
+<aside>
+  <h2>Similar jobs</h2>
+  <div class="card"><span>Backend Engineer</span> <button type="button"
+       onclick="document.title = 'WRONG JOB'">Apply now</button></div>
+</aside>
+<script>
+  var mode = location.hash.slice(1) || "indeed";
+  var wired = false;
+  setTimeout(function () { wired = true; }, 800);
+  var slot = document.getElementById("apply-slot");
+  if (mode === "indeed") {
+    slot.innerHTML = '<span data-testid="indeed-apply-widget" class="indeed-apply-widget ' +
+      'indeed-apply-status-not-applied"><button id="indeedApplyButton" ' +
+      'aria-label="Apply with Indeed">Apply with Indeed</button></span>';
+    document.getElementById("indeedApplyButton").addEventListener("click", function () {
+      if (wired) location.href = "fixture_late_continue.html";
+    });
+  } else {
+    slot.innerHTML = '<div id="applyButtonLinkContainer"><button type="button" ' +
+      'aria-label="Apply on company site (opens in a new tab)">Apply on company site</button></div>';
+    document.querySelector("#applyButtonLinkContainer button").addEventListener("click", function () {
+      if (wired) window.open("fixture_late_continue.html", "_blank");
+    });
+  }
+</script>
+</body>
+</html>
