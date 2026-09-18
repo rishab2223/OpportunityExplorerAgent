@@ -1284,6 +1284,47 @@ class DumpCommandTests(TempDbTestCase):
         self.assertEqual(result, ["dump"])
 
 
+class OpeningTests(TempDbTestCase):
+    """What happens before the loop starts, on a stubbed browser: the session
+    is stopped at the first thing that would wait on the candidate."""
+
+    def _open(self, url):
+        from src.apply import session as apply_session
+
+        seen: list[tuple[str, bool]] = []
+
+        class Sess(apply_session.ApplySession):
+            def ask(self, question, suggestion=""):
+                seen.append((question, self.on_dump is not None))
+                raise apply_session.Aborted("stop here")
+
+        def indeed_start(page, sess):
+            seen.append(("indeed.start", sess.on_dump is not None))
+            raise apply_session.Aborted("stop here")
+
+        sess = Sess("stamp", "job", "label")
+        page = type("P", (), {"url": url})()
+        context = type("C", (), {"pages": [page], "close": lambda self: None})()
+        with unittest.mock.patch.object(worker.browser, "launch", return_value=(None, context, page)), \
+             unittest.mock.patch.object(worker, "make_invoker", return_value=None), \
+             unittest.mock.patch.object(worker.indeed, "start", indeed_start):
+            worker.run_session(sess, {"apply_url": url}, "", worker.AppConfig(), None)
+        return seen
+
+    def test_dump_is_understood_from_the_very_first_question(self) -> None:
+        # The Dump button pressed at "Ready to start?" was taken as the answer
+        # "ready": the hook went in fifty lines after that question.
+        (question, could_dump), = self._open("https://careers.example.test/job/1")
+        self.assertIn("Ready to start", question)
+        self.assertTrue(could_dump)
+
+    def test_an_indeed_job_starts_without_asking(self) -> None:
+        # "Ready to start? Type done" sat unanswered for three minutes on a
+        # real Indeed session, the Apply button in plain view.
+        seen = self._open("https://in.indeed.com/job/software-developer-1")
+        self.assertEqual(seen, [("indeed.start", True)])
+
+
 class DuplicateRowTests(TempDbTestCase):
     def test_a_row_read_twice_is_one_choice(self) -> None:
         # Workday: the row and its inner text node both read as options, so

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><title>Backend Engineer | Example Co | LinkedIn</title>
+<!--
+  The job card as the real logs show it: in 25 of 26 openings the first click
+  on the apply button went through without an error and opened NOTHING, and
+  the retry, seconds later, worked. The button is on screen before LinkedIn
+  has wired it up. Here it appears at 0.3 s and does nothing until 1.8 s.
+
+  #easy      "Easy Apply" opens a dialog form.
+  #external  "Apply" opens the employer's form in a new tab.
+  #employer  the employer's form itself.
+-->
+</head>
+<body>
+<h1>Backend Engineer</h1>
+<h2>Example Co &middot; Remote</h2>
+<div id="card"></div>
+
+<div id="applydialog" role="dialog" style="display:none">
+  <h3>Apply to Example Co</h3>
+  <label for="fullname">Full name</label>
+  <input id="fullname" name="name" autocomplete="name">
+  <button type="button">Submit application</button>
+</div>
+
+<form id="employer" style="display:none">
+  <h1>Example Co careers - application</h1>
+  <label for="ename">Full name</label>
+  <input id="ename" name="name" autocomplete="name">
+  <button type="submit">Submit application</button>
+</form>
+
+<script>
+  var mode = location.hash.slice(1) || "easy";
+  if (mode === "employer") {
+    document.getElementById("employer").style.display = "block";
+    document.querySelector("h1").remove();
+  } else {
+    var wired = false;
+    setTimeout(function () { wired = true; }, 1800);
+    setTimeout(function () {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = mode === "easy" ? "Easy Apply" : "Apply";
+      if (mode === "easy") b.setAttribute("aria-label", "Easy Apply to this job");
+      b.addEventListener("click", function () {
+        if (!wired) return;                       // on screen, not wired up yet
+        if (mode === "easy") document.getElementById("applydialog").style.display = "block";
+        else window.open(location.pathname + "#employer", "_blank");
+      });
+      document.getElementById("card").appendChild(b);
+    }, 300);
+  }
+</script>
+</body>
+</html>

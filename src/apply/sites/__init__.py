@@ -8,6 +8,7 @@ detect() keys off the hostname; add an entry here when the next source
 
 from __future__ import annotations
 
+import re
 from urllib.parse import urlparse
 
 
@@ -36,12 +37,19 @@ ATS_HOSTS = (
 
 
 def detect(url: str) -> str:
-    """'linkedin' for LinkedIn job pages, '' for everything else.
+    """'linkedin' or 'indeed' for those sites' pages, '' for everything else.
 
     Only names a site that has a HANDLER here, so the apply loop's branch on
     this value is unchanged. Use ats() to ask which system a page belongs to.
     """
-    return "linkedin" if ats(url) == "linkedin" else ""
+    if ats(url) == "linkedin":
+        return "linkedin"
+    try:
+        host = urlparse(url or "").netloc.lower().split(":")[0]
+    except ValueError:
+        return ""
+    # indeed.com, in.indeed.com, uk.indeed.com, indeed.co.in, indeed.co.uk
+    return "indeed" if re.search(r"(^|\.)indeed\.(com|co\.[a-z]{2}|[a-z]{2})$", host) else ""
 
 
 def ats(url: str) -> str:

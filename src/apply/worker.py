@@ -15,7 +15,7 @@ from src.apply import (browser, catalogue, cover_letter, profile, resolver, sala
                        session, sites)
 from src.apply.session import (TERMINAL_STATUSES, Aborted, ApplySession, Parked,
                                Submitted)
-from src.apply.sites import linkedin
+from src.apply.sites import indeed, linkedin
 from src.config import AppConfig, EnvSettings
 from src.llm import describe_provider, make_invoker
 from src.pdf_compile import compile_tex
@@ -548,12 +548,21 @@ def run_session(
 
         sess.log(f"Opening {url}")
         pw, context, page = browser.launch(url, headless=headless)
+        # Every question, from the very first, must understand "dump". This
+        # was installed fifty lines further down, after the opening prompts,
+        # so the Dump button pressed at "Ready to start?" was taken as the
+        # answer "ready": the agent set off and nothing was saved. The tab
+        # the candidate is looking at is the one to save - at this stage they
+        # may have opened the form in a new one. Re-pointed at the agent's own
+        # page once the loop is running.
+        sess.on_dump = lambda delay=0: _dump_page(browser.current_page(context, page), sess, delay)
         sess.log(
             "Resume and cover letter are prepared when the form asks for them "
             "(or use the Attach resume / Cover letter buttons)."
         )
 
-        if sites.detect(url) == "linkedin":
+        site = sites.detect(url)
+        if site == "linkedin":
             # No "ready?" question here: the handler waits for the page to
             # show an apply control, a sign-in or a closed banner, and every
             # one of those it then handles itself. Asking first only made the
@@ -580,6 +589,12 @@ def run_session(
                 # back rather than guess.
                 sess.log("Chrome is open. Deal with whatever is in the way, then type done.")
                 sess.ask("I could not find the apply button. Type done when the page is ready.")
+        elif site == "indeed":
+            # The page is asked, not the candidate. On a real Indeed session
+            # "Ready to start? Type done" sat unanswered for three minutes with
+            # the Apply button in plain view: the candidate was waiting for the
+            # agent to press it, and the agent for them to type done.
+            indeed.start(page, sess)
         else:
             sess.log("Chrome is open. Log in or dismiss dialogs yourself, then type done.")
             sess.ask("Ready to start? Type done when the page has loaded.")

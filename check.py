@@ -57,7 +57,8 @@ GROUPS: dict[str, list[str]] = {
         "longradio_check.py", "page_signals_check.py", "failfast_check.py",
     ],
     "attach": ["chooser_check.py", "jobvite_upload_check.py", "taleo_check.py"],
-    "linkedin": ["li_ready_e2e.py", "li_noisy_repro.py", "li_rerender_repro.py"],
+    "linkedin": ["li_ready_e2e.py", "li_noisy_repro.py", "li_rerender_repro.py",
+                 "li_unwired_check.py"],
     "submit": [                       # "was it sent?", every shape of it
         "sent_no_model_repro.py", "sent_dialog_repro.py",
         "submitted_at_any_prompt.py", "submitted_tail_check.py",

@@ -98,11 +98,19 @@ APPLY_CLICK_TRIES = len(APPLY_CLICK_TIMEOUTS)
 APPLY_CLICK_FALLBACK = 1200
 
 
-APPLY_OPEN_TIMEOUT = 4000
+# How long a clean click gets to open the flow, per attempt. The same logic
+# as the click timeouts above, and for the same reason: in 25 of 26 real
+# openings the FIRST click went through without an error and opened nothing
+# - the card was there before LinkedIn had wired it up, or was about to be
+# rebuilt - and the agent then waited out a four-second window for a flow
+# that was never coming. The retry opened it in a median 1.6 s. So the first
+# window is short and the patience goes to the later attempts, where a slow
+# open is plausibly a real one.
+APPLY_OPEN_TIMEOUTS = (1500, 2500, 4000)
 # A click that already raised probably never landed, so confirm it briefly
-# and get on with the retry; only a clean click earns the full window.
+# and get on with the retry.
 APPLY_OPEN_AFTER_ERROR = 1000
-APPLY_OPEN_STEP = 250
+APPLY_OPEN_STEP = 100
 
 
 def visible_dialogs(page) -> int:
@@ -216,7 +224,7 @@ def _flow_opened(page, before: tuple[str, int]) -> str:
 
 
 def _wait_for_flow(page, before: tuple[str, int],
-                   timeout: int = APPLY_OPEN_TIMEOUT) -> str:
+                   timeout: int = APPLY_OPEN_TIMEOUTS[-1]) -> str:
     """Give the click a moment to do something, and say what it did."""
     waited = 0
     while True:
@@ -257,6 +265,15 @@ def click_apply(page, sess) -> tuple[dict[str, Any] | None, str, str]:
     last_error: Exception | None = None
     target = kind = None
     for attempt in range(APPLY_CLICK_TRIES):
+        if attempt:
+            # A shorter first window means a first click that was merely
+            # slow can open its flow while we are getting ready to click
+            # again - and a second click would open the employer's site
+            # twice. Look once more before pressing anything.
+            late = _flow_opened(page, before)
+            if late:
+                sess.log(f"[linkedin] The apply flow opened ({late}).")
+                return target, kind, late
         target, kind = pick_apply([f for f in browser.snapshot(page) if _clickable(f)])
         if target is None:
             return None, "", ""
@@ -270,7 +287,7 @@ def click_apply(page, sess) -> tuple[dict[str, Any] | None, str, str]:
         except Exception as exc:
             last_error = exc
             raised = True
-        budget = APPLY_OPEN_AFTER_ERROR if raised else APPLY_OPEN_TIMEOUT
+        budget = APPLY_OPEN_AFTER_ERROR if raised else APPLY_OPEN_TIMEOUTS[attempt]
         opened = _wait_for_flow(page, before, budget)
         if opened:
             # Which signal fired is worth a line in the transcript: three
@@ -383,11 +400,25 @@ def start(page, sess) -> str:
             sess.log("[linkedin] Clicked Easy Apply, but nothing opened that I could "
                      "confirm - reading the page as it stands.")
     else:
-        page.wait_for_timeout(3000)
+        # Wait for the employer's page, not for a clock. A fixed three seconds
+        # was spent here on every external apply - 24 of 26 real openings -
+        # whatever the page was doing; the loop that reads it next waits for
+        # its fields on its own, and polls rather than sleeps.
         if opened == "new tab":
             focus_employer_tab(page, sess)
+        elif opened == "navigated":
+            _loaded(page)
+        else:
+            page.wait_for_timeout(1500)   # nothing confirmed: give it a moment
         sess.log("[linkedin] External apply - following the employer's site.")
     return kind
+
+
+def _loaded(page, timeout: int = 3000) -> None:
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=timeout)
+    except Exception:
+        pass   # a slow site is the loop's to wait on; it polls for fields
 
 
 def focus_employer_tab(page, sess) -> bool:
@@ -414,7 +445,7 @@ def focus_employer_tab(page, sess) -> bool:
     tab = others[-1]
     try:
         tab.bring_to_front()
-        tab.wait_for_timeout(200)
+        _loaded(tab)
     except Exception:
         # Not fatal: the visibility check still has its own answer, and this
         # only ever improves the odds it is the right one.

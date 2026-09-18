@@ -44,6 +44,10 @@ class AtsDetectionTests(unittest.TestCase):
         # a Workday page into the LinkedIn handler.
         self.assertEqual(sites.detect("https://dentsu.wd3.myworkdayjobs.com/x"), "")
         self.assertEqual(sites.detect("https://www.linkedin.com/jobs/view/1"), "linkedin")
+        for url in ("http://in.indeed.com/job/software-developer-a8d8", "https://www.indeed.com/viewjob?jk=1",
+                    "https://indeed.co.in/rc/clk?jk=1", "https://smartapply.indeed.com/beta/indeedapply/form"):
+            self.assertEqual(sites.detect(url), "indeed", url)
+        self.assertEqual(sites.detect("https://notindeed.com/jobs/1"), "")
 
 
 class CatalogueTests(unittest.TestCase):
