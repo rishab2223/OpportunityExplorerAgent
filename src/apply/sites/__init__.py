@@ -14,18 +14,24 @@ from urllib.parse import urlparse
 # Which applicant tracking system a form belongs to. Only LinkedIn has a
 # handler; the rest are named so the form catalogue has something to file a
 # page under, and so a log line can say which system you are looking at.
+# UltiPro, Rippling, Jobvite and the .eu hosts are here because 16 of the 41
+# dumps under outputs/dom came from them and the catalogue had kept none.
 ATS_HOSTS = (
-    ("linkedin", (".linkedin.com",)),
-    ("workday", (".myworkdayjobs.com", ".myworkday.com", ".workday.com")),
-    ("phenom", (".phenompeople.com", ".phenomapp.com")),
-    ("greenhouse", (".greenhouse.io", ".boards.greenhouse.io")),
-    ("lever", (".lever.co",)),
-    ("talentrecruit", (".talentrecruit.com",)),
-    ("successfactors", (".successfactors.com", ".sapsf.com")),
-    ("smartrecruiters", (".smartrecruiters.com",)),
-    ("icims", (".icims.com",)),
-    ("taleo", (".taleo.net",)),
-    ("ashby", (".ashbyhq.com",)),
+    ("linkedin", "LinkedIn", (".linkedin.com",)),
+    ("workday", "Workday", (".myworkdayjobs.com", ".myworkday.com", ".workday.com")),
+    ("phenom", "Phenom", (".phenompeople.com", ".phenomapp.com")),
+    ("greenhouse", "Greenhouse", (".greenhouse.io", ".boards.greenhouse.io")),
+    ("lever", "Lever", (".lever.co",)),
+    ("talentrecruit", "TalentRecruit", (".talentrecruit.com",)),
+    ("successfactors", "SAP SuccessFactors",
+     (".successfactors.com", ".successfactors.eu", ".sapsf.com")),
+    ("smartrecruiters", "SmartRecruiters", (".smartrecruiters.com",)),
+    ("icims", "iCIMS", (".icims.com", ".icims.eu")),
+    ("taleo", "Taleo", (".taleo.net",)),
+    ("ashby", "Ashby", (".ashbyhq.com",)),
+    ("ultipro", "UKG (UltiPro)", (".ultipro.com",)),
+    ("rippling", "Rippling", (".rippling.com",)),
+    ("jobvite", "Jobvite", (".jobvite.com",)),
 )
 
 
@@ -49,8 +55,34 @@ def ats(url: str) -> str:
     if not host:
         return ""
     host = host.split(":")[0]
-    for name, suffixes in ATS_HOSTS:
+    for name, _title, suffixes in ATS_HOSTS:
         for suffix in suffixes:
             if host == suffix.lstrip(".") or host.endswith(suffix):
                 return name
     return ""
+
+
+def ats_from_assets(hosts: list[str]) -> str:
+    """Which system a page on an employer's OWN domain runs on, from where it
+    loads its scripts and styles: a Phenom site on jobs.<employer>.com says so
+    only by loading from cdn.phenompeople.com. The vendor with the most hosts
+    wins.
+
+    Matched against the same table as ats(), so there is no second list of
+    vendor domains to keep in step. LinkedIn is never inferred this way: its
+    insight tag is on half the career sites there are and names nothing.
+    """
+    counts: dict[str, int] = {}
+    for host in hosts or []:
+        name = ats(f"https://{host}")
+        if name and name != "linkedin":
+            counts[name] = counts.get(name, 0) + 1
+    return max(counts, key=lambda n: counts[n]) if counts else ""
+
+
+def title(name: str) -> str:
+    """How a system is written in a sentence: 'UKG (UltiPro)', not 'ultipro'."""
+    for key, text, _suffixes in ATS_HOSTS:
+        if key == name:
+            return text
+    return name

@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import re
+import time
+from collections import deque
 from typing import Any
+from urllib.parse import urlparse
 
 from src.config import ROOT
 
 CHROME_PROFILE_DIR = ROOT / "localData" / "chrome-profile"
-MAX_FIELDS = 60
+# A guard against a pathological page, not a budget. It used to be 60, which
+# was really the MODEL's budget applied at the wrong place: everything past it
+# was hidden from the profile, the answer bank and the sweep as well, which
+# cost nothing to run. Measured on the dumps: SuccessFactors 151 controls,
+# UltiPro 142 - so 91 and 82 of them were invisible to every part of the
+# agent. The model's budget now lives in worker.PROMPT_FIELD_BUDGET, where it
+# chooses what the model sees instead of what exists.
+MAX_FIELDS = 250
 # One question may not spend the whole budget. UKG's "What is your country of
 # origin?" is 46 radios sharing a name; on a 102-field page they took every
 # slot from 46 on, and what sat BELOW them - six required questions and the
@@ -592,6 +602,9 @@ def launch(url: str, headless: bool = False):
             "if chromium is missing run: playwright install chromium"
         )
 
+    # Before the first navigation: the requests that decide whether a page
+    # renders at all are the ones its first load makes.
+    watch_data_calls(context)
     page = context.pages[0] if context.pages else context.new_page()
     page.goto(url, wait_until="domcontentloaded", timeout=60000)
     return pw, context, page
@@ -1185,12 +1198,11 @@ def page_blocked(page) -> str:
 
 SPINNER_JS = """
 () => {
-  // A spinner the candidate can actually see. Infosys's career page mounts
-  // its shell, starts ngx-ui-loader, and never gets its data: shell and
-  // sidebar render, the detail column is never created, and the page sits on
-  // its spinner for good. 242 characters of text and no controls read as "a
-  // page with no form on it", which is confident and wrong - there was no
-  // Apply button to point at.
+  // A spinner the candidate can actually see - which is the whole test. A
+  // loader library keeps its markup on the page when idle: ngx-ui-loader's
+  // overlay stays in the DOM and is only SHOWN while its class says so, and
+  // the Infosys page that prompted this had exactly that, idle, with nothing
+  // loading. Everything inside a hidden overlay measures 0x0 and is skipped.
   const sel = '[role=progressbar], [aria-busy=true], [class*="spinner"],' +
     ' [class*="loader"], [class*="loading"]';
   for (const el of document.querySelectorAll(sel)) {
@@ -1218,6 +1230,131 @@ def loading_indicator(page) -> str:
         return target(page).evaluate(SPINNER_JS) or ""
     except Exception:
         return ""
+
+
+APPLY_CONTROL_JS = """
+() => {
+  // A job page's way into its form: something a person can see and press
+  // that says Apply. Short, so a sentence that mentions applying is not a
+  // button; never "Applied" or "Apply filters", which lead nowhere.
+  const want = /\\bapply\\b/i, not = /applied|filter/i;
+  const sel = 'button, a, [role=button], input[type=submit], input[type=button]';
+  for (const el of document.querySelectorAll(sel)) {
+    const text = (el.innerText || el.value || el.getAttribute('aria-label') || '')
+      .replace(/\\s+/g, ' ').trim();
+    if (!text || text.length > 40 || !want.test(text) || not.test(text)) continue;
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden') continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) continue;
+    return text;
+  }
+  return '';
+}
+"""
+
+
+def apply_control(page) -> str:
+    """The text of a visible Apply button or link, or ''."""
+    try:
+        return target(page).evaluate(APPLY_CONTROL_JS) or ""
+    except Exception:
+        return ""
+
+
+# The page's own data requests, newest last. When a page comes up with nothing
+# on it, a refused one is usually why, and it is the one thing the DOM cannot
+# show: Infosys's job page, opened in a profile holding a stale sign-in, drew
+# its header and sidebar and none of the job, and three readings of its DOM
+# guessed three different causes. Method, host, path and status only - the
+# query string and the bodies can carry tokens and the candidate's details.
+_DATA_CALLS: deque = deque(maxlen=80)
+DATA_CALL_WINDOW_S = 180
+
+
+_NEW_DOCUMENT = "DOC"
+
+
+def watch_data_calls(context) -> None:
+    """Record every XHR/fetch response in `context`, for every tab in it.
+
+    A tab's record starts over with each new document. Without that, a reload
+    that worked would still be blamed on the 401 from the load before it. The
+    boundary is the main frame's navigation REQUEST, not framenavigated: a
+    single-page app changes its route without a new document (the page above
+    fired four route changes while loading), and each would have wiped the
+    very request that explained it."""
+    def on_request(request) -> None:
+        try:
+            if request.is_navigation_request() and request.frame.parent_frame is None:
+                _DATA_CALLS.append((time.monotonic(), request.frame.page,
+                                    _NEW_DOCUMENT, "", "", 0))
+        except Exception:
+            pass
+
+    def on_response(response) -> None:
+        try:
+            request = response.request
+            if request.resource_type not in ("xhr", "fetch"):
+                return
+            try:
+                owner = request.frame.page
+            except Exception:
+                owner = None      # a service worker's request has no frame
+            parts = urlparse(response.url)
+            _DATA_CALLS.append((time.monotonic(), owner, request.method,
+                                parts.netloc, parts.path[:120], response.status))
+        except Exception:
+            pass
+    try:
+        context.on("request", on_request)
+        context.on("response", on_response)
+    except Exception:
+        pass
+
+
+def data_calls(page, within: float = DATA_CALL_WINDOW_S) -> list[dict[str, Any]]:
+    """The data requests of the document this tab is showing now, oldest
+    first, from the last `within` seconds."""
+    now = time.monotonic()
+    calls: list[dict[str, Any]] = []
+    for at, owner, method, host, path, status in list(_DATA_CALLS):
+        if owner is not page:
+            continue
+        if method == _NEW_DOCUMENT:
+            calls = []
+        elif now - at <= within:
+            calls.append({"method": method, "host": host, "path": path, "status": status})
+    return calls
+
+
+def refused_data_calls(page) -> list[str]:
+    """This tab's recent data requests that came back 4xx/5xx, as
+    '401 host/path', oldest first."""
+    return [f"{c['status']} {c['host']}{c['path']}"
+            for c in data_calls(page) if c["status"] >= 400]
+
+
+ASSET_HOSTS_JS = """
+() => {
+  const hosts = new Set();
+  for (const el of document.querySelectorAll('script[src], link[href], img[src], iframe[src]')) {
+    try { hosts.add(new URL(el.src || el.href, location.href).hostname.toLowerCase()); }
+    catch (e) { /* a malformed src names nothing */ }
+    if (hosts.size >= 200) break;
+  }
+  return [...hosts];
+}
+"""
+
+
+def asset_hosts(page) -> list[str]:
+    """Every host the top document loads scripts, styles, images or frames
+    from. An ATS behind an employer's own domain still loads from its vendor."""
+    try:
+        return list(page.evaluate(ASSET_HOSTS_JS) or [])
+    except Exception:
+        return []
 
 
 ON_TOP_AT_CENTRE_JS = """

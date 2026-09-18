@@ -16,6 +16,24 @@ class AtsDetectionTests(unittest.TestCase):
         self.assertEqual(sites.ats("https://jobs.lever.co/acme/1"), "lever")
         self.assertEqual(sites.ats("https://alten.talentrecruit.com/careers"), "talentrecruit")
         self.assertEqual(sites.ats("https://www.linkedin.com/jobs/view/1"), "linkedin")
+        # The hosts behind 16 of the 41 dumps, which the catalogue had kept none of.
+        self.assertEqual(sites.ats("https://recruiting.ultipro.com/USP1000/JobBoard/x"), "ultipro")
+        self.assertEqual(sites.ats("https://ats.rippling.com/acme/jobs/1"), "rippling")
+        self.assertEqual(sites.ats("https://jobs.jobvite.com/acme/job/1"), "jobvite")
+        self.assertEqual(sites.ats("https://career2.successfactors.eu/career?c=x"), "successfactors")
+        self.assertEqual(sites.ats("https://login.icims.eu/x"), "icims")
+        self.assertEqual(sites.title("ultipro"), "UKG (UltiPro)")
+
+    def test_a_custom_domain_is_named_from_its_vendor_assets(self) -> None:
+        # A Phenom site on the employer's own domain says so only by where it
+        # loads from.
+        self.assertEqual(sites.ats("https://jobs.employer.example/apply"), "")
+        self.assertEqual(sites.ats_from_assets(
+            ["jobs.employer.example", "cdn.phenompeople.com", "cdn-prod-static.phenompeople.com",
+             "px.ads.linkedin.com", "www.google-analytics.com"]), "phenom")
+        # LinkedIn's insight tag is on half the career sites there are.
+        self.assertEqual(sites.ats_from_assets(["px.ads.linkedin.com", "example.com"]), "")
+        self.assertEqual(sites.ats_from_assets([]), "")
 
     def test_an_unknown_site_is_not_guessed_at(self) -> None:
         for url in ("https://example.com/careers", "", "not a url", "https://notlinkedin.com/x"):

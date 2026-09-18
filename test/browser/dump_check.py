@@ -51,6 +51,7 @@ with sync_playwright() as pw:
     assert "<script" not in html, "scripts must be stripped"
     assert html.count('<template shadowrootmode="open">') >= 1, "shadow root missing"
     assert (out / "screenshot.png").exists()
+    assert (out / "network.json").exists(), "the page's data requests belong in every dump"
     assert any("Page dumped" in l for l in sess.logs) and any("in 1s" in l for l in sess.logs)
     b.close()
 print("DUMP CHECK PASSED")

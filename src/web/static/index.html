@@ -110,7 +110,7 @@
         <button id="attachresume" disabled title="Prepare and attach a resume now, if the form's upload field was not detected">Attach resume</button>
         <button id="attachletter" disabled title="Write a cover letter now, if the form's cover-letter field was not detected">Cover letter</button>
         <button id="markapplied" disabled title="You submitted this application yourself: record it as applied and end the session. Works at any prompt, including one asking about a single box.">I submitted it</button>
-        <button id="dump" disabled title="Save the page as it is right now - DOM with shadow roots and live values, every frame, the field snapshot, a screenshot - under outputs/dom/, and copy the folder path to the clipboard. Same as typing dump.">Dump</button>
+        <button id="dump" disabled title="Save the page as it is right now - DOM with shadow roots and live values, every frame, the field snapshot, its data requests, a screenshot - under outputs/dom/, and copy the folder path to the clipboard. Same as typing dump.">Dump</button>
         <button id="park" disabled title="Leave this application for later and start the next queued job. Nothing is recorded.">Park</button>
         <button id="abort" disabled title="Stop this application and the rest of the queue">Abort</button>
       </div>
@@ -147,7 +147,7 @@
                 (<code>redo salary</code> or <code>redo the skill one</code> picks an earlier one by
                 its words; <code>llm: &lt;what to change&gt;</code> inside it redrafts)</td></tr>
         <tr><td><code>dump</code></td>
-            <td>save the page as it is right now (DOM, fields, screenshot) under <code>outputs/dom/</code>
+            <td>save the page as it is right now (DOM, fields, data requests, screenshot) under <code>outputs/dom/</code>
                 for inspection and keep waiting; <code>dump 10</code> waits ten seconds first so you can
                 switch back to the form and open the widget. The <b>Dump</b> button does the same
                 and copies the folder path to your clipboard</td></tr>

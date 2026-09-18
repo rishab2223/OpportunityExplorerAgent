@@ -2007,6 +2007,60 @@ class PromptFieldTrimTests(TempDbTestCase):
         self.assertLess(len(json.dumps(self._sent())), len(fat) * 0.75)
 
 
+class PromptFieldBudgetTests(TempDbTestCase):
+    """The model is shown at most PROMPT_FIELD_BUDGET fields, and on a page
+    that does not fit, the ones it still has to decide come first.
+
+    The budget used to be applied inside browser.snapshot, in page order: on
+    USP's UKG form everything past the 60th control - six required questions
+    and the Submit button - was hidden from the model AND from the profile,
+    the answer bank and the sweep, none of which cost anything to run."""
+
+    @staticmethod
+    def _box(n, value=""):
+        return {"id": n, "tag": "input", "type": "text", "label": f"Question {n}",
+                "value": value}
+
+    def test_empty_fields_and_buttons_outrank_filled_ones(self) -> None:
+        # The USP shape: a long run of answered boxes, the open questions and
+        # the wizard's button below them.
+        fields = [self._box(n, value="filled") for n in range(70)]
+        fields += [self._box(n) for n in range(70, 100)]
+        fields.append({"id": 100, "tag": "button", "type": "", "label": "Next"})
+        shown, left_out, left_open = worker._prompt_fields(fields, set())
+        ids = [f["id"] for f in shown]
+        self.assertEqual(len(shown), worker.PROMPT_FIELD_BUDGET)
+        for n in range(70, 101):
+            self.assertIn(n, ids, n)            # every open question, and Next
+        self.assertEqual(ids, sorted(ids))      # still in page order
+        self.assertEqual((left_out, left_open), (41, 0))
+
+    def test_a_radio_group_is_never_split(self) -> None:
+        # The budget runs out two options into a four-option question.
+        fields = [self._box(n) for n in range(58)]
+        fields += [{"id": 58 + i, "tag": "input", "type": "radio", "name": "relocate",
+                    "group": "Willing to relocate?", "label": option, "checked": False}
+                   for i, option in enumerate(("Yes", "No", "Maybe", "Later"))]
+        shown, _, _ = worker._prompt_fields(fields, set())
+        options = [f["label"] for f in shown if f.get("name") == "relocate"]
+        self.assertEqual(options, ["Yes", "No", "Maybe", "Later"])
+
+    def test_the_prompt_says_what_was_left_out_and_stays_json(self) -> None:
+        page = type("P", (), {"url": "https://x/apply"})()
+
+        def prompt_for(fields):
+            with unittest.mock.patch.object(worker.browser, "page_text", lambda *a, **k: "page"):
+                return worker._build_prompt({"title": "SWE", "company": "X"}, "resume",
+                                            fields, page, [], [], set())
+
+        full = prompt_for([self._box(n) for n in range(80)])
+        self.assertIn("FIELDS NOT LISTED", full)
+        self.assertIn("20 of them are still empty", full)
+        blob = full.split("FORM FIELDS:\n", 1)[1].split("\n\nALREADY DONE:")[0]
+        self.assertEqual(len(json.loads(blob)), worker.PROMPT_FIELD_BUDGET)
+        self.assertNotIn("FIELDS NOT LISTED", prompt_for([self._box(n) for n in range(5)]))
+
+
 class SubmittedBaselineTests(unittest.TestCase):
     """Only wording that was NOT on the page at the first read may record an
     application as applied.
@@ -2468,7 +2522,7 @@ class LongRadioGroupTests(unittest.TestCase):
     """One question may not spend the whole field budget.
 
     USP's application on UKG asks "What is your country of origin?" with 46
-    radios sharing a name. MAX_FIELDS is 60 and they took every slot from 46
+    radios sharing a name. The budget was 60 and they took every slot from 46
     on, so the six REQUIRED questions below them - and the form's own Submit
     button - were invisible to the model, to the profile and to the llm: flow.
     The candidate's report was "nothing was filled by system on this page".
@@ -2768,25 +2822,31 @@ class DoneNeedsEvidenceTests(unittest.TestCase):
 class NoFieldsReasonTests(unittest.TestCase):
     """"I cannot see any form fields on this page" named no cause.
 
-    Four different problems wore that one sentence, and they have four
+    Five different problems wore that one sentence, and they have five
     different answers: the scan threw, the tab is blank, the page is still
-    rendering, or the page is fine and simply has no form on it. The last is
-    what a job-description page IS - career.infosys.com/jobdesc - and the
-    answer there is to click Apply, not to wait or to reload.
+    rendering, its content never arrived, or the page is fine and simply has
+    no form on it - which is what a job-description page IS, and the answer
+    there is to click Apply.
 
-    The code knew which it was. browser.last_snapshot_error() was already
-    populated and only ever used in the give-up path, so the candidate never
-    saw it.
+    Every claim must be checked against the page before it is made. The
+    Infosys job page, opened in a profile holding a stale sign-in, showed 242
+    characters of shell, no controls and no spinner, and was told "the form
+    is behind its Apply button" - twice, the first fix having assumed a
+    spinner that was not showing. It had no Apply button at all.
     """
 
     class Page:
         url = "https://career.infosys.com/jobdesc?jobReferenceCode=X"
 
-    def reason(self, text="", error="", page=None, spinner=""):
+    def reason(self, text="", error="", page=None, spinner="", apply="", refused=()):
         with unittest.mock.patch.object(worker.browser, "last_snapshot_error",
                                         return_value=error), \
              unittest.mock.patch.object(worker.browser, "loading_indicator",
                                         return_value=spinner), \
+             unittest.mock.patch.object(worker.browser, "apply_control",
+                                        return_value=apply), \
+             unittest.mock.patch.object(worker.browser, "refused_data_calls",
+                                        return_value=list(refused)), \
              unittest.mock.patch.object(worker.browser, "full_page_text",
                                         return_value=text):
             return worker._no_fields_reason(page or self.Page())
@@ -2796,6 +2856,14 @@ class NoFieldsReasonTests(unittest.TestCase):
         self.assertIn("reading it failed", got)
         self.assertIn("Execution context", got)
 
+    def test_a_scan_that_threw_wins_over_everything_else(self):
+        # It tells you nothing about the page, so nothing read from the page
+        # may be offered as a diagnosis.
+        self.assertIn("reading it failed",
+                      self.reason(text="x" * 242, spinner="loader", apply="Apply",
+                                  refused=["401 api.example.test/job"],
+                                  error="Timeout 30000ms"))
+
     def test_a_page_still_rendering_is_not_called_empty(self):
         self.assertIn("still loading", self.reason(text="Loading..."))
 
@@ -2803,49 +2871,36 @@ class NoFieldsReasonTests(unittest.TestCase):
         blank = type("P", (), {"url": "about:blank"})()
         self.assertIn("still blank", self.reason(text="", page=blank))
 
-    def test_a_loaded_page_with_no_form_points_at_the_apply_button(self):
-        # The Infosys case: 59,825 characters of job description, two
-        # controls, no form. Waiting longer would never have helped.
-        got = self.reason(text="Job description. " * 4000)
-        self.assertIn("carries no form", got)
-        self.assertIn("Apply button", got)
-
-    def test_the_size_is_reported_so_a_stub_page_is_obvious(self):
-        self.assertIn("68,000 characters", self.reason(text="x" * 68000))
-
-    def test_the_error_wins_over_everything_else(self):
-        # A scan that threw tells you nothing about the page, so the page's
-        # own text must not be read as a diagnosis.
-        self.assertIn("reading it failed",
-                      self.reason(text="Job description. " * 4000, error="Timeout 30000ms"))
-
-    def test_a_spinner_still_turning_beats_the_word_count(self):
-        # The Infosys page: shell and sidebar rendered, ngx-ui-loader started,
-        # the data never arrived. 242 characters of text and no controls sat
-        # just over the "still loading" threshold, so it was reported as a
-        # loaded page with no form - and answered with "the form is behind its
-        # Apply button", on a page that has no Apply button and never will.
-        got = self.reason(text="x" * 242, spinner="ngx-foreground-spinner")
-        self.assertIn("loading spinner", got)
-        self.assertIn("ngx-foreground-spinner", got)
-        self.assertNotIn("Apply button", got)
-
-    def test_and_it_says_what_actually_helps(self):
-        got = self.reason(text="x" * 242, spinner="ngx-foreground-spinner")
-        self.assertIn("reloading", got.lower())
-        self.assertIn("signing out", got.lower())
-
-    def test_a_long_page_with_a_spinner_is_still_stuck(self):
+    def test_a_visible_spinner_wins_whatever_the_length(self):
         # Length proves nothing either way: a shell can be wordy.
-        self.assertIn("loading spinner",
-                      self.reason(text="Job description. " * 4000, spinner="loader"))
+        for text in ("x" * 242, "Job description. " * 4000):
+            got = self.reason(text=text, spinner="ngx-foreground-spinner")
+            self.assertIn("loading spinner", got)
+            self.assertIn("ngx-foreground-spinner", got)
+            self.assertIn("signing out", got.lower())
+            self.assertNotIn("behind its", got)
 
-    def test_a_page_with_no_spinner_still_points_at_apply(self):
-        got = self.reason(text="Job description. " * 4000)
+    def test_an_apply_button_is_named_by_what_it_says(self):
+        # Also when some request failed: a job page with a working Apply
+        # button is usable, and a refused tracker is not its problem.
+        got = self.reason(text="Job description. " * 4000, apply="Apply now",
+                          refused=["404 px.example.test/collect"])
         self.assertIn("carries no form", got)
+        self.assertIn("behind its 'Apply now' button", got)
 
-    def test_a_scan_that_threw_still_wins(self):
-        # It tells you nothing about the page, so neither the spinner nor the
-        # text may be read as a diagnosis.
-        self.assertIn("reading it failed",
-                      self.reason(text="x" * 242, spinner="loader", error="Timeout 30000ms"))
+    def test_no_apply_button_means_no_apply_claim(self):
+        # The Infosys page itself: 242 characters, no spinner, no Apply.
+        got = self.reason(text="x" * 242)
+        self.assertNotIn("behind its", got)
+        self.assertIn("neither a form nor an Apply button", got)
+        self.assertIn("signing out", got.lower())
+        self.assertIn("242 characters", got)   # a stub page is obvious by its size
+
+    def test_a_refused_data_request_is_named(self):
+        # The DOM cannot say why content never came; the network can.
+        got = self.reason(text="x" * 242,
+                          refused=["401 api.example.test/getJobDesc",
+                                   "401 api.example.test/profile"])
+        self.assertIn("2 of its data requests failed", got)
+        self.assertIn("401 api.example.test/getJobDesc", got)
+        self.assertIn("sign out and back in", got)

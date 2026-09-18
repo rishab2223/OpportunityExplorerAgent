@@ -84,7 +84,7 @@ assert "Clicked Apply for this job" in logs4
 assert "Switched to" in logs4 and "fixture_form" in logs4
 
 # Modal scoping: the form lives in a role=dialog while 70 background buttons
-# bust the MAX_FIELDS budget (the LinkedIn Easy Apply failure shape). The
+# outnumber the model's field budget (the LinkedIn Easy Apply failure shape). The
 # snapshot must scope to the dialog: profile fills the field, no model call,
 # and no background junk is ever touched.
 modal_url = (E2E / "fixture_modal.html").as_uri()

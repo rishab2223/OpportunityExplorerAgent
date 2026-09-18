@@ -1,10 +1,14 @@
 """A growing, per-site record of what application forms look like.
 
 Every apply session reads a page and throws the reading away. Kept, those
-readings are worth three things: fixtures for the tests, knowledge of which
-widget a named field actually is (so a skills box need not be discovered
-again on the second application to the same system), and eventually fewer
-model calls on a form whose shape is already known.
+readings are a record of the forms actually met, per system - the material
+test replicas are rebuilt from.
+
+Nothing reads it during an application. What it stores - tag, type, role,
+haspopup - is exactly what the live snapshot already has at fill time, so a
+lookup there would return what is already known. widget_hint() is the one
+reader, and it has no caller; it would earn one only by storing something the
+live page cannot show, such as which fill method worked on a given box.
 
 Two rules make this safe to keep.
 

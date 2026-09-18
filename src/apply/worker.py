@@ -6,6 +6,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -340,10 +341,11 @@ def _take_submitted_baseline(page, fields: list[dict[str, Any]], holder: dict[st
 def _no_fields_reason(page) -> str:
     """Why the snapshot came back empty, in words the candidate can act on.
 
-    Four different problems wore the same sentence: the scan threw, the tab is
-    blank, the page is still rendering, or the page is perfectly fine and has
-    no form on it - which is what a job-description page IS, and the answer
-    there is to click Apply, not to wait.
+    Five different problems wore the same sentence: the scan threw, the tab is
+    blank, the page is still rendering, the page's content never arrived, or
+    the page is perfectly fine and has no form on it - which is what a
+    job-description page IS, and the answer there is to click Apply, not to
+    wait. Each has a different answer, so each is named.
     """
     error = browser.last_snapshot_error()
     if error:
@@ -352,16 +354,34 @@ def _no_fields_reason(page) -> str:
         text = browser.full_page_text(page)
     except Exception:
         return "the tab could not be read at all"
-    # A spinner beats a word count. Infosys's career page mounts its shell,
-    # starts its loader and never gets its data: 242 characters of text and no
-    # controls, which a threshold read as "loaded, no form on it" and answered
-    # with "the form is behind its Apply button" - on a page that has no Apply
-    # button and never will.
+    # A spinner beats a word count: a page on its loader has not finished,
+    # however much text its shell already shows.
     spinner = browser.loading_indicator(page)
     if spinner:
         return (f"the site is still showing its loading spinner ('{_brief(spinner, 40)}') "
                 "and its content never arrived - reloading it usually helps, and if you "
                 "are signed in to that site, signing out and in again often does")
+    # Every claim below is checked against the page before it is made. The
+    # Infosys job page, opened in a profile holding a stale sign-in, drew its
+    # header and sidebar and none of the job - 242 characters, no controls, no
+    # spinner - and was told "the form is behind its Apply button" on a page
+    # with no Apply button at all. Twice: the first fix assumed a spinner that
+    # was not showing. So the Apply button is named only when there is one,
+    # and by what it actually says.
+    apply = browser.apply_control(page)
+    if apply:
+        return ("it has loaded but carries no form - a job description page looks like "
+                f"this, and the form is behind its '{_brief(apply, 30)}' button")
+    # The DOM cannot say why content never came; the network can. A fresh
+    # profile rendered that same Infosys job in full - so the page was fine,
+    # the browser was not blocked, and what differed was the sign-in stored in
+    # the profile. A refused data request is how that looks from here.
+    refused = browser.refused_data_calls(page)
+    if refused:
+        named = ", ".join(refused[:3]) + (f" and {len(refused) - 3} more" if len(refused) > 3 else "")
+        return (f"the page came up but {len(refused)} of its data requests failed ({named}), "
+                "so its content never arrived. Reload it; if you are signed in to that site, "
+                "sign out and back in, or clear the site's data in this browser")
     # What is ON the page decides, not the URL: a popup opened by the apply
     # flow carries about:blank while it loads its content, and a page built by
     # script keeps that URL for good.
@@ -370,9 +390,9 @@ def _no_fields_reason(page) -> str:
         if not url or url == "about:blank":
             return "the tab is still blank"
         return "it has almost nothing on it yet, so it is probably still loading"
-    return (f"it has loaded ({len(text):,} characters) but carries no form - "
-            "a job description page looks like this, and the form is behind its "
-            "Apply button")
+    return (f"it has loaded ({len(text):,} characters) but shows neither a form nor an "
+            "Apply button, so its content may not have arrived. Reload it; if you are "
+            "signed in to that site, signing out and back in often fixes it")
 
 
 def _looks_closed(page_text: str) -> bool:
@@ -588,6 +608,7 @@ def run_session(
         # currently in the way; cleared as soon as the page is usable.
         blocked_told = False
         told_dropped = 0
+        named_site = ""          # the tracking system last named in the transcript
         closed_prompted: set[str] = set()
         last_llm_sig = ""
         outcome = ""
@@ -902,8 +923,15 @@ def run_session(
             empty_snapshots = 0
             # Keep this page's SHAPE (labels, sections, widget kinds - never
             # any value the candidate typed) under its tracking system, so a
-            # form seen once is a fixture and a known widget next time.
-            catalogue.record(sites.ats(_safe_url(page)), _safe_url(page), fields)
+            # form met once can be rebuilt as a test replica.
+            site = _site_of(page)
+            if site and site != named_site and site != "linkedin":
+                # Once per system per session. Said because it is the first
+                # thing worth knowing about a form that misbehaves - and the
+                # candidate pastes this transcript to ask why.
+                named_site = site
+                sess.log(f"This form runs on {sites.title(site)}.")
+            catalogue.record(site, _safe_url(page), fields)
 
             # 1) Attachments the form is asking for, built on the spot.
             if _handle_attachments(page, fields, handled, attach, sess, notes):
@@ -3507,6 +3535,53 @@ def _excluded_experience(field: dict[str, Any], value: str) -> str:
     return ""
 
 
+# How many controls one model call is shown. The field list is the largest
+# part of the prompt; this is the size that has been working. It is the
+# MODEL's budget and is applied here and nowhere else - the profile, the
+# answer bank and the sweep read every control on the page, because they cost
+# nothing to run. (It used to be applied inside browser.snapshot, which hid
+# 91 of SuccessFactors' 151 controls from all of them.)
+PROMPT_FIELD_BUDGET = 60
+
+
+def _prompt_fields(
+    fields: list[dict[str, Any]], handled: set[str]
+) -> tuple[list[dict[str, Any]], int, int]:
+    """The fields one model call is shown, how many were left out, and how
+    many of those are still empty.
+
+    On a page that does not fit, what the model still has to decide goes
+    first - empty fields, then the buttons it may need to press - and what is
+    already filled only takes what room is left, because to the model it is
+    context and nothing more. Page order is kept. A radio group is never
+    split: half the options of a question is a different question.
+
+    Nothing is lost by leaving a field out: filling the ones shown changes
+    the page, _page_sig sees it, and the next call is shown the rest.
+    """
+    if len(fields) <= PROMPT_FIELD_BUDGET:
+        return list(fields), 0, 0
+    still_open = {id(f) for f in _unresolved_fields(fields, handled)}
+
+    def rank(field: dict[str, Any]) -> int:
+        if id(field) in still_open:
+            return 0
+        if not _accepts_value(field) and _field_key(field, _field_label(field)) not in handled:
+            return 1
+        return 2
+
+    order = sorted(range(len(fields)), key=lambda i: (rank(fields[i]), i))
+    keep = set(order[:PROMPT_FIELD_BUDGET])
+    split = {fields[i].get("name") for i in keep
+             if (fields[i].get("type") or "").lower() == "radio" and fields[i].get("name")}
+    for i, field in enumerate(fields):
+        if (field.get("type") or "").lower() == "radio" and field.get("name") in split:
+            keep.add(i)
+    shown = [f for i, f in enumerate(fields) if i in keep]
+    left_open = sum(1 for i, f in enumerate(fields) if i not in keep and id(f) in still_open)
+    return shown, len(fields) - len(shown), left_open
+
+
 def _build_prompt(
     job: dict[str, Any],
     resume_text: str,
@@ -3516,8 +3591,9 @@ def _build_prompt(
     notes: list[str],
     handled: set[str],
 ) -> str:
+    shown, left_out, left_open = _prompt_fields(fields, handled)
     annotated = []
-    for field in fields:
+    for field in shown:
         # The field JSON is the largest part of this prompt by a distance, and
         # a quarter of it was empty keys: every plain text input shipped
         # "role": "", "haspopup": "", "autocomplete": "", "accept": "",
@@ -3533,6 +3609,17 @@ def _build_prompt(
         annotated.append(item)
     known = answers.entries()
     known_lines = "\n".join(f"- {e['question'] or e['question_key']}: {e['answer']}" for e in known)
+    # Its own section, before the field list rather than inside it: the list
+    # must stay one JSON document.
+    not_listed = []
+    if left_out:
+        not_listed = [
+            f"FIELDS NOT LISTED:\nThis page has {left_out} more control(s) than are listed "
+            "below, left out to keep this request small. "
+            + (f"{left_open} of them are still empty and will be listed once the ones below "
+               "are done. " if left_open else "")
+            + "Plan only for the fields listed."
+        ]
     return "\n\n".join(
         [
             f"JOB: {job.get('title', '')} at {job.get('company', '')}",
@@ -3543,6 +3630,7 @@ def _build_prompt(
             _not_employment_note(),
             f"PAGE URL: {_safe_url(page)}",
             f"PAGE TEXT:\n{browser.page_text(page)}",
+            *not_listed,
             f"FORM FIELDS:\n{json.dumps(annotated, ensure_ascii=False)}",
             f"ALREADY DONE:\n{chr(10).join(history) or '(nothing yet)'}",
             f"NOTES FROM THE CANDIDATE:\n{chr(10).join(notes[-10:]) or '(none)'}",
@@ -5608,8 +5696,9 @@ DUMP_HTML_JS = """() => {
 def _dump_page(page, sess: ApplySession, delay: int = 0) -> None:
     """The 'dump [N]' chat command: after N seconds (time to switch back to
     the form and open the widget), save the page as it is right now - DOM
-    with shadow roots and live values, the field snapshot, a screenshot -
-    under outputs/dom/ so a misbehaving widget can be inspected offline."""
+    with shadow roots and live values, the field snapshot, the page's data
+    requests, a screenshot - under outputs/dom/ so a misbehaving widget can
+    be inspected offline."""
     if delay > 0:
         sess.log(f"Dumping the page in {delay}s - switch back to the form and open the widget.")
         page.wait_for_timeout(min(delay, 60) * 1000)
@@ -5628,11 +5717,17 @@ def _dump_page(page, sess: ApplySession, delay: int = 0) -> None:
     except Exception:
         pass
     (out / "fields.json").write_text(json.dumps(browser.snapshot(page), indent=1), encoding="utf-8")
+    # What the page asked its servers for, and what came back. The Infosys
+    # page took three rounds to explain from its DOM; one line of this would
+    # have shown the refused request.
+    (out / "network.json").write_text(
+        json.dumps(browser.data_calls(page, within=600), indent=1), encoding="utf-8")
     try:
         page.screenshot(path=str(out / "screenshot.png"))
     except Exception:
         pass
-    sess.log(f"Page dumped to {out} (page.html, fields.json, screenshot.png). Still waiting for your answer.")
+    sess.log(f"Page dumped to {out} (page.html, fields.json, network.json, screenshot.png). "
+             "Still waiting for your answer.")
 
 
 def _links_on_page(fields: list[dict[str, Any]]) -> set[str]:
@@ -5891,3 +5986,24 @@ def _safe_url(page) -> str:
         return page.url
     except Exception:
         return ""
+
+
+# Which system each host runs, once worked out. A host's answer does not
+# change within a session, and working it out from assets costs a browser call.
+_ATS_BY_HOST: dict[str, str] = {}
+
+
+def _site_of(page) -> str:
+    """The tracking system this page belongs to, or ''. The hostname when it
+    says (x.myworkdayjobs.com); otherwise where the page loads its assets
+    from, which is the only thing that names Phenom on an employer's domain."""
+    url = _safe_url(page)
+    name = sites.ats(url)
+    if name:
+        return name
+    host = urlparse(url).netloc.lower()
+    if not host:
+        return ""                 # file://, about:blank - nothing to name
+    if host not in _ATS_BY_HOST:
+        _ATS_BY_HOST[host] = sites.ats_from_assets(browser.asset_hosts(page))
+    return _ATS_BY_HOST[host]

@@ -164,7 +164,7 @@ with sync_playwright() as pw:
     FOLDER = "/home/x/OpportunityExplorerAgent/outputs/dom/20260101T000000_20260918-0042"
     page.evaluate(
         "(folder) => copyDumpPath({type: 'step', text: 'Page dumped to ' + folder +"
-        " ' (page.html, fields.json, screenshot.png). Still waiting for your answer.'})",
+        " ' (page.html, fields.json, network.json, screenshot.png). Still waiting for your answer.'})",
         FOLDER)
     page.wait_for_timeout(250)
     copied = page.evaluate("() => navigator.clipboard.readText()")

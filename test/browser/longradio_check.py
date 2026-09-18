@@ -1,7 +1,7 @@
 """One question must not spend the whole field budget.
 
 The USP application on UKG/UltiPro, Sep 17 2026. "What is your country of
-origin?" is 46 radios sharing a name; MAX_FIELDS is 60, and they took every
+origin?" is 46 radios sharing a name; the budget was 60, and they took every
 slot from 46 on. The six REQUIRED questions below them - and the form's own
 Submit button - reached nothing: not the model, not the profile, not the llm:
 flow. The session log reads:
@@ -77,11 +77,11 @@ with sync_playwright() as pw:
 
     print("the page really is the one that failed")
     raw = browser.target(page, refresh=True).evaluate(browser.SNAPSHOT_JS)
-    # If the page fitted inside the budget there would be nothing to fix and
-    # everything below would pass on a form that was never truncated.
-    check("it does not fit in MAX_FIELDS", len(raw) > browser.MAX_FIELDS,
-          f"{len(raw)} controls, budget {browser.MAX_FIELDS}")
-    cut = raw[:browser.MAX_FIELDS]
+    # If the page fitted inside the old budget there would be nothing to fix
+    # and everything below would pass on a form that was never truncated.
+    check("it does not fit in the model's budget", len(raw) > worker.PROMPT_FIELD_BUDGET,
+          f"{len(raw)} controls, budget {worker.PROMPT_FIELD_BUDGET}")
+    cut = raw[:worker.PROMPT_FIELD_BUDGET]
     cut_labels = " | ".join(str(f.get("label") or "") for f in cut)
     check("and a head-of-the-list cut loses every question",
           not any(q[:24] in cut_labels for q in QUESTIONS))
@@ -99,24 +99,38 @@ with sync_playwright() as pw:
     check("and so is Submit",
           any((f.get("label") or f.get("text") or "") == "Submit" for f in fields))
 
-    print("\nand when the budget still bites, it says so")
-    # Collapsing the group bought a lot of headroom, but a big enough form
-    # does not fit and the cut used to be silent - which is how six required
-    # questions and the Submit button went missing while the session reported,
-    # accurately and uselessly, that it had nothing left to do.
+    print("\na form bigger than the model's budget is still held whole")
+    # Collapsing the group bought headroom, but a big enough form still does
+    # not fit in one model call - and the budget used to be applied to the
+    # SNAPSHOT, so everything past it was hidden from the profile, the answer
+    # bank and the sweep too. SuccessFactors' 151 controls lost 91 that way.
     check("nothing is dropped once the group is collapsed",
           browser.last_dropped() == 0, str(browser.last_dropped()))
-    page.evaluate("""(n) => { const f = document.querySelector('form');
-        for (let i = 0; i < n; i++) {
+    pad = """(n) => { const f = document.querySelector('form');
+        const start = f.querySelectorAll('input[id^=pad]').length;
+        for (let i = start; i < start + n; i++) {
           const w = document.createElement('div');
           w.innerHTML = '<label for="pad' + i + '">Padding ' + i +
                         '</label><input id="pad' + i + '" type="text">';
           f.appendChild(w);
-        } }""", 40)
+        } }"""
+    page.evaluate(pad, 40)
     page.wait_for_timeout(150)
     padded = browser.snapshot(page)
-    check("a form too big to hold is capped", len(padded) == browser.MAX_FIELDS,
-          str(len(padded)))
+    check("a form past the model's budget is read in full",
+          len(padded) > worker.PROMPT_FIELD_BUDGET and browser.last_dropped() == 0,
+          f"{len(padded)} read, {browser.last_dropped()} dropped")
+    shown, left_out, _ = worker._prompt_fields(padded, set())
+    shown_labels = " | ".join(str(f.get("label") or "") for f in shown)
+    check("and the model is shown every required question, not the first 60",
+          all(q[:24] in shown_labels for q in QUESTIONS) and left_out > 0,
+          f"{len(shown)} shown, {left_out} left out")
+
+    print("\na page past the guard is capped, and says so")
+    page.evaluate(pad, browser.MAX_FIELDS)
+    page.wait_for_timeout(150)
+    padded = browser.snapshot(page)
+    check("it is capped at the guard", len(padded) == browser.MAX_FIELDS, str(len(padded)))
     check("and the overflow is reported, not swallowed",
           browser.last_dropped() > 0, str(browser.last_dropped()))
     page.goto((HERE / "fixture_longradio.html").as_uri())
