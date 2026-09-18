@@ -1370,6 +1370,95 @@ ON_TOP_AT_CENTRE_JS = """
 """
 
 
+class Unreachable(RuntimeError):
+    """The control an action was aimed at cannot take it - gone from the page
+    or disabled - found out in a second and a half rather than a timeout."""
+
+
+# How long a control gets to become usable before an action on it stops
+# waiting. Playwright's own wait is the action's whole timeout, 10 to 15 s,
+# and on a control that is not coming back all of it is dead time. From the
+# logs of 28 real sessions: a Description box the form had re-drawn took 20 s
+# to fail - the first attempt's 10 s, then four fallbacks at 3 s each, all
+# looking for a node that no longer existed - and a covered Delete button 15 s
+# to click. A control on its way (an animation, a re-render in flight) makes
+# it well inside this.
+ACTION_SETTLE_MS = 1500
+
+CONTROL_STATE_JS = """
+el => {
+  const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+  const shown = r.width > 0 && r.height > 0 && s.visibility !== 'hidden';
+  let covered = '';
+  if (shown) {
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight) {
+      // Asked of the control's own root: document.elementFromPoint stops at
+      // a shadow host, which would read every shadow control as covered.
+      const home = el.getRootNode();
+      const top = (home.elementFromPoint ? home : document).elementFromPoint(x, y);
+      // A <label> wrapping the control is on top, and activating it IS the click.
+      if (top && top !== el && !el.contains(top) && !top.contains(el)) {
+        const name = typeof top.className === 'string' ? top.className.trim().split(/\\s+/)[0] : '';
+        covered = name || top.id || top.tagName.toLowerCase();
+      }
+    }
+  }
+  return {shown, disabled: el.disabled === true, covered};
+}
+"""
+
+
+def _control_state(locator) -> dict[str, Any] | None:
+    """What the control is like right now: None when it is not on the page,
+    {} when it could not be read (a navigation in flight) - which is not the
+    same thing, and must not stop an action that would have worked."""
+    try:
+        if locator.count() == 0:
+            return None
+    except Exception:
+        return {}
+    try:
+        return locator.evaluate(CONTROL_STATE_JS, timeout=1000) or {}
+    except Exception:
+        return {}
+
+
+PROBLEMS = {
+    "gone": "it is no longer on the page - the form re-drew it",
+    "disabled": "it is disabled right now",
+    "hidden": "it is hidden right now",
+}
+
+
+def await_usable(locator, want_clear: bool = False) -> tuple[str, str]:
+    """Wait up to ACTION_SETTLE_MS for the control to be there, enabled,
+    visible and - when asked - not under something else. Returns (problem,
+    what is covering it): problem is '', 'gone', 'disabled' or 'hidden' (see
+    PROBLEMS for the words); both are '' when the control is ready."""
+    deadline = time.monotonic() + ACTION_SETTLE_MS / 1000
+    while True:
+        state = _control_state(locator)
+        if state == {}:
+            return "", ""       # unreadable: the action decides, as it always did
+        if state is None:
+            problem, covered = "gone", ""
+        elif state["disabled"]:
+            problem, covered = "disabled", ""
+        elif not state["shown"]:
+            problem, covered = "hidden", ""
+        elif want_clear and state["covered"]:
+            problem, covered = "", state["covered"]
+        else:
+            return "", ""
+        if time.monotonic() >= deadline:
+            return problem, covered
+        try:
+            locator.page.wait_for_timeout(100)
+        except Exception:
+            time.sleep(0.1)
+
+
 def click(locator, timeout: int = 10000, fallback_timeout: int = 3000) -> str:
     """Click, and when the real click cannot land (an overlay or a stale
     popup intercepts pointer events - one dentsu Workday page blocked Accept
@@ -1397,7 +1486,26 @@ def click(locator, timeout: int = 10000, fallback_timeout: int = 3000) -> str:
     so the fallback spends its whole budget and then raises anyway. On
     LinkedIn's job card that was three seconds every attempt, on top of the
     stability wait that had just failed for the same reason.
+
+    Before any of that, await_usable: a control that is gone or disabled
+    fails here in a second and a half, and one that is hidden or covered goes
+    straight to the fallbacks, which is where the full timeout used to take
+    it anyway (a zero-size native radio behind a styled one is the reason
+    hidden is not a failure: the bottom rung clicks it).
     """
+    try:
+        locator.scroll_into_view_if_needed(timeout=500)   # the hit test needs it on screen
+    except Exception:
+        pass
+    problem, covered = await_usable(locator, want_clear=True)
+    if problem in ("gone", "disabled"):
+        # A disabled button "clicked directly" does nothing, and used to be
+        # logged as clicked anyway.
+        raise Unreachable(PROBLEMS[problem])
+    if problem == "hidden" or covered:
+        return _click_past(locator, fallback_timeout,
+                           Unreachable(f"it is covered by {covered}" if covered
+                                       else PROBLEMS["hidden"]))
     try:
         locator.click(timeout=timeout)
         return "clicked"
@@ -1406,43 +1514,50 @@ def click(locator, timeout: int = 10000, fallback_timeout: int = 3000) -> str:
         blocked = "intercepts pointer events" in message or "Timeout" in message
         if not blocked:
             raise
-        # Dispatching on the element bypasses the overlay, which is the point
-        # when the overlay is dead - and a bug when it is not. On USP's UKG
-        # board it drove Add, Save and Delete while the page was refusing
-        # them, until the panel it had raised collapsed to 0x0 with the
-        # overlay still up and nothing left to dismiss it, for anybody.
+        return _click_past(locator, fallback_timeout, exc)
+
+
+def _click_past(locator, fallback_timeout: int, exc: Exception) -> str:
+    """The rungs below a real click: refuse under a live overlay, else a mouse
+    click where the control is genuinely on top, else dispatch it. `exc` is
+    what is raised when none of them lands."""
+    # Dispatching on the element bypasses the overlay, which is the point
+    # when the overlay is dead - and a bug when it is not. On USP's UKG
+    # board it drove Add, Save and Delete while the page was refusing
+    # them, until the panel it had raised collapsed to 0x0 with the
+    # overlay still up and nothing left to dismiss it, for anybody.
+    try:
+        live = locator.evaluate(BLOCKING_OVERLAY_JS, timeout=fallback_timeout) or ""
+    except Exception:
+        live = ""
+    if live:
+        raise BlockedByOverlay(
+            f"the page has put an overlay ({live}) over this control and is "
+            "waiting on the panel it raised instead; finish or close that first"
+        ) from exc
+    # Scroll first: both the hit test and the mouse take viewport
+    # coordinates, and an element 1400px down the page has neither.
+    try:
+        locator.scroll_into_view_if_needed(timeout=fallback_timeout)
+    except Exception:
+        pass
+    try:
+        on_top = locator.evaluate(ON_TOP_AT_CENTRE_JS, timeout=fallback_timeout)
+        box = locator.bounding_box(timeout=fallback_timeout) if on_top else None
+    except Exception:
+        box = None
+    if box:
         try:
-            live = locator.evaluate(BLOCKING_OVERLAY_JS, timeout=fallback_timeout) or ""
-        except Exception:
-            live = ""
-        if live:
-            raise BlockedByOverlay(
-                f"the page has put an overlay ({live}) over this control and is "
-                "waiting on the panel it raised instead; finish or close that first"
-            ) from exc
-        # Scroll first: both the hit test and the mouse take viewport
-        # coordinates, and an element 1400px down the page has neither.
-        try:
-            locator.scroll_into_view_if_needed(timeout=fallback_timeout)
+            locator.page.mouse.click(box["x"] + box["width"] / 2,
+                                     box["y"] + box["height"] / 2)
+            return "clicked (mouse)"
         except Exception:
             pass
-        try:
-            on_top = locator.evaluate(ON_TOP_AT_CENTRE_JS, timeout=fallback_timeout)
-            box = locator.bounding_box(timeout=fallback_timeout) if on_top else None
-        except Exception:
-            box = None
-        if box:
-            try:
-                locator.page.mouse.click(box["x"] + box["width"] / 2,
-                                         box["y"] + box["height"] / 2)
-                return "clicked (mouse)"
-            except Exception:
-                pass
-        try:
-            locator.evaluate("el => el.click()", timeout=fallback_timeout)
-        except Exception:
-            raise exc
-        return "clicked (direct)"
+    try:
+        locator.evaluate("el => el.click()", timeout=fallback_timeout)
+    except Exception:
+        raise exc
+    return "clicked (direct)"
 
 
 def locate(page, field_id: int, elid: str = ""):

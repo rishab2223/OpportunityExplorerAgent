@@ -1,26 +1,18 @@
 """A growing, per-site record of what application forms look like.
 
 Every apply session reads a page and throws the reading away. Kept, those
-readings are a record of the forms actually met, per system - the material
-test replicas are rebuilt from.
+readings are a record of every form actually met, per system - not only the
+ones the candidate chose to dump - with nothing personal in it.
 
-Nothing reads it during an application. What it stores - tag, type, role,
-haspopup - is exactly what the live snapshot already has at fill time, so a
-lookup there would return what is already known. widget_hint() is the one
-reader, and it has no caller; it would earn one only by storing something the
-live page cannot show, such as which fill method worked on a given box.
-
-Two rules make this safe to keep.
+**Never read while applying.** What it stores - tag, type, role, haspopup -
+is exactly what the live snapshot already has at fill time, so a lookup would
+either agree with the page, and add nothing, or disagree, and be stale. A
+reader used to exist (widget_hint) and never had a caller.
 
 **Shape only.** A snapshot holds what the candidate typed: employers, dates,
 salary figures, e-mail address. None of that is stored here. Every `value`
 and `text` is dropped and only the structure is written, so the file can be
 read, shared or committed without leaking anything.
-
-**A hint, never an answer.** What is stored describes a page as it was, and
-pages change. The catalogue may say "this site's skills box is a typeahead";
-it may never stand in for reading the live page. Acting on a stale shape is
-how you fill the wrong box.
 """
 from __future__ import annotations
 
@@ -158,19 +150,3 @@ def record(site: str, url: str, fields: list[dict[str, Any]]) -> bool:
         return True
     except Exception:
         return False
-
-
-def widget_hint(site: str, label: str) -> dict[str, Any] | None:
-    """What this site's box with that label was last seen to be, or None.
-
-    A hint: the caller still reads the live page and still decides. Used to
-    skip a discovery round, never to fill a box sight unseen.
-    """
-    if not site or not label:
-        return None
-    wanted = str(label).strip().lower()
-    for form in load().get(site, {}).values():
-        for field in form.get("fields", []):
-            if str(field.get("label") or "").strip().lower() == wanted:
-                return field
-    return None

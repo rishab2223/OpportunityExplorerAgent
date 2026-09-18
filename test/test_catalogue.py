@@ -94,15 +94,6 @@ class CatalogueTests(unittest.TestCase):
                          [{"tag": "input", "label": "Referral source", "section": "Extra"}])
         self.assertEqual(len(catalogue.load()["workday"]), 2)
 
-    def test_a_widget_hint_comes_back_but_only_as_shape(self) -> None:
-        catalogue.record("workday", "https://x/1", self.FIELDS)
-        hint = catalogue.widget_hint("workday", "Role Description")
-        self.assertEqual(hint["tag"], "textarea")
-        self.assertEqual(hint["maxlength"], 500)
-        self.assertNotIn("value", hint)
-        self.assertIsNone(catalogue.widget_hint("workday", "No Such Box"))
-        self.assertIsNone(catalogue.widget_hint("", "Role Description"))
-
     def test_a_label_holding_personal_data_is_redacted(self) -> None:
         # A signed-in Workday page renders the account's e-mail address as a
         # field LABEL, so dropping `value` is not enough. Found by recording

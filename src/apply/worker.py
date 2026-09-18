@@ -922,8 +922,8 @@ def run_session(
                 continue
             empty_snapshots = 0
             # Keep this page's SHAPE (labels, sections, widget kinds - never
-            # any value the candidate typed) under its tracking system, so a
-            # form met once can be rebuilt as a test replica.
+            # any value the candidate typed) under its tracking system: a
+            # record of every form met, not only the ones that were dumped.
             site = _site_of(page)
             if site and site != named_site and site != "linkedin":
                 # Once per system per session. Said because it is the first
@@ -3873,6 +3873,17 @@ def _apply_value(
         # clicked where it actually lives.
         _pick_grouped_radio(page, field, value, label, prefix, sess)
         return
+
+    # Find out in a second and a half, not in the 10-15 s every fill below
+    # would otherwise wait: on a UKG form mid-rebuild, To month, To year and
+    # Description failed one after another at 15 s each, all three boxes
+    # having been re-drawn under the ids the snapshot gave them. The next
+    # pass reads the page again and finds them under their new ones. A file
+    # input and a native tick box are routinely invisible (the styled control
+    # stands in front), so for those only "gone" counts.
+    problem, _ = browser.await_usable(locator)
+    if problem == "gone" or (problem and field_type not in ("file", "checkbox", "radio")):
+        raise browser.Unreachable(browser.PROBLEMS[problem])
 
     if field_type == "file":
         if source != "letter" and not is_resume_field(field) and not sole_upload:

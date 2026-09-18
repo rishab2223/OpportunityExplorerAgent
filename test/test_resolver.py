@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from src import answers, history
@@ -664,6 +665,41 @@ class NoticePeriodUnitTests(ResolverTestCase):
         self.assertEqual(resolver.notice_days("1 month"), 30.0)
         self.assertIsNone(resolver.notice_days("negotiable"))
         self.assertIsNone(resolver.notice_days(""))
+
+
+class StartDateFromNoticeTests(ResolverTestCase):
+    """"What exact earliest start date?" was asked on three real forms, with
+    the start date empty in the profile and the notice period beside it."""
+
+    FRIDAY = date(2026, 9, 18)
+
+    def test_it_is_today_plus_the_notice_and_never_a_weekend(self) -> None:
+        start = resolver.derived_start_date
+        self.assertEqual(start({"notice_period": "60 days"}, self.FRIDAY), "2026-11-17")
+        self.assertEqual(start({"notice_period": "2 months"}, self.FRIDAY), "2026-11-17")
+        self.assertEqual(start({"notice_period": "Immediate Joiner"}, self.FRIDAY), "2026-09-18")
+        # 64 days is a Saturday; nobody starts then.
+        self.assertEqual(start({"notice_period": "64 days"}, self.FRIDAY), "2026-11-23")
+        # No length of time, no date - never a guess.
+        self.assertEqual(start({"notice_period": "negotiable"}, self.FRIDAY), "")
+        self.assertEqual(start({}, self.FRIDAY), "")
+
+    def test_an_empty_start_date_box_is_filled_and_says_where_from(self) -> None:
+        expected = resolver.derived_start_date(DUMMY_PROFILE)
+        for box in (field(label="Earliest start date*"), field(label="When can you join?"),
+                    field(label="Available from", type="date")):
+            self.assertEqual(resolver.resolve(box), (expected, "notice period"), box["label"])
+
+    def test_a_stated_date_wins_and_a_dropdown_is_left_alone(self) -> None:
+        profile.PROFILE_PATH.write_text(
+            json.dumps(dict(DUMMY_PROFILE, earliest_start_date="1 Dec 2026")), encoding="utf-8")
+        self.assertEqual(resolver.resolve(field(label="Earliest start date")),
+                         ("1 Dec 2026", "profile"))
+        profile.PROFILE_PATH.write_text(json.dumps(DUMMY_PROFILE), encoding="utf-8")
+        # Its options are phrases ("Within 30 days"); a date matches none.
+        pick = field(tag="select", label="Earliest start date",
+                     options=["Immediately", "Within 30 days", "Within 60 days"])
+        self.assertIsNone(resolver.resolve(pick))
 
 
 class ContactCheckTests(ResolverTestCase):

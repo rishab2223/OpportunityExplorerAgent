@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import date, timedelta
 from typing import Any
 
 from src import answers
@@ -597,6 +598,23 @@ def notice_days(text: str) -> float | None:
     return float(bare.group(1)) if bare else None
 
 
+def derived_start_date(data: dict[str, Any], today: date | None = None) -> str:
+    """The earliest start date the notice period implies, as YYYY-MM-DD, or ''
+    when the notice period is empty or says no length of time.
+
+    "What exact earliest start date?" was asked on three real forms, with
+    earliest_start_date empty in the profile and the notice period right
+    beside it. A date that lands on a weekend moves to the Monday after.
+    """
+    days = notice_days(str(data.get("notice_period") or ""))
+    if days is None:
+        return ""
+    start = (today or date.today()) + timedelta(days=round(days))
+    while start.weekday() >= 5:
+        start += timedelta(days=1)
+    return start.isoformat()
+
+
 def notice_for_field(value: str, field: dict[str, Any]) -> str:
     """A notice period in the unit THIS box asks for.
 
@@ -856,7 +874,8 @@ def _radio_from_profile(field: dict[str, Any]) -> tuple[str, str] | None:
 def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
     """(value, source) for a field the script can fill without the model, else None.
 
-    source is 'profile', 'saved', or 'resume' (file inputs), for the log line.
+    source is 'profile', 'saved', 'resume' (file inputs) or 'notice period' (a
+    start date worked out from it), for the log line.
     """
     tag = field.get("tag") or ""
     field_type = (field.get("type") or "").lower()
@@ -936,6 +955,12 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
 
     for key, ac_values, name_re, label_re in _RULES:
         value = str(data.get(key) or "").strip()
+        derived = False
+        if not value and key == "earliest_start_date" and tag in ("input", "textarea") and not listbox:
+            # Not for a dropdown: its options are phrases ("Within 30 days"),
+            # and a date would match none of them.
+            value = derived_start_date(data)
+            derived = bool(value)
         if not value and key in ("first_name", "last_name"):
             parts = str(data.get("full_name") or "").split()
             if key == "first_name" and parts:
@@ -975,6 +1000,11 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
         )
         if not matched:
             continue
+        if derived:
+            # A real <input type="date"> takes it too: the value is always
+            # YYYY-MM-DD, which is the one format such a box accepts.
+            fits = tag == "textarea" or field_type in _FILLABLE_TYPES or field_type == "date"
+            return (value, "notice period") if fits else None
         if tag == "select":
             option = _select_value(value, field)
             if not option and key == "phone_country_code":

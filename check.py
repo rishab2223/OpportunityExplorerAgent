@@ -54,7 +54,7 @@ GROUPS: dict[str, list[str]] = {
         "redo_check.py", "amount_check.py", "snapshot_check.py",
         "dump_check.py", "fallback_check.py", "cf7_check.py",
         "foreground_check.py", "settle_check.py", "reactselect_check.py",
-        "longradio_check.py", "page_signals_check.py",
+        "longradio_check.py", "page_signals_check.py", "failfast_check.py",
     ],
     "attach": ["chooser_check.py", "jobvite_upload_check.py", "taleo_check.py"],
     "linkedin": ["li_ready_e2e.py", "li_noisy_repro.py", "li_rerender_repro.py"],
