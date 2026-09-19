@@ -79,6 +79,63 @@ for mode, how in (("indeed", "navigated"), ("company", "new tab")):
           sess.asked[0][:60] if sess.asked else "nothing asked")
     check("and the model was never asked", not calls, f"{len(calls)} call(s)")
 
+print("\nthe resume step")
+# Its radios and its file input are all hidden behind two cards, so the scan
+# sees Continue and nothing else; on a real session the candidate was told
+# "This step is filled in" here, and asked what to do about the resume.
+from playwright.sync_api import sync_playwright  # noqa: E402
+
+RESUME = SCRATCH / "Test_User_Resume.pdf"
+RESUME.write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+
+class Attach:
+    resume_path = str(RESUME)
+    resume_attached = False
+
+    def resume(self):
+        return self.resume_path
+
+
+with sync_playwright() as pw:
+    b = pw.chromium.launch()
+    page = b.new_page()
+    page.goto((HERE / "fixture_indeed_resume.html").as_uri())
+    fields = browser.snapshot(page)
+    check("the scan sees no upload and no radio - the real shape",
+          not any((f.get("type") or "").lower() in ("file", "radio") for f in fields),
+          str([f.get("label") for f in fields]))
+    sess, attach = ScriptedSession(), Attach()
+    acted = worker._handle_attachments(page, fields, set(), attach, sess, [])
+    state = page.evaluate("""() => ({
+        file: (document.getElementById('file-input').files[0] || {}).name || '',
+        upload: document.getElementById('file-radio').checked,
+        build: document.getElementById('build-input').checked})""")
+    check("the resume goes into the hidden upload", acted and state["file"] == RESUME.name,
+          str(state))
+    check("  which is what selects 'Upload a resume'", state["upload"])
+    check("  and 'Build an Indeed Resume' is never touched", not state["build"])
+    check("  and the transcript says so", any("[resume] Uploaded" in line for line in sess.lines),
+          str(sess.lines)[:100])
+
+    # A skip is an answer. With no field to mark handled, the hidden-upload
+    # path used to ask again on every pass over the same page.
+    class Declines:
+        resume_path, resume_attached, asked = "", False, 0
+
+        def resume(self):
+            self.asked += 1
+            return ""
+
+    page.reload()
+    declines, handled = Declines(), set()
+    for _ in range(3):
+        worker._handle_attachments(page, browser.snapshot(page), handled, declines,
+                                   ScriptedSession(), [])
+    check("a skipped upload is asked about once, not on every pass", declines.asked == 1,
+          f"asked {declines.asked} times")
+    b.close()
+
 print()
 if failures:
     print("INDEED CHECK FAILED:", ", ".join(failures))

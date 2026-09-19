@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Add a resume | Indeed</title>
+<style>
+  /* The cards are what shows; the native radios and the file input are not. */
+  .native { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+  .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin: 12px 0; }
+</style></head>
+<body>
+<!--
+  Indeed's "Add a resume" step (smartapply.indeed.com, resume-selection), as
+  dumped on Sep 18 2026: two radio cards sharing name="resume-selection",
+  and the upload card's file input hidden inside it. The agent's scan saw
+  only Go back, Save and close, Continue and Report an issue - so the step
+  read as filled in, and the resume was never offered.
+-->
+<h1>Add a resume</h1>
+<div class="card" data-testid="resume-selection-build-resume-radio-card">
+  <input class="native" type="radio" name="resume-selection" value="build-resume" id="build-input">
+  <label for="build-input">Build an Indeed Resume</label>
+  <div>We'll guide you through it; there are only a few steps.</div>
+</div>
+<div class="card" data-testid="resume-selection-file-resume-upload-radio-card">
+  <input class="native" type="radio" name="resume-selection" value="file" id="file-radio">
+  <label for="file-radio">Upload a resume</label>
+  <div>Accepted file types are PDF (recommended), DOCX, RTF, or TXT.</div>
+  <input class="native" type="file" id="file-input"
+         data-testid="resume-selection-file-resume-upload-radio-card-file-input"
+         accept="application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/rtf,text/rtf,text/plain">
+  <div id="uploaded"></div>
+</div>
+<button type="button">Continue</button>
+<script>
+  document.getElementById("file-input").addEventListener("change", function () {
+    if (!this.files[0]) return;
+    document.getElementById("file-radio").checked = true;
+    document.getElementById("uploaded").textContent = this.files[0].name;
+  });
+</script>
+</body>
+</html>

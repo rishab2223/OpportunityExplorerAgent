@@ -1891,6 +1891,15 @@ DROPZONE_RE = re.compile(
     r"drag\s*(?:and|'?n'?|&)?\s*drop|drop\s+(?:your|the|files?|resume|cv)\b|browse\s+file",
     re.IGNORECASE,
 )
+# A page that offers the upload in words, with the input just as hidden.
+# Indeed's "Add a resume" step is two styled cards - "Build an Indeed Resume"
+# and "Upload a resume" - whose radios and file input are all hidden behind
+# them; the scan saw only Continue, and the candidate was told "This step is
+# filled in" on the one step that asks for the resume.
+UPLOAD_OFFER_RE = re.compile(
+    r"\bupload\s+(?:a|an|your|the)?\s*(?:new\s+|different\s+)?(?:resume|r[ée]sum[ée]|cv)\b",
+    re.IGNORECASE,
+)
 # The page's only file input that takes documents (ALTEN also has a photo
 # input, which accepts images only). "Only one" keeps a cover-letter slot
 # from quietly receiving the resume.
@@ -1911,6 +1920,13 @@ LONE_DOC_FILE_JS = """
   return 1;
 }
 """
+
+
+def _takes_documents(accept: str) -> bool:
+    """Would a file input with this `accept` take a resume? The same test as
+    LONE_DOC_FILE_JS: no accept at all means anything."""
+    return not accept or bool(re.search(
+        r"pdf|\.docx?|msword|wordprocessing|officedocument|\.rtf|\.txt|\.odt", accept, re.IGNORECASE))
 
 
 def _lone_document_file_input(page):
@@ -2058,20 +2074,20 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
     #     hides its file input and shows only "Drag and Drop Your Resume OR
     #     Browse File" text, so neither a field nor a tile button is ever
     #     seen and the resume went unnoticed.
-    if not attach.resume_attached:
+    #     Only for an input the scan could NOT see. When it saw one that takes
+    #     documents, step 1 has already offered it, and a candidate who said
+    #     skip there would be asked again here on the same page. A visible
+    #     photo input (ALTEN's, beside that drop zone) is not one.
+    saw_document_input = any(
+        (f.get("type") or "").lower() == "file" and _takes_documents(str(f.get("accept") or ""))
+        for f in fields
+    )
+    hidden_upload_possible = not attach.resume_attached and not saw_document_input
+    if hidden_upload_possible:
         text = browser.page_text(page, 1500)
         if DROPZONE_RE.search(text) and _resume_words(text):
-            hidden = _lone_document_file_input(page)
-            if hidden is not None:
-                path = attach.resume_path or attach.resume()
-                if path:
-                    try:
-                        hidden.set_input_files(path, timeout=20000)
-                        attach.resume_attached = True
-                        sess.log(f"[resume] Uploaded {Path(path).name} to the resume drop zone")
-                        return True
-                    except Exception as exc:
-                        sess.log(f"Could not upload the resume to the drop zone: {_short(exc)}")
+            if _resume_into_hidden_input(page, handled, attach, sess, notes, "the resume drop zone"):
+                return True
 
     # 2) Tile buttons that only open a (hidden) picker.
     page_text = ""
@@ -2142,7 +2158,46 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
             # Turned down: the button is left alone. "cover letter" still
             # reopens the draft if they change their mind.
             notes.append(f"the candidate wants no cover letter for '{label}'")
+
+    # 3) Last resort: the page offers a resume upload in words, over an input
+    #    as hidden as a drop zone's - Indeed's "Add a resume" step, two styled
+    #    cards whose radios and file input are all hidden behind them (see
+    #    UPLOAD_OFFER_RE). After the tiles, because a tile names its own input
+    #    and has the picker to fall back on; this only knows the page has one.
+    if hidden_upload_possible and not attach.resume_attached:
+        text = browser.page_text(page, 1500)
+        if UPLOAD_OFFER_RE.search(text) and _resume_words(text):
+            if _resume_into_hidden_input(page, handled, attach, sess, notes, "this page's resume upload"):
+                return True
     return False
+
+
+def _resume_into_hidden_input(page, handled, attach, sess, notes, where: str) -> bool:
+    """Put the resume into the page's one hidden document input. True when
+    the candidate was asked (whatever they chose), so the caller reads again.
+
+    Setting a file on a hidden input needs no click, so no system file dialog
+    opens and nothing else on the page - "Build an Indeed Resume" - is
+    touched. Asked once per page: a skip used to be asked again on every pass,
+    because nothing here had a field key to mark handled."""
+    key = f"hidden-upload:{urlparse(_safe_url(page)).path}"
+    if key in handled:
+        return False
+    hidden = _lone_document_file_input(page)
+    if hidden is None:
+        return False
+    handled.add(key)
+    path = attach.resume_path or attach.resume()
+    if not path:
+        notes.append(f"the candidate skipped the resume upload on {where}")
+        return True
+    try:
+        hidden.set_input_files(path, timeout=20000)
+        attach.resume_attached = True
+        sess.log(f"[resume] Uploaded {Path(path).name} to {where}")
+    except Exception as exc:
+        sess.log(f"Could not upload the resume to {where}: {_short(exc)}")
+    return True
 
 
 # What the picker reads to tell a resume slot from a cover-letter slot: the
