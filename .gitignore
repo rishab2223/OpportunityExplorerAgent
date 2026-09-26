@@ -14,5 +14,6 @@ build/
 data/
 localData/
 outputs/
+preps/
 test/output/
 test/browser/_work/
