@@ -150,28 +150,52 @@ def load_saved(job_id: str) -> str:
     return (row["text"] if row else "") or ""
 
 
-def save(job_id: str, job: dict[str, Any], text: str) -> None:
+def save(job_id: str, job: dict[str, Any], text: str, accepted: bool = False) -> None:
     """Keep the current letter for this job: after the draft, each revision
-    and the accepted edit, so whatever the session did last survives it."""
+    and the accepted edit, so whatever the session did last survives it.
+
+    `accepted` marks the text the candidate pressed Use on. The mark stays
+    while the text does and goes with any change to it: a redraft has not
+    been accepted, whatever the one before it was."""
     if not job_id or not (text or "").strip():
         return
     from datetime import datetime, timezone
 
     from src import db
 
+    now = datetime.now(timezone.utc).isoformat()
     conn = db.connect()
     try:
         with conn:
             conn.execute(
-                "INSERT INTO cover_letters (job_id, company, title, text, updated_at)"
-                " VALUES (?, ?, ?, ?, ?)"
-                " ON CONFLICT(job_id) DO UPDATE SET text = excluded.text,"
-                "  updated_at = excluded.updated_at",
+                "INSERT INTO cover_letters (job_id, company, title, text, updated_at, accepted_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(job_id) DO UPDATE SET"
+                "  accepted_at = CASE WHEN excluded.accepted_at IS NOT NULL THEN excluded.accepted_at"
+                "                     WHEN cover_letters.text = excluded.text THEN cover_letters.accepted_at"
+                "                     ELSE NULL END,"
+                "  text = excluded.text, updated_at = excluded.updated_at",
                 (job_id, str(job.get("company") or ""), str(job.get("title") or ""),
-                 text, datetime.now(timezone.utc).isoformat()),
+                 text, now, now if accepted else None),
             )
     finally:
         conn.close()
+
+
+def is_accepted(job_id: str) -> bool:
+    """Has the candidate pressed Use on the letter stored for this job?"""
+    if not job_id:
+        return False
+    from src import db
+
+    conn = db.connect()
+    try:
+        row = conn.execute(
+            "SELECT accepted_at FROM cover_letters WHERE job_id = ?", (job_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return bool(row and row["accepted_at"])
 
 
 def draft(invoke, job: dict[str, Any], resume_text: str, profile_text: str) -> str:

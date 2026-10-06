@@ -102,8 +102,13 @@ with sync_playwright() as pw:
     page = b.new_page()
     page.goto((HERE / "fixture_indeed_resume.html").as_uri())
     fields = browser.snapshot(page)
-    check("the scan sees no upload and no radio - the real shape",
-          not any((f.get("type") or "").lower() in ("file", "radio") for f in fields),
+    # The two choices are 0x0 radios behind their labels - EPAM's shape too,
+    # which is why they are read since Oct 2026. The upload itself has no
+    # label and stays unread; the Indeed handler finds it by its test id.
+    check("the scan sees the two choices but no upload - the real shape",
+          sorted(str(f.get("label")) for f in fields if (f.get("type") or "").lower() == "radio")
+          == ["Build an Indeed Resume", "Upload a resume"]
+          and not any((f.get("type") or "").lower() == "file" for f in fields),
           str([f.get("label") for f in fields]))
     sess, attach = ScriptedSession(), Attach()
     acted = worker._handle_attachments(page, fields, set(), attach, sess, [])
@@ -117,6 +122,10 @@ with sync_playwright() as pw:
     check("  and 'Build an Indeed Resume' is never touched", not state["build"])
     check("  and the transcript says so", any("[resume] Uploaded" in line for line in sess.lines),
           str(sess.lines)[:100])
+    after = browser.snapshot(page)
+    left = [f.get("label") for f in worker._unresolved_fields(after, set())
+            if (f.get("type") or "").lower() == "radio"]
+    check("  and neither choice is left for the model to pick", not left, str(left))
 
     # A skip is an answer. With no field to mark handled, the hidden-upload
     # path used to ask again on every pass over the same page.

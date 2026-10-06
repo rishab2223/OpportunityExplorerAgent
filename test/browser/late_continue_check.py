@@ -57,7 +57,7 @@ class ScriptedSession(apply_session.ApplySession):
         return self.script.pop(0)
 
 
-sess = ScriptedSession(["done"])       # the next question ends the session
+sess = ScriptedSession([])       # the first question ends the session
 job = {"job_id": "late:1", "company": "Example Co", "title": "Engineer",
        "description": "Build things.", "apply_url": (HERE / "fixture_late_continue.html").as_uri()}
 worker.run_session(sess, job, "dummy resume", AppConfig(), load_env(), headless=True,

@@ -19,6 +19,7 @@ DUMMY_PROFILE = {
     "notice_period": "60 days",
     "expected_ctc": "30 LPA",
     "work_authorization": "Yes",
+    "postal_code": "122001",
 }
 
 
@@ -45,6 +46,195 @@ class ResolverTestCase(unittest.TestCase):
 
 
 class ProfileMappingTests(ResolverTestCase):
+    def test_an_indian_pincode_box_is_an_address_not_a_secret(self) -> None:
+        # "pin" in the secret hints, matched as a substring, refused these
+        # before the postal_code rule could see them.
+        for label in ("Pincode", "PIN Code", "Zip / PIN", "Pin code *",
+                      # EPAM (Oct 2026), a typeahead.
+                      "PIN code (postal code)*", "Postal code / ZIP code"):
+            self.assertEqual(resolver.resolve(field(label=label)),
+                             ("122001", "profile"), label)
+        self.assertIsNone(resolver.resolve(field(label="Security PIN")))
+
+    def test_epam_labels_reach_the_profile(self) -> None:
+        # EPAM (Oct 2026): every one of these went to the model or was left.
+        data = dict(DUMMY_PROFILE, total_experience_years="6", relevant_experience_years="5",
+                    current_company="Acme Corp", current_title="Software Engineer",
+                    current_ctc="2500000", expected_ctc="3000000",
+                    skills="Node.js, JavaScript, Python", pronouns="They/Them")
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        for label, want in (("Total Professional Experience*", "6"),
+                            ("Relevant Experience in Primary skill*", "5"),
+                            ("Primary Skill*", "Node.js"),
+                            ("Most recent employer", "Acme Corp"),
+                            ("Job Title at Recent employer", "Software Engineer"),
+                            ("Preferred Pronouns", "They/Them")):
+            got = resolver.resolve(field(label=label))
+            self.assertEqual(got, (want, "profile"), label)
+        for label in ("Current Annual Compensation", "Expected Annual Compensation"):
+            self.assertIsNotNone(resolver.resolve(field(label=label)), label)
+        # The title's label is not read as the company's.
+        self.assertNotEqual(resolver.resolve(field(label="Job Title at Recent employer"))[0], "Acme Corp")
+
+    def test_an_immediate_notice_period_matches_its_other_wordings(self) -> None:
+        # EPAM (Oct 2026): "Immediate Joiner" against "Available now".
+        epam = ["Less than 2 weeks", "Available now", "1 month", "2 months"]
+        self.assertEqual(resolver.match_option("Immediate Joiner", epam), "Available now")
+        self.assertEqual(resolver.match_option("Immediately", ["0 days", "30 days"]), "0 days")
+        # Never a short notice for an immediate one, and never the other way.
+        self.assertEqual(resolver.match_option("Immediate Joiner", ["Less than 2 weeks", "1 month"]), "")
+        self.assertEqual(resolver.equivalents("30 days"), [])
+        self.assertEqual(resolver.match_option("30 days", ["Available now", "1 month"]), "")
+        # Only a phrase about availability has these wordings: "None" could
+        # answer anything, and once picked "Not now" for it.
+        self.assertEqual(resolver.equivalents("None"), [])
+        self.assertEqual(resolver.match_option("None", ["Yes", "No", "Not now"]), "")
+
+    def test_a_whole_date_goes_to_a_date_box_and_a_year_to_a_number_box(self) -> None:
+        profile.PROFILE_PATH.write_text(json.dumps({
+            **DUMMY_PROFILE, "education_end_date": "22/07/2019"}), encoding="utf-8")
+        ended = resolver.resolve(field(type="date", elid="educationEndDate", label=""))
+        self.assertEqual(ended, ("2019-07-22", "profile"))
+        self.assertIsNone(resolver.resolve(field(type="number", elid="educationEndDate", label="")))
+        profile.PROFILE_PATH.write_text(json.dumps({
+            **DUMMY_PROFILE, "education": "B.Tech, 2015-2019"}), encoding="utf-8")
+        self.assertEqual(resolver.resolve(field(type="number", elid="educationEndDate", label="")),
+                         ("2019", "profile"))
+
+    def test_education_years_come_from_the_education_line(self) -> None:
+        # EPAM (Oct 2026): "Education Years" start box, unlabelled end box.
+        data = dict(DUMMY_PROFILE, education="Example University - Bachelors, Computer Science, 2015-2019",
+                    graduation_year="2019")
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        start = field(label="Education Years", elid="educationStartDate")
+        end = field(label="", elid="educationEndDate")
+        self.assertEqual(resolver.resolve(start), ("2015", "profile"))
+        self.assertEqual(resolver.resolve(end), ("2019", "profile"))
+        # Only the graduation year known: the start is not guessed.
+        profile.PROFILE_PATH.write_text(json.dumps(dict(DUMMY_PROFILE, graduation_year="2019")),
+                                        encoding="utf-8")
+        self.assertIsNone(resolver.resolve(start))
+        self.assertEqual(resolver.resolve(end), ("2019", "profile"))
+        # Full dates, when given, win - day first in the profile, ISO out.
+        profile.PROFILE_PATH.write_text(json.dumps(dict(
+            DUMMY_PROFILE, graduation_year="2019", education_start_date="20/07/2015",
+            education_end_date="05/07/2019")), encoding="utf-8")
+        self.assertEqual(resolver.resolve(start), ("2015-07-20", "profile"))
+        self.assertEqual(resolver.resolve(end), ("2019-07-05", "profile"))   # 5 July, not 7 May
+        # A job's dates are not a school's.
+        self.assertIsNone(resolver.resolve(field(label="Tenure at Recent employer",
+                                                 elid="startDateAtRecentEmployer")))
+
+    def test_tenure_at_the_recent_employer_comes_from_the_latest_job(self) -> None:
+        # EPAM (Oct 2026): a start box under the label, an unlabelled end box.
+        data = dict(DUMMY_PROFILE, jobs=[
+            {"title": "Software Engineer", "company": "Acme", "start": "07/2020", "end": "01/2026"},
+            {"title": "Intern", "company": "Acme", "start": "06/2019", "end": "07/2020"}],
+            not_employment="Applied AI & LLM Agents")
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        start = field(label="Tenure at Recent employer", elid="startDateAtRecentEmployer")
+        end = field(label="", elid="endDateAtRecentEmployer")
+        self.assertEqual(resolver.resolve(start), ("2020-07-01", "profile"))
+        self.assertEqual(resolver.resolve(end), ("2026-01-01", "profile"))
+        # The site's own pre-fill - the project's start - is put right.
+        self.assertEqual(resolver.correction(dict(start, value="02/01/2026")),
+                         ("2020-07-01", "02/01/2026"))
+        self.assertIsNone(resolver.correction(dict(start, value="07/01/2020")))
+        # A current job has no end date to give.
+        data["jobs"][0]["end"] = ""
+        data["jobs"][0]["current"] = True
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        self.assertIsNone(resolver.resolve(end))
+
+    def test_successfactors_contact_labels(self) -> None:
+        # Ericsson on SuccessFactors (Oct 2026): country of residence left
+        # empty under the State box that follows it; the re-typed e-mail and
+        # the phone's country code went to the model.
+        data = dict(DUMMY_PROFILE, location="Gurgaon, India", phone_country_code="+91")
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        residence = field(tag="select", label="Country/Region of Residence:*",
+                          options=["No Selection", "Germany", "India", "Sweden"])
+        self.assertEqual(resolver.resolve(residence), ("India", "profile"))
+        self.assertEqual(resolver.rule_key(residence), "country")
+        self.assertEqual(resolver.resolve(field(label="Retype Email Address: *")),
+                         ("test@example.invalid", "profile"))
+        code = field(tag="select", label="Country/Region Code:*",
+                     options=["Germany (+49)", "India (+91)", "Sweden (+46)"])
+        self.assertEqual(resolver.resolve(code), ("India (+91)", "profile"))
+        self.assertEqual(resolver.rule_key(code), "phone_country_code")
+
+    def test_family_and_reference_rows_never_get_the_candidates_details(self) -> None:
+        # DentCare (Oct 2026): the candidate's name, phone and degree went
+        # into the Family Details rows.
+        data = dict(DUMMY_PROFILE, full_name="Test User", highest_education_level="Bachelors",
+                    father_name="Example Father")
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        for section in ("Family Details", "References", "Emergency Contact", "Next of Kin"):
+            for label in ("Name *", "Phone number", "Qualification", "Email"):
+                self.assertIsNone(resolver.resolve(field(label=label, section=section)), (section, label))
+        # The candidate's own boxes still fill.
+        self.assertEqual(resolver.resolve(field(label="Name *", section="Personal Information")),
+                         ("Test User", "profile"))
+        self.assertEqual(resolver.resolve(field(label="Father's Name")), ("Example Father", "profile"))
+
+    def test_a_passport_size_photo_is_not_an_identifier(self) -> None:
+        self.assertFalse(profile.is_identifier("Upload Your\nRecent passport size photo"))
+        self.assertFalse(profile.is_identifier("Do you have a valid passport?"))
+        self.assertTrue(profile.is_identifier("Passport Number"))
+        self.assertTrue(profile.is_identifier("PAN Card Number"))
+        self.assertTrue(profile.is_identifier("Aadhar Number"))
+
+    def test_a_label_that_is_a_field_name_reads_as_words(self) -> None:
+        data = dict(DUMMY_PROFILE, languages="English - Intermediate; Hindi - Fluent")
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        first = field(tag="select", label="language_proficiency[]", section="Language Proficiency",
+                      ordinal=0, options=["English", "Hindi", "Malayalam"])
+        second = dict(first, ordinal=1)
+        self.assertEqual(resolver.resolve(first), ("English", "profile"))
+        self.assertEqual(resolver.resolve(second), ("Hindi", "profile"))
+
+    def test_pronouns_are_left_alone_without_a_profile_value(self) -> None:
+        self.assertIsNone(resolver.resolve(field(label="Preferred Pronouns")))
+
+    def test_site_prefills_the_profile_contradicts_are_corrected(self) -> None:
+        data = dict(DUMMY_PROFILE, total_experience_years="6", relevant_experience_years="6",
+                    current_title="Software Engineer", current_company="Cadence Design Systems",
+                    skills="Node.js, JavaScript", not_employment="Applied AI & LLM Agents")
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        wrong = (("Total Professional Experience*", "7 years", "6"),
+                 ("Relevant Experience in Primary skill*", "0 years", "6"),
+                 ("Primary Skill*", "Amazon Web Services", "Node.js"),
+                 # The candidate's own project is never a job title.
+                 ("Job Title at Recent employer", "Applied AI & LLM Agents", "Software Engineer"))
+        for label, current, want in wrong:
+            self.assertEqual(resolver.correction(field(label=label, value=current)),
+                             (want, current), label)
+        agreeing = (("Total Professional Experience*", "6 years"),
+                    ("Most recent employer", "Cadence"),
+                    ("Job Title at Recent employer", "Software Engineer II"),
+                    ("Primary Skill*", "Node.js"))
+        for label, current in agreeing:
+            self.assertIsNone(resolver.correction(field(label=label, value=current)), label)
+        # Contact details are never "corrected": a site's own formatting of
+        # them is not a disagreement.
+        self.assertIsNone(resolver.correction(field(label="Phone number*", value="99999 00000")))
+        self.assertIsNone(resolver.correction(field(label="Email*", value="other@example.invalid")))
+        self.assertIsNone(resolver.correction(field(label="Total Professional Experience*", value="")))
+
+    def test_relocation_tiles_answer_from_the_profile(self) -> None:
+        # EPAM (Oct 2026): Yes / No radios under the question, left empty with
+        # willing_to_relocate in the profile.
+        data = dict(DUMMY_PROFILE, willing_to_relocate="Yes")
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        question = "Are you willing to relocate to the specified job location?*"
+        yes = field(type="radio", label="Yes", group=question, checked=False)
+        no = field(type="radio", label="No", group=question, checked=False)
+        self.assertEqual(resolver.resolve(yes), ("yes", "profile"))
+        self.assertIsNone(resolver.resolve(no))
+        # Another yes/no question is still not the profile's to answer.
+        other = field(type="radio", label="Yes", group="Have you worked at EPAM before?", checked=False)
+        self.assertIsNone(resolver.resolve(other))
+
     def test_autocomplete_is_trusted_first(self) -> None:
         got = resolver.resolve(field(autocomplete="email", label="Anything"))
         self.assertEqual(got, ("test@example.invalid", "profile"))
@@ -170,6 +360,39 @@ class BankFallbackTests(ResolverTestCase):
         # silent sweep.
         answers.remember("Do you require visa sponsorship?", "No")
         self.assertIsNone(resolver.resolve(field(label="Do you require visa sponsorship?")))
+
+
+class DateBoxTests(ResolverTestCase):
+    """A real <input type="date"> takes YYYY-MM-DD only. CryptoMize (Oct 2
+    2026): the profile's DOB never went in, and the model's format was
+    refused as "Malformed value"."""
+
+    def write_dob(self, value: str) -> None:
+        profile.PROFILE_PATH.write_text(json.dumps({**DUMMY_PROFILE, "date_of_birth": value}),
+                                        encoding="utf-8")
+        profile._cache = None
+
+    def test_the_profile_dob_goes_in_as_iso(self) -> None:
+        self.write_dob("03/10/1997")       # day first, as the profile asks
+        got = resolver.resolve(field(type="date", label="Date of Birth *"))
+        self.assertEqual(got, ("1997-10-03", "profile"))
+
+    def test_iso_and_other_separators(self) -> None:
+        for value in ("1997-10-03", "03-10-1997", "3.10.1997"):
+            with self.subTest(value=value):
+                self.assertEqual(resolver.iso_date(value), "1997-10-03")
+
+    def test_what_is_not_a_date_is_left_alone(self) -> None:
+        for value in ("31/02/1997", "October 1997", "1997", ""):
+            with self.subTest(value=value):
+                self.assertEqual(resolver.iso_date(value), "")
+        self.write_dob("sometime in 1997")
+        self.assertIsNone(resolver.resolve(field(type="date", label="Date of Birth *")))
+
+    def test_a_text_box_still_gets_the_profile_text(self) -> None:
+        self.write_dob("03/10/1997")
+        self.assertEqual(resolver.resolve(field(label="Date of Birth (DD/MM/YYYY)")),
+                         ("03/10/1997", "profile"))
 
 
 class MatchOptionTests(unittest.TestCase):
@@ -466,6 +689,63 @@ class ProfileJobsTests(ResolverTestCase):
     def test_a_profile_with_no_jobs_gives_nothing(self) -> None:
         self.assertEqual(resolver.profile_jobs({}), [])
         self.assertEqual(resolver.profile_jobs({"jobs": "not a list"}), [])
+
+
+class WorkedHereBeforeTests(ResolverTestCase):
+    """Databricks (Oct 2026): "Do you currently or have you previously worked
+    for Databricks in the past?" went to chat, with the employers right there
+    in the profile."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        profile.PROFILE_PATH.write_text(json.dumps({
+            **DUMMY_PROFILE, "current_company": "Cadence Design Systems",
+            "jobs": [{"title": "Engineer", "company": "Cadence Design Systems", "start": "07/2020"},
+                     {"title": "Intern", "company": "Acme Labs Pvt Ltd", "start": "06/2019",
+                      "end": "07/2020"}]}), encoding="utf-8")
+
+    QUESTION = "Do you currently or have you previously worked for Databricks in the past?*"
+
+    def combo(self, label: str) -> dict:
+        return field(label=label, role="combobox", haspopup="true")
+
+    def test_a_company_never_worked_for_is_no(self) -> None:
+        self.assertEqual(resolver.worked_here_before(self.combo(self.QUESTION), "Databricks"),
+                         ("No", "profile"))
+        for asked in ("Have you ever been employed by Cisco or its subsidiaries?",
+                      "Are you a former Cisco employee?"):
+            self.assertEqual(resolver.worked_here_before(self.combo(asked), "Cisco Systems, Inc."),
+                             ("No", "profile"), asked)
+
+    def test_a_select_and_the_no_of_a_radio_pair(self) -> None:
+        select = field(tag="select", label=self.QUESTION, options=["Select...", "Yes", "No"])
+        self.assertEqual(resolver.worked_here_before(select, "Databricks"), ("No", "profile"))
+        no = field(type="radio", label="No", group=self.QUESTION)
+        yes = field(type="radio", label="Yes", group=self.QUESTION)
+        self.assertEqual(resolver.worked_here_before(no, "Databricks"), ("yes", "profile"))
+        self.assertIsNone(resolver.worked_here_before(yes, "Databricks"))
+
+    def test_a_past_employer_is_left_to_the_candidate(self) -> None:
+        asked = "Have you previously worked for Cadence?"
+        self.assertIsNone(resolver.worked_here_before(self.combo(asked), "Cadence"))
+        self.assertIsNone(resolver.worked_here_before(
+            self.combo("Have you worked for Acme before?"), "Acme Labs"))
+
+    def test_other_questions_about_the_company_are_not_this_one(self) -> None:
+        for asked in ("Do you know anyone working at Databricks?",
+                      "Were you referred by a Databricks employee?",
+                      "Why do you want to work at Databricks?",
+                      "Have you worked for a startup before?",
+                      "Do you have a relative working for Databricks?"):
+            self.assertIsNone(resolver.worked_here_before(self.combo(asked), "Databricks"), asked)
+
+    def test_a_text_box_an_answered_one_or_an_empty_profile_is_left_alone(self) -> None:
+        self.assertIsNone(resolver.worked_here_before(field(label=self.QUESTION), "Databricks"))
+        self.assertIsNone(resolver.worked_here_before(
+            {**self.combo(self.QUESTION), "value": "Yes"}, "Databricks"))
+        self.assertIsNone(resolver.worked_here_before(self.combo(self.QUESTION), ""))
+        profile.PROFILE_PATH.write_text(json.dumps(DUMMY_PROFILE), encoding="utf-8")
+        self.assertIsNone(resolver.worked_here_before(self.combo(self.QUESTION), "Databricks"))
 
 
 class WorkEntryTaggingTests(ResolverTestCase):

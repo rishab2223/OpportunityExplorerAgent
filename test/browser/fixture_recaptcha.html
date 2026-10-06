@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>reCAPTCHA shapes</title>
+<!-- The two shapes Google's reCAPTCHA takes on a page. srcdoc keeps the
+     frames local - nothing is fetched - while src carries the real address
+     the detector reads. #visible is toggled by the check. -->
+</head>
+<body>
+<!-- Invisible: a 0x0 anchor and a hidden challenge frame (Intuit, Oct 2 2026). -->
+<iframe id="anchor-invisible" style="width:0;height:0;border:0"
+        src="https://www.google.com/recaptcha/api2/anchor?ar=1&k=test&size=invisible"
+        srcdoc="<p></p>"></iframe>
+<iframe id="bframe" style="width:1278px;height:150px;position:absolute;left:-10000px"
+        src="https://www.google.com/recaptcha/api2/bframe?hl=en&k=test" srcdoc="<p></p>"></iframe>
+<!-- The "I'm not a robot" box: 304x78 on screen. Hidden until the check shows it. -->
+<iframe id="visible" style="width:304px;height:78px;display:none"
+        src="https://www.google.com/recaptcha/api2/anchor?ar=1&k=test&size=normal"
+        srcdoc="<p>I'm not a robot</p>"></iframe>
+</body>
+</html>

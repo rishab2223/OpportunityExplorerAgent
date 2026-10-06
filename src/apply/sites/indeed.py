@@ -19,6 +19,7 @@ it stands, as it always did.
 """
 from __future__ import annotations
 
+import re
 from urllib.parse import urlparse
 
 from src.apply import browser
@@ -38,15 +39,26 @@ BUTTONS = (
 # patience goes to the later attempts.
 OPEN_TIMEOUTS = (1500, 2500, 4000)
 OPEN_STEP = 100
+# Indeed's own banner on a dead posting (Oct 2 2026): "This job has expired on
+# Indeed" above the title, and no apply button anywhere. It used to cost the
+# full READY_TIMEOUT waiting for a button, then a "type closed" question for
+# a posting that could not be applied to whatever the answer was. Indeed's
+# wording only: the loop's broader closed check still asks, because other
+# sites' banners can be ambiguous.
+EXPIRED_RE = re.compile(r"this job has expired on indeed", re.IGNORECASE)
 
 
 def start(page, sess) -> str:
     """Open the job's application. Returns 'indeed' (Indeed's own form),
-    'external' (the employer's site in a new tab), or '' when neither button
-    showed or nothing opened - the loop then reads the page as it stands."""
+    'external' (the employer's site in a new tab), 'closed' when Indeed says
+    the posting has expired, or '' when neither button showed or nothing
+    opened - the loop then reads the page as it stands."""
     if urlparse(page.url or "").netloc.lower().startswith("smartapply."):
         return ""                         # already on Indeed's own form
     found = _wait_for_button(page)
+    if found == "closed":
+        sess.log("[indeed] This job has expired on Indeed.")
+        return "closed"
     if found is None:
         seen = browser.apply_control(page)
         sess.log(f"[indeed] Neither of Indeed's apply buttons showed within "
@@ -73,9 +85,12 @@ def start(page, sess) -> str:
 
 
 def _wait_for_button(page):
-    """(kind, selector, name) for the apply button once one is visible, or None."""
+    """(kind, selector, name) for the apply button once one is visible,
+    'closed' once the expired banner is, or None."""
     waited = 0
     while True:
+        if EXPIRED_RE.search(browser.page_text(page) or ""):
+            return "closed"
         for kind, selector, name in BUTTONS:
             try:
                 if page.locator(selector).first.is_visible():

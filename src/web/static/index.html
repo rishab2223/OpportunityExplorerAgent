@@ -7,11 +7,32 @@
 </head>
 <body>
 <main>
-  <h1>Opportunity Explorer</h1>
+  <header class="topbar">
+    <h1>Opportunity Explorer</h1>
+    <div class="usermenu">
+      <button id="userbtn" type="button" aria-haspopup="menu" aria-expanded="false"
+              aria-controls="usermenu" title="Your profile">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <span class="sr-only">User menu</span>
+      </button>
+      <div id="usermenu" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-open-view="profile">Profile</button>
+        <button type="button" role="menuitem" data-open-view="answers">Saved answers</button>
+      </div>
+    </div>
+  </header>
 
   <nav id="nav">
     <button data-view="jobs" class="active">Jobs</button>
     <button data-view="referrals" id="nav-referrals">Referrals</button>
+    <button data-view="held" id="nav-held"
+            title="Strong matches a filter in review mode kept out of the shortlist">Held back</button>
+    <button data-view="fit" id="nav-fit"
+            title="Decide with the AI what gives way when a tailored resume runs past one page">Resume fit</button>
   </nav>
 
   <section id="view-jobs">
@@ -19,15 +40,9 @@
     <div class="card-head">
       <h2>Run</h2>
       <div class="card-head-tools">
-        <button id="start" class="btn-primary">Start run</button>
+        <button id="start" class="btn-primary" aria-haspopup="dialog">Start run…</button>
         <span id="status" class="pill">idle</span>
       </div>
-    </div>
-    <div class="row">
-      <label for="resume">Resume path</label>
-      <input id="resume" type="text" placeholder="localData/resume.tex" size="40">
-      <label for="maxjobs">Max jobs</label>
-      <input id="maxjobs" type="number" min="1" max="500" placeholder="10">
     </div>
     <pre id="log" class="logbox">No run started. Logs from a live run appear here.</pre>
   </div>
@@ -90,6 +105,11 @@
     <details id="jobdetail">
       <summary><span class="panel-title">Selected job</span><span id="jobdetailname" class="muted"></span></summary>
       <div id="detail" class="muted">Pick a row, then press Job info.</div>
+      <div class="row" id="preprow" hidden>
+        <button id="writeprep" type="button"
+                title="Likely questions, STAR talking points and questions to ask, for this job (one model call)">Write interview prep</button>
+        <span id="prepnote" class="muted" role="status"></span>
+      </div>
       <div id="pdfnote" class="muted"></div>
       <iframe id="pdf" title="Tailored resume preview"></iframe>
     </details>
@@ -198,6 +218,144 @@
     <nav class="row pager" id="referralspager" aria-label="Referral pages" hidden></nav>
   </div>
   </section>
+
+  <section id="view-held" hidden>
+  <div class="card">
+    <div class="card-head">
+      <h2>Held back</h2>
+      <div class="card-head-tools"><span id="heldinfo" class="muted"></span></div>
+    </div>
+    <p class="muted heldintro">
+      Strong matches a filter would have removed, from every run, until you act on them.
+      They are scored but have no tailored resume: <b>Start apply</b> uses your base resume.
+      <b>Move to shortlist</b> puts one in the shortlist of the run that found it (the
+      <b>Found</b> column), where it can be queued. Acting on a row takes it off this list.
+    </p>
+    <div id="heldinsight" class="profilenotice" role="status" hidden></div>
+    <div id="heldmoved" class="movednotice" role="status" hidden></div>
+    <div class="tablewrap">
+    <table id="heldback">
+      <thead>
+        <tr>
+          <th>Company</th>
+          <th>Title</th>
+          <th>Score</th>
+          <th>Held back because</th>
+          <th title="When the run that found it ran">Found</th>
+          <th>Location</th>
+          <th>Links</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    </div>
+  </div>
+  </section>
+
+  <section id="view-fit" hidden>
+    <div class="fitbar">
+      <h2>Resume fit</h2>
+      <span id="fitstate" class="pill"></span>
+      <span class="grow"></span>
+      <button id="fitrestart" type="button" title="Clear this conversation and begin again from your saved policy">Start over</button>
+      <button id="fitdefault" type="button" title="Forget your saved policy: runs go back to dropping the CCNA bullet, then Certifications">Back to the default rule</button>
+      <button id="fitsave" type="button" class="btn-primary"
+              title="Every run from now on applies this policy to a resume that runs past one page">Save as my fit policy</button>
+    </div>
+    <p class="muted fitintro">
+      When a tailored resume runs past one page, something has to give. Talk it through with the
+      assistant: what to tighten first, what you would rather lose, what must never go. Each reply
+      is tried on a real resume on the right. Nothing changes for your runs until you press
+      <b>Save as my fit policy</b>.
+    </p>
+    <div class="fitgrid">
+      <div class="card fitchat">
+        <div id="fitmessages" class="fitmessages" role="log" aria-live="polite" aria-label="Conversation"></div>
+        <div id="fitready" class="fitready" role="status" hidden>
+          The assistant thinks you are agreed. Press <b>Save as my fit policy</b> to use it, or keep talking.
+        </div>
+        <form id="fitform" class="fitform">
+          <textarea id="fitinput" rows="2" aria-label="Message to the assistant"
+                    placeholder="e.g. Keep my certifications - tighten the margins and spacing first"></textarea>
+          <button id="fitsend" type="submit" class="btn-primary">Send</button>
+        </form>
+        <div class="fitpolicy">
+          <div class="fitpolicy-head">
+            <h3>Draft policy</h3>
+            <span class="muted">applied in order, only until the resume fits</span>
+          </div>
+          <ol id="fitsteps" class="fitsteps"></ol>
+          <p id="fitguidance" class="fitguidance" hidden></p>
+        </div>
+      </div>
+      <div class="card fitpreview">
+        <div class="fitpreview-head">
+          <label for="fitsubject">Try it on</label>
+          <select id="fitsubject"></select>
+          <span id="fitpages" class="pill"></span>
+        </div>
+        <ol id="fittrail" class="fittrail" aria-label="What the policy did"></ol>
+        <div id="fitpdfnote" class="muted"></div>
+        <iframe id="fitpdf" title="Resume with the draft policy applied"></iframe>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-answers" hidden>
+  <div class="card">
+    <div class="card-head">
+      <h2>Saved answers</h2>
+      <div class="card-head-tools">
+        <input id="answersearch" type="search" placeholder="Search questions and answers" size="28"
+               aria-label="Search saved answers">
+        <span id="answersinfo" class="muted" role="status"></span>
+      </div>
+    </div>
+    <p class="muted">
+      Answers you gave on application forms, reused when another form asks the same thing.
+      Fix one that is wrong, or delete it and the agent will ask you again next time.
+      <b>Sensitive</b> ones (work authorisation, sponsorship, self-identification) are legal
+      declarations: every reuse is shown in the apply log.
+    </p>
+    <div class="tablewrap">
+    <table id="answers">
+      <thead>
+        <tr>
+          <th>Question</th>
+          <th>Answer</th>
+          <th>Kind</th>
+          <th>Used</th>
+          <th>Last used</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    </div>
+  </div>
+  </section>
+
+  <section id="view-profile" hidden>
+    <div class="profilebar">
+      <h2>Profile</h2>
+      <span id="profilestate" class="muted" role="status"></span>
+      <span class="grow"></span>
+      <button id="profilediscard" type="button" disabled>Discard changes</button>
+      <button id="profilesave" type="button" class="btn-primary" disabled>Save</button>
+    </div>
+    <p class="muted profileintro">
+      What the agent types into application forms, and what the experience filter reads.
+      Kept in <code>localData/apply_profile.json</code> on this machine only; a saved change
+      is used from the next box the agent fills, with no restart.
+    </p>
+    <div id="profileempty" class="profilenotice" hidden></div>
+    <div id="profileform"></div>
+    <div class="card">
+      <div class="card-head"><h2>Never stored here</h2></div>
+      <ul id="profilenever" class="muted"></ul>
+    </div>
+  </section>
 </main>
 
 <div id="modalback" class="modal-backdrop" hidden>
@@ -227,6 +385,130 @@
   </div>
 </div>
 
+<div id="runback" class="modal-backdrop" hidden>
+  <form id="runmodal" class="modal rs-modal" role="dialog" aria-modal="true" aria-labelledby="rstitle" novalidate>
+    <header class="rs-head">
+      <div>
+        <h3 id="rstitle">Start a run</h3>
+        <p class="muted rs-sub">Choose what this run fetches, how it scores and how it tailors.
+          Defaults come from <code>config/settings.yaml</code>.</p>
+        <p class="rs-saved" id="rssaved" hidden>Some values are your saved defaults, on top of
+          <code>settings.yaml</code>. <button type="button" class="rs-link" data-rs="forget">Forget them</button></p>
+      </div>
+      <button type="button" class="rs-close" data-rs="cancel" aria-label="Close">&times;</button>
+    </header>
+
+    <div class="rs-body">
+      <section class="rs-section">
+        <h4>Job sources</h4>
+        <div id="rssources" class="rs-sources"></div>
+        <div class="rs-row">
+          <span class="rs-label" id="rsposted-l">Posted within</span>
+          <div class="rs-seg" role="radiogroup" aria-labelledby="rsposted-l" data-field="scrape.posted_within"></div>
+        </div>
+        <label class="rs-row">
+          <span class="rs-label">Skip postings mentioning</span>
+          <input type="text" class="rs-text" data-field="scrape.exclude_keywords" data-kind="list"
+                 placeholder="e.g. PHP, Salesforce (comma separated)">
+        </label>
+      </section>
+
+      <section class="rs-section">
+        <h4>Matching</h4>
+        <div class="rs-row">
+          <label class="rs-label" for="rsminscore">Minimum score</label>
+          <div class="rs-range">
+            <input id="rsminscore" type="range" min="1" max="10" step="1" data-field="min_score" data-kind="int">
+            <output class="rs-out" for="rsminscore"></output>
+          </div>
+        </div>
+        <p class="rs-hint" id="rsminhint"></p>
+        <div class="rs-row">
+          <span class="rs-label" id="rsexp-l">Experience filter</span>
+          <label class="switch"><input type="checkbox" data-field="experience.enabled" aria-labelledby="rsexp-l"><span></span></label>
+        </div>
+        <div class="rs-sub-grid" data-show-if="experience.enabled">
+          <label class="rs-mini">Years over yours a job may ask
+            <input type="number" min="0" max="10" step="0.5" data-field="experience.tolerance_years" data-kind="float"></label>
+          <div class="rs-mini"><span id="rsmode-l">Jobs over the limit</span>
+            <div class="rs-seg" role="radiogroup" aria-labelledby="rsmode-l" data-field="experience.mode"></div></div>
+          <label class="rs-mini" data-show-if="experience.mode=review">Show held-back jobs scoring at least
+            <input type="number" min="1" max="10" step="1" data-field="experience.review_min_score" data-kind="int"></label>
+          <label class="rs-mini" data-show-if="experience.mode=review">At most this many per run
+            <input type="number" min="1" max="50" step="1" data-field="experience.review_max" data-kind="int"></label>
+        </div>
+        <div class="rs-checks">
+          <label class="switch-row"><span class="switch"><input type="checkbox" data-field="history.skip_applied"><span></span></span>Leave out jobs I applied to</label>
+          <label class="switch-row"><span class="switch"><input type="checkbox" data-field="history.skip_skipped"><span></span></span>Leave out jobs I skipped</label>
+          <label class="switch-row"><span class="switch"><input type="checkbox" data-field="history.skip_referral"><span></span></span>Leave out jobs with a referral pending</label>
+          <label class="switch-row"><span class="switch"><input type="checkbox" data-field="history.skip_closed"><span></span></span>Leave out closed postings</label>
+        </div>
+      </section>
+
+      <section class="rs-section">
+        <h4>Models</h4>
+        <div class="rs-grid2">
+          <label class="rs-mini">Scoring model
+            <select data-field="openai.score_model" data-models="openai"></select></label>
+          <label class="rs-mini">Scoring calls at once
+            <input type="number" data-field="openai.score_concurrency" data-kind="int" data-bounds="score_concurrency"></label>
+        </div>
+        <div class="rs-row">
+          <span class="rs-label" id="rsprov-l">Resume tailoring by</span>
+          <div class="rs-seg" role="radiogroup" aria-labelledby="rsprov-l" data-field="enrich_provider"></div>
+        </div>
+        <div class="rs-grid2">
+          <label class="rs-mini" data-show-if="enrich_provider=claude">Claude model
+            <select data-field="claude.enrich_model" data-models="claude"></select></label>
+          <label class="rs-mini" data-show-if="enrich_provider=openai">OpenAI model
+            <select data-field="openai.enrich_model" data-models="openai"></select></label>
+          <label class="rs-mini">Tailoring calls at once
+            <input type="number" data-field="openai.enrich_concurrency" data-kind="int" data-bounds="enrich_concurrency"></label>
+        </div>
+        <div class="rs-row" data-show-if="enrich_provider=claude">
+          <span class="rs-label" id="rseffort-l">Thinking effort</span>
+          <div class="rs-seg" role="radiogroup" aria-labelledby="rseffort-l" data-field="claude.effort"></div>
+        </div>
+        <div class="rs-row">
+          <span class="rs-label" id="rsprep-l">Interview prep</span>
+          <div class="rs-seg" role="radiogroup" aria-labelledby="rsprep-l" data-field="interview_prep"></div>
+        </div>
+        <label class="switch-row"><span class="switch"><input type="checkbox" data-field="reuse_enrichment"><span></span></span>
+          Reuse scores and tailored resumes from earlier runs when nothing changed</label>
+      </section>
+
+      <section class="rs-section">
+        <h4>Resume &amp; PDFs</h4>
+        <label class="rs-row">
+          <span class="rs-label">Base resume</span>
+          <input type="text" class="rs-text" data-field="resume.local_path" placeholder="localData/resume.tex">
+        </label>
+        <div class="rs-grid2">
+          <label class="switch-row"><span class="switch"><input type="checkbox" data-field="compile_pdf"><span></span></span>Compile PDFs</label>
+          <label class="rs-mini" data-show-if="compile_pdf">PDFs compiled at once
+            <input type="number" data-field="pdf_concurrency" data-kind="int" data-bounds="pdf_concurrency"></label>
+        </div>
+      </section>
+    </div>
+
+    <footer class="rs-foot">
+      <div id="rsestimate" class="rs-estimate" role="status"></div>
+      <div id="rserror" class="rs-error" role="alert" hidden></div>
+      <div class="rs-actions">
+        <label class="pcheck" title="What differs from settings.yaml is kept for the next run started here"><input type="checkbox" id="rsremember"> Keep as my defaults</label>
+        <span class="grow"></span>
+        <button type="button" data-rs="reset" title="Back to the values in settings.yaml">Reset to settings.yaml</button>
+        <button type="button" data-rs="cancel">Cancel</button>
+        <button type="submit" class="btn-primary" id="rsstart">Start run</button>
+      </div>
+    </footer>
+  </form>
+</div>
+
 <script src="/static/app.js"></script>
+<script src="/static/runsettings.js"></script>
+<script src="/static/fit.js"></script>
+<script src="/static/profile.js"></script>
+<script src="/static/answers.js"></script>
 </body>
 </html>

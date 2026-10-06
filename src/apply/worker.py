@@ -4,6 +4,8 @@ import json
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import urlparse
@@ -50,6 +52,9 @@ FIRST_RENDER_WAIT_MS = 15000
 # After that first look the page is not "still loading" any more, so a page
 # with genuinely nothing on it does not pay the long budget on every pass.
 RETRY_RENDER_WAIT_MS = 4000
+# How often a rendering page is looked at. A look is a few milliseconds; at
+# 500 a closed posting already on screen waited up to half a second more.
+RENDER_POLL_MS = 250
 # Before a model call about NOTHING - no box left to fill, and no Next or
 # Submit the script could press - give the page this long to finish drawing.
 # 15 of 58 real model calls were about zero fields, a median 7.1 s each, and
@@ -97,8 +102,12 @@ def _letter_words(text: str) -> bool:
 
 # Submit buttons are never clicked by code - the candidate always submits.
 SUBMIT_WORDS = ("submit", "apply now", "send application", "finish", "submit application")
+# Compiled once: _is_submit runs for every field of every snapshot, and was
+# building five patterns per call.
+_SUBMIT_RE = re.compile(r"\b(?:" + "|".join(re.escape(w) for w in SUBMIT_WORDS) + r")\b")
 # Wizard navigation is not submission; the script clicks these freely.
 ADVANCE_WORDS = ("next", "continue", "review", "save and continue")
+_ADVANCE_RE = re.compile(r"^(?:" + "|".join(re.escape(w) for w in ADVANCE_WORDS) + r")\b")
 CONTINUE_WORDS = ("done", "ok", "next", "continue", "ready")
 FINISHED_WORDS = ("done", "applied", "submitted", "finished", "it went through")
 # FINISHED_WORDS minus "done": on the no-fields prompt "done" means "I opened
@@ -106,8 +115,11 @@ FINISHED_WORDS = ("done", "applied", "submitted", "finished", "it went through")
 SUBMITTED_WORDS = ("applied", "submitted", "finished", "it went through")
 # The posting is gone - phrasing seen across career sites, not just LinkedIn.
 CLOSED_PAGE_RE = re.compile(
-    r"position has been filled|no longer accepting applications"
-    r"|not (?:currently |presently )?accepting applications"
+    # Cisco (Oct 2026): "We are not accepting new applications for this role
+    # at this time" - the word "new" slipped past, and two model calls later
+    # the candidate was asked what to do.
+    r"position has been filled"
+    r"|(?:no longer |not (?:currently |presently )?)accepting (?:any )?(?:new |further |more )?applications"
     r"|(?:job|position|posting|vacancy|opening)[^.\n]{0,40}?"
     r"(?:no longer available|has been closed|has closed|has expired|is closed"
     r"|has been removed|was removed)"
@@ -116,8 +128,14 @@ CLOSED_PAGE_RE = re.compile(
     # posting has been removed", which read as a page with no fields and left
     # the candidate being asked for a URL that no longer exists.
     r"|job id provided may not be valid"
-    r"|this job has expired",
-    re.IGNORECASE,
+    r"|this job has expired"
+    # US Bank on Phenom (Oct 2026): "The job you are searching for is not
+    # available." Only as the end of a sentence about the posting itself -
+    # "this position is not available for remote work" is a description.
+    r"|\b(?:the|this) (?:job|position|posting|vacancy|opening|role)"
+    r"(?: you (?:are|were) (?:searching|looking) for| you requested)?"
+    r" is (?:currently )?(?:not|no longer) available\s*(?:[.!]|$)",
+    re.IGNORECASE | re.MULTILINE,
 )
 # A submission-confirmation page, which typically has no form fields at all.
 SUBMITTED_PAGE_RE = re.compile(
@@ -335,16 +353,70 @@ def _newly_submitted(page, holder: dict[str, Any]) -> str:
     seen = holder.get("submitted_seen")
     if seen is None:
         return ""   # the baseline is taken by the loop, before anything is typed
-    for mark in _submitted_marks(browser.full_page_text(page)) - seen:
+    for mark in _page_submitted_marks(page) - seen:
         return mark
+    # The address a submit lands on. Not part of the baseline: a URL is where
+    # the page IS, so arriving at a thank-you address is a change by
+    # definition - unless the reading began there.
+    url = _safe_url(page)
+    if SUBMITTED_URL_RE.search(url) and not SUBMITTED_URL_RE.search(holder.get("submitted_full_url") or ""):
+        return f"the page moved to the site's thank-you address ({_brief(url.split('?', 1)[0], 80)})"
     return ""
 
 
+# Where an applicant tracking system sends a finished application. Phenom
+# (Veralto, Oct 2 2026): /global/en/applythankyou?status=thankyou&jobSeqNo=...,
+# whose body says only "Thank you for your interest." - a phrase job
+# descriptions end with too, so the address and the title are the evidence.
+SUBMITTED_URL_RE = re.compile(
+    r"/apply[-_]?thank[-_]?you(?:[/?#]|$)|[?&]status=thank[-_]?you(?:[&#]|$)", re.IGNORECASE)
+
+
+def _page_title(page) -> str:
+    try:
+        return page.title() or ""
+    except Exception:
+        return ""
+
+
+def _submitted_text(page) -> str:
+    """The page's title and text together, for a yes/no reading."""
+    return f"{_page_title(page)}\n{browser.full_page_text(page)}"
+
+
+def _page_submitted_marks(page) -> frozenset[str]:
+    """The submitted check's marks: the title's, then the text's. The title
+    is where Phenom says "Thank you for applying"; the body says only "Thank
+    you for your interest". Taken apart, because a mark keeps the words after
+    it: one string would carry the body's first words into the title's mark,
+    and a form titled "Thank you for applying" on every step would read as
+    newly submitted the moment step two's text differed from step one's."""
+    return _submitted_marks(_page_title(page)) | _submitted_marks(browser.full_page_text(page))
+
+
 def _take_submitted_baseline(page, fields: list[dict[str, Any]], holder: dict[str, Any]) -> None:
-    if holder.get("submitted_seen") is not None:
+    """The baseline belongs to a document, not to the session. Taken once on
+    the first page and never again, it missed the boilerplate of every page
+    after it: a session that began on the job description, then clicked
+    through to a form whose intro says "Thank you for applying to Acme,
+    please complete the form below", read that intro as new and recorded the
+    job as applied with nothing filled. So a new URL with something fillable
+    on it is read afresh. A new URL with NOTHING fillable keeps the old
+    baseline: that is the confirmation page a submit leads to, and its
+    wording is exactly what must count."""
+    full = _safe_url(page).split("#", 1)[0]
+    where = full.split("?", 1)[0]
+    if holder.get("submitted_seen") is None:
+        marks = _page_submitted_marks(page)
+        holder["submitted_seen"] = marks if _has_fillable(fields) else frozenset()
+        holder["submitted_url"] = where
+        # With its query: Phenom's thank-you is ?status=thankyou, and the
+        # "unless the reading began there" check needs to see it.
+        holder["submitted_full_url"] = full
         return
-    marks = _submitted_marks(browser.full_page_text(page))
-    holder["submitted_seen"] = marks if _has_fillable(fields) else frozenset()
+    if where != holder.get("submitted_url") and _has_fillable(fields):
+        holder["submitted_seen"] = _page_submitted_marks(page)
+        holder["submitted_url"] = where
 
 
 def _no_fields_reason(page) -> str:
@@ -406,6 +478,65 @@ def _no_fields_reason(page) -> str:
 
 def _looks_closed(page_text: str) -> bool:
     return bool(CLOSED_PAGE_RE.search(page_text or ""))
+
+
+# A link that leads nowhere. Puma's posting (Oct 2 2026) opened "404 | PUMA®":
+# "PAGE NOT FOUND. The link you clicked may be broken or the page may have
+# been removed" - no job, position or posting named, so the closed check
+# above never matched, and two model calls later the agent offered to open
+# the careers home page. The title is read too: the sentence sat below a
+# navigation menu long enough to push it past page_text's limit.
+NOT_FOUND_TITLE_RE = re.compile(r"^\s*(?:error\s*)?404\b|\b(?:page|job) not found\b", re.IGNORECASE)
+NOT_FOUND_RE = re.compile(
+    r"\bpage (?:was )?not found\b"
+    # Intuit (Oct 2 2026), titled "Custom Job Error": "Job Not Found. We are
+    # sorry this job post no longer exists." No 404, no "page", no "closed".
+    r"|\bjob (?:post(?:ing)? )?(?:was )?not found\b"
+    # Adjacent words only: "Legacy job scheduler no longer exists" is a job
+    # description, not a dead posting.
+    r"|\b(?:job|position|posting|vacancy|opening|requisition)(?: post(?:ing)?| listing)?"
+    r"(?: you (?:are|were) looking for| you requested)?"
+    r" (?:is |has )?no longer (?:exists|available|active|open)\b"
+    r"|\b404\b[^.\n]{0,30}\bnot found\b"
+    r"|\b(?:link|page|url)\b[^.\n]{0,40}\b(?:may be broken|may have been (?:moved|removed|deleted)"
+    r"|no longer exists|does(?:n't| not) exist|(?:could|can)(?:not|'t| not) be found)",
+    re.IGNORECASE,
+)
+
+
+def _looks_not_found(page, text: str | None = None) -> bool:
+    if NOT_FOUND_TITLE_RE.search(_page_title(page)):
+        return True
+    if text is None:
+        text = browser.full_page_text(page)
+    return bool(NOT_FOUND_RE.search(text or ""))
+
+
+def _posting_gone(page) -> bool:
+    """The page says the job is closed or its link is dead - what the loop's
+    closed check records. Asked again while waiting for a page to render:
+    that check ran once, before Cisco's text had arrived (Oct 2026), and the
+    closed posting sat on screen for two seconds before it was noticed. One
+    read of the page's text serves both tests."""
+    if _closed_by_address(page):
+        return True
+    text = browser.full_page_text(page)
+    return _looks_closed(text) or _looks_not_found(page, text)
+
+
+# Where a job link lands when the job is gone. Greenhouse sends it to the
+# company's board with ?error=true and a red "The job you are looking for is
+# no longer open." that appears a beat after load and then fades (Speechify,
+# Oct 2026): the agent's first look was before it, the board's Search box
+# read as a form, and the candidate was asked what to search for.
+CLOSED_ADDRESS_RE = re.compile(
+    r"^https?://(?:job-)?boards(?:\.eu)?\.greenhouse\.io/[^/?#]+/?\?(?:[^#]*&)?error=true\b",
+    re.IGNORECASE,
+)
+
+
+def _closed_by_address(page) -> bool:
+    return bool(CLOSED_ADDRESS_RE.search(_safe_url(page)))
 
 
 def _live_value(page, field: dict[str, Any]) -> str:
@@ -492,7 +623,7 @@ def start_apply(
     on_finish: Callable[[str], None] | None = None,
     resume_options: Callable[[], dict[str, Any]] | None = None,
     out_dir: Path | None = None,
-    on_released: Callable[[str], None] | None = None,
+    on_released: Callable[[str, str], None] | None = None,
 ) -> ApplySession:
     """Begin one assisted-apply session on a worker thread.
 
@@ -527,7 +658,7 @@ def start_apply(
                 on_finish(sess.status)
             if on_released is not None:
                 try:
-                    on_released(sess.status)
+                    on_released(sess.status, sess.queue_stop)
                 except Exception:
                     pass          # a queue must never break the session it follows
 
@@ -603,10 +734,19 @@ def run_session(
             # "Ready to start? Type done" sat unanswered for three minutes with
             # the Apply button in plain view: the candidate was waiting for the
             # agent to press it, and the agent for them to type done.
-            indeed.start(page, sess)
+            if indeed.start(page, sess) == "closed":
+                sess.finish("closed", "no longer accepting applications")
+                return
         else:
-            sess.log("Chrome is open. Log in or dismiss dialogs yourself, then type done.")
-            sess.ask("Ready to start? Type done when the page has loaded.")
+            # No "Ready to start?" here either. 55 of 61 Indeed jobs in the
+            # runs to Oct 2 2026 link straight to the employer's own system
+            # (Workday, Phenom - jobs.veralto.com), and every one of them
+            # stopped on that question before anything happened. The loop
+            # already does what the question was for: it waits for a page
+            # still drawing, stops at a sign-in wall and says so, and hands
+            # back a page that never shows a form - each with a reason,
+            # which "type done" never gave.
+            sess.log("Chrome is open - reading the page as soon as it has loaded.")
 
         history: list[str] = []
         notes: list[str] = []
@@ -636,9 +776,16 @@ def run_session(
         settled_sig = ""         # the page last given time to draw before a model call
         zero_settles = 0
         closed_prompted: set[str] = set()
+        human_check_told: set[str] = set()
+        side_form_told: set[str] = set()
         last_llm_sig = ""
         outcome = ""
         outcome_text = ""
+        # Whether anything has been typed or clicked yet. `history` only
+        # holds the model's actions; the profile sweep types without it, so
+        # a swept single-page form still read as untouched and kept the
+        # "record closed without asking" path live.
+        touched = False
 
         attach = Attachments(sess, job, resume_text, invoke, resume_options, out_dir)
 
@@ -655,13 +802,17 @@ def run_session(
             if watch is None:
                 return
             watch["ticks"] += 1
-            if watch["ticks"] % 2:
-                return  # every other second is plenty for a page scan
-            reason = _page_grew(context, holder["page"], watch)
+            # A tab or address change is read every tick (0.4 s); the page's
+            # text and a full snapshot every other one, so a prompt costs
+            # the browser about one read a second, not two.
+            reason = _page_grew(context, holder["page"], watch, thorough=watch["ticks"] % 2 == 0)
             if reason:
                 raise session.PageChanged(reason)
 
         sess.idle_tick = idle_tick
+        # Lets page events (a file picker the candidate opens) through while
+        # a model call runs; see _while_model_thinks.
+        sess.pump = lambda: holder["page"].wait_for_timeout(1)
         sess.on_dump = lambda delay=0: _dump_page(holder["page"], sess, delay)
 
         if dry_run:
@@ -672,6 +823,8 @@ def run_session(
         for _step in range(1, MAX_STEPS + 1):
             if sess.aborted():
                 raise Aborted("user aborted")
+            # A Dump pressed while the agent was filling boxes.
+            sess.service_dumps()
             if sess.parked():
                 # Pressed while the model was thinking: the wait it would
                 # normally interrupt was not running, so this is where it
@@ -799,12 +952,48 @@ def run_session(
                 continue
 
             # "Position has been filled" and friends, on ANY site - the
-            # LinkedIn handler only covers LinkedIn's own wording. Confirmed
-            # by the user because banners can be ambiguous, and asked at most
-            # once per URL.
-            if page.url not in closed_prompted and _looks_closed(browser.page_text(page)):
+            # LinkedIn handler only covers LinkedIn's own wording. One read of
+            # the page's text for both tests, and "closed" before "dead": a
+            # posting that says "no longer available" matches both, and is a
+            # closed posting, not a broken link.
+            untouched = not history and not touched
+            if page.url not in closed_prompted:
+                text = browser.full_page_text(page)
+                closed = _closed_by_address(page) or _looks_closed(text)
+                dead = not closed and _looks_not_found(page, text)
+            else:
+                closed = dead = False
+            if (dead or closed) and untouched:
+                # The job's own link, nothing clicked or typed yet: the posting
+                # is gone, and that is not a judgement call. Recorded like a
+                # LinkedIn or Indeed closed banner, without a question - Puma's
+                # 404 was asked about, the question went unseen, and the
+                # session was aborted with nothing recorded (Oct 2 2026); Cisco's
+                # "not accepting new applications" was asked about too, and the
+                # user asked for it to close on its own. Reached AFTER acting,
+                # either is still asked about below, at most once per URL: that
+                # may be one broken link or banner inside a live application.
+                if dead:
+                    sess.log("This link is dead: the site says the job or page was not found. "
+                             "The posting has been taken down; recording it as closed.")
+                    outcome, outcome_text = "closed", "the posting's link is dead (page not found)"
+                elif _closed_by_address(page):
+                    sess.log("This posting is closed: its link now lands on the company's job "
+                             "board flagged as an error ('the job you are looking for is no "
+                             "longer open'). Recording it as closed.")
+                    outcome, outcome_text = "closed", "no longer open (redirected to the job board)"
+                else:
+                    sess.log("This posting is closed: the site says it is no longer accepting "
+                             "applications. Recording it as closed.")
+                    outcome, outcome_text = "closed", "no longer accepting applications"
+                break
+            if dead or closed:
                 closed_prompted.add(page.url)
                 reply = sess.ask(
+                    ("This link is dead: the site says the job or page was not found. The "
+                     "posting has most likely been taken down. Type closed to record that "
+                     "and stop, or tell me how to continue.")
+                    if dead else
                     "This page says the position has been filled or closed. Type "
                     "closed to record that and stop, or tell me how to continue."
                 )
@@ -817,6 +1006,20 @@ def run_session(
                 continue
 
             fields = browser.snapshot(page)
+            # Told once per page: the agent never touches these. CryptoMize's
+            # form (Oct 2 2026) carried Cloudflare's check, which refused the
+            # tick in this browser, and nothing said why or what to do.
+            where = _safe_url(page).split("#", 1)[0]
+            if where not in side_form_told and browser.last_side_forms():
+                side_form_told.add(where)
+                for boxes in browser.last_side_forms():
+                    sess.log(f"Leaving this page's other form alone ({_brief(boxes, 80)}): "
+                             "it is not the application.")
+            if where not in human_check_told:
+                kind = browser.human_check(page)
+                if kind:
+                    human_check_told.add(where)
+                    sess.log(HUMAN_CHECK_NOTES[kind])
             dropped = browser.last_dropped()
             if dropped and dropped != told_dropped:
                 # Once per size, not once per pass: a page that keeps growing
@@ -878,13 +1081,15 @@ def run_session(
                 while waited < budget:
                     if sess.aborted():
                         raise Aborted("user aborted")
-                    page.wait_for_timeout(500)
-                    waited += 500
+                    page.wait_for_timeout(RENDER_POLL_MS)
+                    waited += RENDER_POLL_MS
                     active = browser.current_page(context, page)
                     if active is not None and active is not page:
                         page = active
                         sess.log(f"Switched to {_safe_url(page)}")
                         waited = 0          # a new page gets the whole budget
+                    if untouched and page.url not in closed_prompted and _posting_gone(page):
+                        break
                     fields = browser.snapshot(page)
                     if fields:
                         # Worth seeing: a page that took twelve seconds to
@@ -895,6 +1100,10 @@ def run_session(
                             sess.log(f"The page took {waited / 1000:.1f}s to show anything.")
                         last_llm_sig = ""
                         break
+            # The page finished rendering after the closed check at the top
+            # ran: look again now, before a model call or a question.
+            if untouched and page.url not in closed_prompted and _posting_gone(page):
+                continue
             if not fields:
                 empty_snapshots += 1
                 if empty_snapshots > MAX_EMPTY_SNAPSHOTS:
@@ -907,7 +1116,7 @@ def run_session(
                 # least give "submitted" somewhere to go: previously typing
                 # done here just looped, and the user had to abort a job that
                 # WAS applied.
-                if _looks_submitted(browser.full_page_text(page)):
+                if _looks_submitted(_submitted_text(page)) or SUBMITTED_URL_RE.search(_safe_url(page)):
                     answer = sess.ask(
                         "This page looks like a submission confirmation. Type done to "
                         "record the application as applied, paste a URL to keep going, "
@@ -1006,6 +1215,7 @@ def run_session(
                 attach=attach, written=written, holder=holder,
             )
             if filled:
+                touched = True
                 errors_in_a_row = 0
                 noop_streak = 0
                 last_llm_sig = ""
@@ -1064,6 +1274,16 @@ def run_session(
                     spare = _unanswered_questions(fields)
                     for question in spare:
                         sess.log(f"Left empty (optional): {_brief(question['label'], 90)}")
+                    # Required boxes the loop gave up on. "This step is filled
+                    # in" over an empty required Field of study read as done
+                    # (Veralto, Oct 2 2026); say which, and how to fill it.
+                    still_empty = [
+                        _field_label(f) for f in fields
+                        if f.get("required") and resolver.is_blank(f)
+                        and (f.get("type") or "").lower() not in ("file", "checkbox", "radio",
+                                                                    "submit", "button")
+                        and f.get("tag") in ("input", "select", "textarea")
+                    ]
                     if holder.get("confirm_advance", ASK_BEFORE_ADVANCE):
                         # The candidate reads the step before it moves on:
                         # prefilling and clicking Next straight away left no
@@ -1072,6 +1292,9 @@ def run_session(
                             sess, holder, page, handled, fields,
                             (("CHECK YOUR CONTACT DETAILS - " + "; ".join(contact_problems) + ". ")
                              if contact_problems else "")
+                            + ((f"STILL EMPTY (required): {'; '.join(_brief(l, 60) for l in still_empty[:3])}"
+                                " - type the option's name to pick it, or fill it in the browser. ")
+                               if still_empty else "")
                             + f"This step is filled in. Review it in the browser, then type next "
                             f"to click '{advance_label}' - or click it yourself, fix anything, "
                             "or tell me what to change. (Type auto next to stop asking.)"
@@ -1109,8 +1332,15 @@ def run_session(
                             attempts.pop(key, None)
                             last_llm_sig = ""
                             continue
+                        elif _reply_picks_option(page, fields, reply, sess) is not None:
+                            attempts.pop(key, None)
+                            continue
                         else:
                             notes.append(f"guidance from the candidate: {reply}")
+                            reopened = _reopen_required(fields, handled, attempts, ignored)
+                            if reopened:
+                                sess.log(f"Looking at {reopened} empty required field(s) again "
+                                         "with your instruction.")
                             last_llm_sig = ""
                             attempts.pop(key, None)
                             continue
@@ -1164,14 +1394,39 @@ def run_session(
                                 break
                         elif reply.lower() in FINISHED_WORDS:
                             pass  # the user fixed it; the loop re-reads and clicks on
-                        elif not _manual_attachment(reply, attach, page, sess, notes):
+                        elif _manual_attachment(reply, attach, page, sess, notes):
+                            pass
+                        elif _reply_picks_option(page, fields, reply, sess) is None:
                             notes.append(f"guidance from the candidate: {reply}")
+                            _reopen_required(fields, handled, attempts, ignored)
                     continue
                 if submit_field is not None:
                     # Watched: the user may open a form here (Easy Apply popup,
                     # an apply page in a new tab) instead of typing - the wait
                     # ends on its own and the new fields get filled.
-                    if _is_sign_in_page(fields):
+                    opener = _opens_the_application(submit_field, history)
+                    # A wizard's Next that is type=submit (EPAM's 7 steps, iCIMS's
+                    # Continue): still never clicked, but it is not the end of
+                    # the application, and "done" typed at it recorded step 1
+                    # of 7 as applied.
+                    step_only = not opener and _is_step_only(_field_label(submit_field))
+                    if opener:
+                        # Nothing filled, nothing clicked: this is the job's
+                        # page, and its button only opens the form. Still
+                        # never clicked by the agent - it is type=submit.
+                        asking = (
+                            f"This is the job's page, not the application form. Click "
+                            f"'{_field_label(submit_field)}' yourself to open the application "
+                            "and I will pick the form up as soon as it appears."
+                        )
+                    elif step_only:
+                        asking = (
+                            f"Everything I can fill on this step is done. Review it and click "
+                            f"'{_field_label(submit_field)}' yourself - it is a submit-type "
+                            "button, which I never click - and I will pick up the next step "
+                            "as soon as it appears."
+                        )
+                    elif _is_sign_in_page(fields):
                         # Not the form: nothing here has been applied for, so
                         # saying the filling is done would be a lie, and the
                         # wait below ends by itself when the form loads.
@@ -1194,6 +1449,12 @@ def run_session(
                             # the application was sent: that IS the answer.
                             outcome, outcome_text = "applied", "confirmed by the page"
                             break
+                        continue
+                    if (opener or step_only) and reply.lower() in CONTINUE_WORDS:
+                        # "done" here means "I opened it" or "I clicked Next",
+                        # as on the no-fields prompt - not that an application
+                        # went in. "applied" still records one.
+                        last_llm_sig = ""
                         continue
                     if reply.lower() in FINISHED_WORDS:
                         outcome, outcome_text = "applied", "submitted by you"
@@ -1287,6 +1548,11 @@ def run_session(
                 if browser.settle(page, browser.page_shape(page), ZERO_FIELD_SETTLE_MS):
                     continue          # it moved: read it again before paying for a call
             zero_settles = 0
+            # One more look before paying for a call: a closed banner may have
+            # appeared since the check at the top (Greenhouse's arrives about
+            # 0.7 s after load, then fades) - the top of the loop records it.
+            if untouched and page.url not in closed_prompted and _posting_gone(page):
+                continue
             sess.log(
                 f"Asking the model about {len(unresolved) + len(pending_adds)} field(s)…"
                 + (" (the first call can take a minute)" if llm_calls == 0 else "")
@@ -1398,18 +1664,21 @@ def run_session(
             # to fill in Argentina, Bangladesh, Brazil and eleven more
             # themselves. Keyed on `name` where there is one, exactly as
             # _unresolved_fields keys it.
+            # A "select all that apply" list is the same: Databricks' sanctions
+            # question was answered with "None of the above" and its ten other
+            # boxes were each reported as a required field to fill by hand.
+            # Only a shared `name` makes boxes one list - consent boxes that
+            # merely sit under one heading are separate questions.
             answered_groups = {
-                (f.get("name") or f.get("group") or "")
+                _choice_group(f)
                 for f in fields
-                if (f.get("type") or "").lower() == "radio"
-                and _field_key(f, _field_label(f)) in acted_keys
+                if _field_key(f, _field_label(f)) in acted_keys
             } - {""}
             for field in unresolved + adds_done:
                 key = _field_key(field, _field_label(field))
                 if not key or key in acted_keys:
                     continue
-                if ((field.get("type") or "").lower() == "radio"
-                        and (field.get("name") or field.get("group") or "") in answered_groups):
+                if _choice_group(field) in answered_groups - {""}:
                     handled.add(key)
                     continue
                 if not field.get("required"):
@@ -1442,8 +1711,10 @@ def run_session(
             # Not dead time: a click's side effects have to land before the
             # next read. Dropping this had the listing page's "Apply for this
             # job" clicked twice, because the tab it opens had not appeared
-            # yet when the loop came round and asked the model again.
-            page.wait_for_timeout(400)
+            # yet when the loop came round and asked the model again. A pass
+            # that clicked nothing has nothing to wait for.
+            if executed:
+                page.wait_for_timeout(400)
         else:
             outcome, outcome_text = "failed", f"gave up after {MAX_STEPS} steps"
 
@@ -1480,6 +1751,13 @@ def run_session(
         sess.finish("applied", "submitted by you")
         if not headless:
             time.sleep(CLOSE_GRACE_SECONDS)
+    except browser.BrowserUnavailable as exc:
+        # No page was ever opened. A queue behind this session stops here:
+        # the next job would meet the same closed browser.
+        message = str(exc)
+        sess.queue_stop = message
+        sess.log(f"Error: {message}")
+        sess.finish("failed", message)
     except Exception as exc:
         message = str(exc)
         # The user closing the Chrome window means "stop" - treat it as an
@@ -1673,10 +1951,32 @@ class Attachments:
         return str(compiled), "", result.pages
 
     # -- cover letter ---------------------------------------------------
-    def cover_letter(self, for_upload: bool) -> str:
+    def cover_letter(self, for_upload: bool, review: bool = False) -> str:
         """The accepted letter text, or '' when skipped. When for_upload, the
-        return value is a PDF path instead."""
+        return value is a PDF path instead. `review` opens the letter for
+        review even when it was accepted before (the "cover letter" command)."""
         job_id = str(self.job.get("job_id") or "")
+        if (self.letter_reused and not review and self.letter_text
+                and cover_letter.is_accepted(job_id)):
+            # Accepted in an earlier session: it goes in as it is. Ericsson
+            # was retried four times (Oct 2026), and every retry opened the
+            # review and rebuilt the PDF as if the letter were new.
+            self.letter_reused = False
+            company = self.job.get("company", "")
+            if not for_upload:
+                self.sess.log(f"Using the cover letter you accepted earlier for {company} "
+                              "(no new draft, no review; type 'cover letter' to change it).")
+                return self.letter_text
+            pdf, problem = cover_letter.build_pdf(
+                self.letter_text, self.out_dir, self.job, profile.load_profile())
+            if pdf is not None:
+                self.letter_pdf = str(pdf)
+                self.sess.log(f"Using the cover letter you accepted earlier for {company}: {pdf} "
+                              "(no new draft, no review; type 'cover letter' to change it).")
+                return str(pdf)
+            self.sess.log(f"The accepted cover letter's PDF did not build ({problem}); "
+                          "opening it for review.")
+            self.letter_reused = True
         if self.letter_reused:
             self.letter_reused = False
             self.sess.log(
@@ -1728,7 +2028,7 @@ class Attachments:
                 error = "the letter is empty"
                 continue
             self.letter_text = text
-            cover_letter.save(job_id, self.job, text)
+            cover_letter.save(job_id, self.job, text, accepted=True)
             if not for_upload:
                 # Pasted into a textarea, so nothing is uploaded - but the run
                 # folder still gets the same PDF an upload field would produce.
@@ -2218,9 +2518,51 @@ e => {
   for (let i = 0; i < 4 && node; i++, node = node.parentElement) {
     around.push((node.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 300));
   }
-  return JSON.stringify({own: own, around: around});
+  return JSON.stringify({own: own, around: around, accept: e.getAttribute('accept') || ''});
 }
 """
+
+# What the candidate is told about a human check on the page. The agent never
+# ticks one, and nothing here tries to make this browser pass one: these
+# checks look for browsers driven by automation, and getting past them would
+# be working around a site's bot protection.
+HUMAN_CHECK_NOTES = {
+    "cloudflare": (
+        "HUMAN CHECK: this page has Cloudflare's 'Verify you are human' box. I leave it to "
+        "you - tick it yourself in this window. It often refuses a browser that software "
+        "is driving, even when a person ticks it; if it keeps failing, finish this "
+        "application in your own browser (the job link is in its row) and use Mark "
+        "applied afterwards."
+    ),
+    "recaptcha": (
+        "HUMAN CHECK: this page has a reCAPTCHA. I leave it to you - complete it yourself "
+        "in this window before submitting."
+    ),
+    "hcaptcha": (
+        "HUMAN CHECK: this page has an hCaptcha. I leave it to you - complete it yourself "
+        "in this window before submitting."
+    ),
+}
+
+# How long file pickers are left to the browser after a photo box is clicked:
+# long enough to click it again and choose a file.
+PHOTO_PAUSE_S = 90
+
+# A picker for a picture of the candidate. CryptoMize's form (Oct 2 2026) had
+# an "Upload photo" box beside the resume; nothing on it named the resume or a
+# letter, only the resume was prepared, so every click on it was caught and
+# handed the resume PDF - and the candidate's own file dialog never opened.
+PHOTO_WORDS_RE = re.compile(
+    r"\b(photo(graph)?s?|picture|headshot|head shot|selfie|avatar|profile (pic|image)|"
+    r"passport[- ]size)\b", re.IGNORECASE)
+# accept="image/*", ".jpg,.png" and the like: images and nothing a document
+# could be saved as.
+_IMAGE_TYPES_RE = re.compile(r"^(image/[\w.+*-]+|\.(jpe?g|png|gif|webp|heic|bmp|tiff?))$", re.IGNORECASE)
+
+
+def _accepts_only_images(accept: str) -> bool:
+    kinds = [k.strip() for k in (accept or "").split(",") if k.strip()]
+    return bool(kinds) and all(_IMAGE_TYPES_RE.match(k) for k in kinds)
 
 
 def _picker_wants(context: dict[str, Any]) -> str:
@@ -2233,15 +2575,23 @@ def _picker_wants(context: dict[str, Any]) -> str:
     until something is specific.
     """
     own = context.get("own") or ""
+    # A box that takes only images cannot want a PDF, whatever it is near.
+    if _accepts_only_images(context.get("accept") or ""):
+        return "photo"
     if _letter_words(own):
         return "letter"
     if _resume_words(own):
         return "resume"
+    if PHOTO_WORDS_RE.search(own):
+        return "photo"
     for text in context.get("around") or []:
         letter = bool(_letter_words(text))
         resume = bool(_resume_words(text))
         if letter != resume:
             return "letter" if letter else "resume"
+        # The nearest text that names a photo and neither document.
+        if not (letter or resume) and PHOTO_WORDS_RE.search(text):
+            return "photo"
     return ""
 
 
@@ -2261,8 +2611,14 @@ def _arm_file_chooser(page, attach, sess) -> None:
     """
     if getattr(page, "_oea_chooser_armed", False):
         return
+    if time.monotonic() < getattr(page, "_oea_chooser_paused_until", 0):
+        return            # stepped aside for a photo picker; see below
 
     def handler(chooser) -> None:
+        # Clicks that queued up before the pause took effect: already told.
+        # CryptoMize (Oct 2 2026) logged the photo notice five times at once.
+        if time.monotonic() < getattr(page, "_oea_chooser_paused_until", 0):
+            return
         # A picker WE opened already knows what it is for: the tile we clicked
         # named the slot. Everything below is for a picker the candidate opens
         # by hand, where the only evidence is the page.
@@ -2273,6 +2629,24 @@ def _arm_file_chooser(page, attach, sess) -> None:
             except Exception:
                 context = {}
             wants = _picker_wants(context)
+        if wants == "photo":
+            # Not ours to fill, and while anything listens for pickers the
+            # browser opens no dialog of its own. So step aside: with the
+            # last listener gone Playwright stops intercepting, the
+            # candidate's next click opens their file dialog, and the loop
+            # re-arms once the pause is over.
+            try:
+                page.remove_listener("filechooser", handler)
+            except Exception:
+                pass
+            page._oea_chooser_armed = False
+            page._oea_chooser_paused_until = time.monotonic() + PHOTO_PAUSE_S
+            sess.log(
+                "That upload box wants a photo, not your resume, so I left it alone. "
+                f"Click it again: your file dialog will open (I stop catching file "
+                f"pickers for {PHOTO_PAUSE_S} seconds)."
+            )
+            return
         # Nothing on the page says which it is. One attachment prepared is
         # then the answer; both prepared and no way to choose is a question,
         # not a coin toss - the wrong file in a cover-letter slot is an
@@ -2306,10 +2680,12 @@ def _arm_file_chooser(page, attach, sess) -> None:
     try:
         page.on("filechooser", handler)
         page._oea_chooser_armed = True
-        sess.log(
-            "File pickers on this page will now be filled with your approved "
-            "attachment when you click an upload button."
-        )
+        if not getattr(page, "_oea_chooser_told", False):   # not again after a photo pause
+            page._oea_chooser_told = True
+            sess.log(
+                "File pickers on this page will now be filled with your approved "
+                "attachment when you click an upload button."
+            )
     except Exception:
         pass
 
@@ -2452,6 +2828,64 @@ def _click_upload_tile(page, field, attach, sess, wants: str, label: str, path: 
     return False
 
 
+# Is this element inside an application popup? A date picker's own calendar
+# (role=dialog "Choose Date") does not count: the question is about the
+# popup the FORM is in.
+IN_POPUP_JS = """
+(el) => {
+  const sel = '[aria-modal="true"], [role=dialog], [role=alertdialog], dialog[open]';
+  for (let d = el && el.closest(sel); d; d = d.parentElement && d.parentElement.closest(sel)) {
+    const named = (d.getAttribute('aria-label') || '') + ' ' + (d.className || '').toString();
+    if (!/react-datepicker|date-?picker|\\bchoose (a )?date\\b|\\bcalendar\\b/i.test(named)) return true;
+  }
+  return false;
+}
+"""
+POPUP_OPEN_JS = """
+() => Array.from(document.querySelectorAll('[aria-modal="true"], [role=dialog], dialog[open]'))
+  .some(d => { const r = d.getBoundingClientRect(); return r.width >= 260 && r.height >= 120
+      && !/react-datepicker|date-?picker|choose (a )?date|calendar/i.test(
+           (d.getAttribute('aria-label') || '') + ' ' + (d.className || '').toString()); })
+"""
+
+
+def _dismiss(page, locator=None, date: bool = False, toggle: bool = False) -> None:
+    """Close a list or a calendar left open, never the form.
+
+    Escape is what closes a popup list - and, pressed inside an application
+    popup, the popup itself: EPAM's closed under the candidate mid-form (Oct
+    2026), and LinkedIn's Easy Apply discards the application. So inside one,
+    a list is closed by leaving its box (react-select shuts its menu on blur;
+    Tab would PICK the highlighted row), and a date picker by Tab (which shuts
+    the calendar without choosing a day). Escape only where there is no popup
+    to lose."""
+    try:
+        if locator is not None and locator.count():
+            inside = bool(locator.evaluate(IN_POPUP_JS, timeout=1000))
+        else:
+            inside = bool(browser.target(page).evaluate(POPUP_OPEN_JS))
+    except Exception:
+        inside = True        # unsure: the side that cannot close the form
+    if not inside:
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        return
+    try:
+        if locator is None or not locator.count():
+            browser.target(page).evaluate("() => document.activeElement && document.activeElement.blur()")
+        elif date:
+            locator.press("Tab", timeout=1500)
+        elif toggle:
+            # A dropdown BUTTON: the click that opened its list closes it.
+            browser.click(locator, timeout=2000)
+        else:
+            locator.evaluate("el => el.blur()", timeout=1500)
+    except Exception:
+        pass
+
+
 def _close_opened(page, dialogs_before: int) -> None:
     """Escape, but only if the click put a dialog up that is still there."""
     if _visible_dialogs(page) <= dialogs_before:
@@ -2478,7 +2912,7 @@ def _manual_attachment(reply: str, attach, page, sess, notes) -> bool:
             notes.append("the candidate asked for the resume; attach it to any upload field")
         return True
     if lowered in LETTER_COMMANDS:
-        text = attach.cover_letter(for_upload=False)
+        text = attach.cover_letter(for_upload=False, review=True)
         if text:
             if attach.letter_pdf:
                 _arm_file_chooser(page, attach, sess)
@@ -2494,6 +2928,46 @@ def _manual_attachment(reply: str, attach, page, sess, notes) -> bool:
 TRANSIENT_ERROR_HINTS = ("529", "overloaded", "429", "rate limit", "timeout", "connection")
 
 
+MODEL_POLL_S = 0.25
+
+
+def _while_model_thinks(sess: ApplySession, call):
+    """Run a model call on a helper thread and keep the worker responsive.
+
+    The call is 10-40 s of waiting on the network, and the worker - the only
+    thread allowed to touch the browser - used to sit inside it: Dump pressed
+    then was refused as "busy", and Abort landed only when the call ended.
+    Now the worker polls: a dump is saved within a quarter second, showing
+    the page as it was when asked for, and an abort or park ends the wait at
+    once (the call finishes on its own in the background, its answer unused).
+    Nothing here touches the page except the dump, on this thread.
+    """
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="model")
+    try:
+        future = pool.submit(call)
+        while True:
+            try:
+                return future.result(timeout=MODEL_POLL_S)
+            except FutureTimeout:
+                sess.service_dumps()
+                # Sync Playwright delivers page events only while this thread
+                # talks to the browser. Five clicks on a photo box during a
+                # 38-second call queued up unanswered, no dialog opened, and
+                # all five landed when the call ended (CryptoMize, Oct 2 2026).
+                pump = getattr(sess, "pump", None)
+                if pump is not None:
+                    try:
+                        pump()
+                    except Exception:
+                        pass
+                if sess.aborted():
+                    raise Aborted("user aborted")
+                if sess.parked():
+                    raise Parked("parked by the candidate")
+    finally:
+        pool.shutdown(wait=False)
+
+
 def _invoke_with_retry(invoke, sess: ApplySession, prompt: str) -> tuple[ApplyPlan, int]:
     """One plan call with automatic backoff on transient provider errors
     (529 Overloaded and friends). Returns (plan, calls actually made)."""
@@ -2507,7 +2981,9 @@ def _invoke_with_retry(invoke, sess: ApplySession, prompt: str) -> tuple[ApplyPl
             time.sleep(delay)
         calls += 1
         try:
-            return invoke(SYSTEM, prompt, ApplyPlan), calls
+            return _while_model_thinks(sess, lambda: invoke(SYSTEM, prompt, ApplyPlan)), calls
+        except (Aborted, Parked):
+            raise
         except Exception as exc:
             message = str(exc).lower()
             if not any(hint in message for hint in TRANSIENT_ERROR_HINTS):
@@ -2564,9 +3040,14 @@ def _sweep(
     filled = 0
     _annotate(fields)
     taken_links = None
+    # Country first: a State or City list follows it. SuccessFactors puts
+    # "Country/Region of Residence" at the foot of the form, below State, so
+    # State was opened while no country was chosen and offered the whole
+    # world ("Aarhus, Abaco, Abidjan...") without Haryana (Oct 2026).
     # Entry checkboxes last: ticking "I currently work here" re-renders the
     # entry, and a text box written after that lands on a stale element.
     fields = sorted(fields, key=lambda f: (
+        resolver.rule_key(f) != "country",
         resolver.in_repeating_section(f)
         and (f.get("type") or "").lower() == "checkbox"))
     for field in fields:
@@ -2621,13 +3102,28 @@ def _sweep(
                 continue
         if resolved is None:
             resolved = resolver.resolve(field)
+        if resolved is None and key not in handled:
+            resolved = resolver.worked_here_before(field, str(job.get("company") or ""))
         if resolved is None and resolver.is_blank(field):
             where = _entry_location(field, fields, profile.load_profile())
             if where:
                 resolved = (where, "profile")
+        corrected_from = ""
+        if resolved is None and key not in handled:
+            # What the site pre-filled from its own reading of the CV, where
+            # the profile says otherwise (resolver.CORRECTABLE). Once per box:
+            # it is then handled, so a value the candidate puts back stands.
+            fix = resolver.correction(field)
+            if fix is not None:
+                resolved = (fix[0], "profile")
+                corrected_from = fix[1]
         if resolved is None:
             continue
         value, source = resolved
+        if corrected_from and not dry_run:
+            sess.log(f"Correcting {_brief(label, LOG_LABEL)}: the site filled in "
+                     f"'{_brief(corrected_from, LOG_VALUE)}', your profile says "
+                     f"'{_brief(value, LOG_VALUE)}'.")
         if source == "resume":
             if not pdf_path:
                 continue
@@ -2718,17 +3214,21 @@ def _repair_written(page, fields, written, sess) -> int:
 
 
 def _ask_watching(sess, holder, page, handled, fields, question: str,
-                  suggestion: str = "", fields_too: bool = True) -> str | None:
+                  suggestion: str = "", fields_too: bool = True,
+                  about: dict[str, Any] | None = None) -> str | None:
     """sess.ask(), but the page is watched meanwhile: when the user opens a
     form (an Easy Apply popup on the same page, an apply page in a new tab)
     or submits instead of typing, the wait ends and None comes back so the
     loop acts on the page. The user decides what to click; the agent only
     notices. fields_too=False (a field question) ignores new empty fields
-    and reacts only to a new page, a new tab or a confirmation."""
+    and reacts only to a new page, a new tab or a confirmation - or, given
+    `about`, to that field leaving the page."""
     baseline = {_field_key(f, _field_label(f)) for f in _unresolved_fields(fields, handled)}
     holder["watch"] = {
         "keys": baseline, "handled": handled, "url": _safe_url(page), "ticks": 0,
+        "fillable": _fillable_keys(fields),
         "fields_too": fields_too,
+        "about": _field_key(about, _field_label(about)) if about else "",
         # Wording that was on the page before must not re-trigger - and the
         # session's baseline, not a fresh one, so that a job description
         # ending "thank you for your application" does not switch detection
@@ -2736,7 +3236,7 @@ def _ask_watching(sess, holder, page, handled, fields, question: str,
         "submitted_seen": (
             holder.get("submitted_seen")
             if holder.get("submitted_seen") is not None
-            else _submitted_marks(browser.full_page_text(page))
+            else _page_submitted_marks(page)
         ),
     }
     holder["changed"] = ""
@@ -2750,6 +3250,9 @@ def _ask_watching(sess, holder, page, handled, fields, question: str,
             sentence = (holder.get("watch") or {}).get("confirmation") or ""
             sess.log("The page confirms the application was sent"
                      + (f": '{_brief(sentence, 80)}'" if sentence else "."))
+        elif exc.reason == "gone":
+            sess.log("That question's box is no longer on the page - you moved on; "
+                     "reading what is there now.")
         else:
             sess.log("The page changed (a form opened or a new page loaded); reading it.")
         return None
@@ -2757,25 +3260,46 @@ def _ask_watching(sess, holder, page, handled, fields, question: str,
         holder["watch"] = None
 
 
-def _page_grew(context, page, watch: dict[str, Any]) -> str:
+def _page_grew(context, page, watch: dict[str, Any], thorough: bool = True) -> str:
     """Why the wait should end: 'tab' (another tab in front), 'url', 'submitted'
     (the page now confirms the application went through - LinkedIn's "Your
     application was sent to X"), 'fields' (new empty fields), or '' for no
-    change. Cheap enough to run every couple of seconds."""
+    change. `thorough` off checks only the tab and the address."""
     active = browser.current_page(context, page)
     if active is not None and active is not page:
         return "tab"
     if _safe_url(page) != watch["url"]:
         return "url"
-    new_marks = _submitted_marks(browser.full_page_text(page)) - watch.get("submitted_seen", frozenset())
+    if not thorough:
+        return ""
+    new_marks = _page_submitted_marks(page) - watch.get("submitted_seen", frozenset())
     if new_marks:
         watch["confirmation"] = sorted(new_marks)[0]   # for the transcript
         return "submitted"
     if not watch.get("fields_too", True):
+        # The box the question is about has left the page: the candidate
+        # moved on without answering. EPAM (Oct 2026): "Which office
+        # location(s)?" sat in the chat while steps 4 and 5 went by in the
+        # same address, and the agent saw neither of them.
+        about = watch.get("about")
+        if about and about not in {_field_key(f, _field_label(f)) for f in browser.snapshot(page)}:
+            return "gone"
         return ""
     fields = browser.snapshot(page)
     keys = {_field_key(f, _field_label(f)) for f in _unresolved_fields(fields, watch["handled"])}
-    return "fields" if keys - watch["keys"] else ""
+    if keys - watch["keys"]:
+        return "fields"
+    # A new step whose boxes the site already filled. EPAM's step 2 (Oct 2026)
+    # arrived with First and Last Name filled from the CV and only an optional
+    # Pronouns box empty: no new EMPTY field, so the watch slept through the
+    # whole step and woke only on step 3.
+    if "fillable" in watch and _fillable_keys(fields) - watch["fillable"]:
+        return "fields"
+    return ""
+
+
+def _fillable_keys(fields: list[dict[str, Any]]) -> set[str]:
+    return {_field_key(f, _field_label(f)) for f in fields if _accepts_value(f)}
 
 
 APPLY_CHOICE_RE = re.compile(
@@ -2801,6 +3325,7 @@ def _apply_choices(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The page's apply-path controls, in DOM order. Two or more means the
     site is offering a choice of HOW to apply."""
     out = []
+    seen: set[str] = set()
     for f in fields:
         clickable = f.get("tag") in ("button", "a") or f.get("role") == "button"
         if not clickable:
@@ -2813,6 +3338,14 @@ def _apply_choices(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # "Please read our Privacy Notice before you apply" is a link, not a way to apply.
         if len(text) > 40 or re.search(r"\b(privacy|notice|policy|terms)\b", text, re.IGNORECASE):
             continue
+        # The same button twice is one way to apply. Ashby puts "Apply for
+        # this Job" above and below the description, and the candidate was
+        # asked to choose between "Apply for this Job / Apply for this Job"
+        # (Proximal, Oct 2 2026). The first one stands for both.
+        same = resolver.plain(text)
+        if same in seen:
+            continue
+        seen.add(same)
         out.append(f)
     return out
 
@@ -2874,25 +3407,52 @@ def _redo_answer(page, fields, holder, job, attach, sess, reply: str) -> bool:
     write whatever comes back. True when the reply was a redo."""
     answered = (holder or {}).get("answered") or {}
     match = REDO_RE.match(reply or "")
-    if not match or not answered:
+    if not match:
         return False
     words = (match.group(2) or "").strip()
+    if not answered and not words:
+        return False
     key, entry = _redo_target(answered, words)
-    if key is None:
+    field = None
+    if key is not None:
+        field = next((f for f in fields if _field_key(f, _field_label(f)) == key), None)
+        if field is None:
+            sess.log(f"'{entry['label'][:60]}' is not on this step any more; fix it in the browser.")
+            return True
+    elif words:
+        # Not an answer of the candidate's, but a box on the page by name:
+        # "fix date of birth" after the model filled it. Reopening the last
+        # answer instead - Professional Details - is what happened on
+        # CryptoMize (Oct 2 2026).
+        field = _field_named(fields, words)
+        if field is None:
+            sess.log(f"Nothing on this step is called '{_brief(words, 40)}'; fix it in the browser.")
+            return True
+        entry = {"label": _field_label(field), "value": str(field.get("value") or "")}
+    else:
         sess.log("Nothing to redo: I have not written an answer to that one.")
         return True
-    field = next((f for f in fields if _field_key(f, _field_label(f)) == key), None)
-    if field is None:
-        sess.log(f"'{entry['label'][:60]}' is not on this step any more; fix it in the browser.")
-        return True
     label = entry["label"]
-    answer = _settle_draft(
-        sess, attach, job, label, entry["value"],
-        f"Editing '{_brief(label, LOG_LABEL)}'. Send the new text, 'llm: <what to change>' "
-        "to redraft, or skip to leave it as it is.",
-    )
+    is_date = (field.get("type") or "").lower() == "date"
+    shown = entry["value"]
+    if is_date and shown:
+        # The browser draws a date box in its own order (10/03/1997 for a US
+        # build), which reads as March to anyone in India. Say it in words.
+        spelled = _spelled_date(shown)
+        prompt = (f"Editing '{_brief(label, LOG_LABEL)}': it holds {shown}, that is {spelled}. "
+                  "Send the right date (DD/MM/YYYY), or skip to leave it.")
+    else:
+        prompt = (f"Editing '{_brief(label, LOG_LABEL)}'. Send the new text, 'llm: <what to "
+                  "change>' to redraft, or skip to leave it as it is.")
+    answer = _settle_draft(sess, attach, job, label, shown, prompt)
     if answer is None:
         return True
+    if is_date:
+        iso = resolver.iso_date(answer)
+        if not iso:
+            sess.log(f"'{_brief(answer, 30)}' is not a date I can read; send it as DD/MM/YYYY.")
+            return True
+        answer = iso
     try:
         _apply_value(page, field, answer, "", sess, source="redo")
         _remember_answered(holder, field, label, answer)
@@ -2902,8 +3462,10 @@ def _redo_answer(page, fields, holder, job, attach, sess, reply: str) -> bool:
 
 
 def _redo_target(answered: dict[str, Any], words: str):
-    """Which earlier answer to reopen: the one the words name, else the most
-    recent."""
+    """Which earlier answer to reopen: the one the words name, or - only
+    when no words were given - the most recent. Words that name none of
+    them return nothing: they may name a box the candidate never answered,
+    and the most recent answer is then the wrong thing to reopen."""
     if words:
         wanted = {w for w in re.findall(r"[a-z]{3,}", resolver.plain(words))}
         best, score = None, 0
@@ -2914,8 +3476,32 @@ def _redo_target(answered: dict[str, Any], words: str):
                 best, score = key, hits
         if best is not None:
             return best, answered[best]
+        return None, None
     key = next(reversed(answered), None)
     return (key, answered[key]) if key else (None, None)
+
+
+def _field_named(fields: list[dict[str, Any]], words: str) -> dict[str, Any] | None:
+    """The one box on the page whose label holds every word named ("date of
+    birth" -> "Date of Birth *"), or None when none does or several do."""
+    wanted = {w for w in re.findall(r"[a-z]{3,}", resolver.plain(words))} - {"the", "and"}
+    if not wanted:
+        return None
+    hits = [f for f in fields
+            if f.get("tag") in ("input", "textarea", "select")
+            and wanted <= set(re.findall(r"[a-z]{3,}", resolver.plain(_field_label(f))))]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _spelled_date(iso: str) -> str:
+    """'1997-10-03' -> '3 October 1997'; the text itself when it is not ISO."""
+    from datetime import date
+
+    try:
+        when = date.fromisoformat(iso.strip())
+    except ValueError:
+        return iso
+    return f"{when.day} {when.strftime('%B')} {when.year}"
 
 
 def _warn_if_meant_earlier(holder, instruction: str, sess) -> None:
@@ -2959,6 +3545,72 @@ def _unanswered_questions(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
     you'd like us to know?"), for reporting what was left out. A required one
     is not "left empty (optional)" - it is the form refusing to go on."""
     return [f for f in _empty_question_boxes(fields) if not f.get("required")]
+
+
+def _reply_picks_option(page, fields, reply: str, sess) -> dict[str, Any] | None:
+    """The candidate answered an empty dropdown by naming one of its options.
+
+    Veralto's Field of study (Oct 2 2026): the agent could not place
+    "Computer Science", retired the box, and said the step was filled in.
+    The candidate typed "Computer and Information Science" - the option's
+    exact name - and was asked the same thing again, because a reply there
+    was only a note for a model that, with nothing left to fill, was never
+    called. An exact option name in exactly one empty dropdown is an
+    instruction with one meaning, so it is carried out here. Native selects
+    only, whose full list can be read; anything ambiguous is left alone.
+    """
+    text = (reply or "").strip()
+    if not text or len(text) > 120:
+        return None
+    wanted = resolver.plain(text)
+    hits: list[tuple[dict[str, Any], str]] = []
+    for field in fields:
+        if field.get("tag") != "select" or not resolver.is_blank(field):
+            continue
+        options = [str(o) for o in (field.get("options") or [])]
+        found = next((o for o in options if resolver.plain(o) == wanted), None)
+        if found is None:
+            # The snapshot keeps only the first options of a long list.
+            try:
+                every = _all_select_options(
+                    browser.locate(page, field["id"], str(field.get("elid") or "")))
+            except Exception:
+                every = []
+            found = next((o for o in every if resolver.plain(o) == wanted), None)
+        if found is not None:
+            hits.append((field, found))
+    if len(hits) != 1:
+        return None
+    field, option = hits[0]
+    try:
+        _apply_value(page, field, option, "", sess, source="you")
+    except Exception as exc:
+        sess.log(f"Could not select '{_brief(option, LOG_VALUE)}' for "
+                 f"{_brief(_field_label(field), LOG_LABEL)}: {_short(exc)}")
+        return None
+    return field
+
+
+def _reopen_required(fields, handled: set[str], attempts: dict[str, int],
+                     ignored: dict[str, int]) -> int:
+    """Put empty REQUIRED fields the loop had given up on back in play.
+
+    Guidance typed at "This step is filled in" went into the notes for the
+    next model call - but a field retired after its failed attempts is not
+    in `unresolved`, so no call was made and the guidance was never read.
+    Reopening them is what lets "put 2019 in the graduation year" land.
+    """
+    count = 0
+    for field in fields:
+        if not field.get("required") or not resolver.is_blank(field):
+            continue
+        key = _field_key(field, _field_label(field))
+        if key in handled or key in ignored or key in attempts:
+            handled.discard(key)
+            attempts.pop(key, None)
+            ignored.pop(key, None)
+            count += 1
+    return count
 
 
 def _answer_on_request(page, fields, handled, reply: str, job, attach, sess,
@@ -3164,7 +3816,10 @@ def _run_action(
             f"the claim that this is finished was not confirmed by the candidate: {reply}"
             " - do not report it done again unless the page itself says so"
         )
-        return "skipped"
+        # "refused", not "skipped": the loop re-plans on a refusal with the
+        # note in hand. As "skipped" the page signature was unchanged, so the
+        # candidate's instruction sat unread for three idle passes.
+        return "refused"
     if action.action == "wait":
         page.wait_for_timeout(1500)
         return "skipped"
@@ -3312,7 +3967,7 @@ def _run_action(
                     # answer was a "check" to a question the page had outlived.
                     answer = _ask_watching(
                         sess, holder, page, handled, fields, question,
-                        suggestion=proposed, fields_too=False,
+                        suggestion=proposed, fields_too=False, about=field,
                     )
                     if answer is None:
                         return "submitted" if holder.get("changed") == "submitted" else "stale"
@@ -3382,6 +4037,15 @@ def _run_action(
                 handled.add(key)
             return "asked"
         if (field.get("type") or "").lower() == "radio":
+            if field.get("group_ids"):
+                # A collapsed group is a choice, and the answer IS the choice
+                # ("India" to a 46-option nationality group). Handing it on as
+                # "yes" asked _pick_grouped_radio for an option called "yes",
+                # which matched nothing, and the cached answer repeated that
+                # on every pass until the field was retired.
+                return _guarded_execute(
+                    page, action, field, pdf_path, sess, history, notes, value=answer
+                )
             # The answer is to the group's question ("No" to sponsorship), not
             # "yes, tick this option" - act only on the option that matches it,
             # whatever the model planned on this one.
@@ -3497,11 +4161,18 @@ def _is_advance_button(field: dict[str, Any]) -> bool:
         return False
     for raw in (field.get("text", ""), field.get("label", ""), field.get("value", "")):
         candidate = (raw or "").strip().lower()
-        if candidate and any(
-            re.match(rf"{re.escape(word)}\b", candidate) for word in ADVANCE_WORDS
-        ):
+        if candidate and _ADVANCE_RE.match(candidate):
             return True
     return False
+
+
+def _is_step_only(label: str) -> bool:
+    """A type=submit button that only moves to the next step (EPAM's Next,
+    iCIMS's Continue): "done" typed at it means "I clicked it", not that the
+    application went in. "Review and Submit" is the end, not a step: "review"
+    alone read "done" there as "I clicked Next" and recorded nothing."""
+    text = (label or "").strip().lower()
+    return _ADVANCE_RE.match(text) is not None and not re.search(r"\bsubmit\b", text)
 
 
 def _find_advance(fields: list[dict[str, Any]], handled: set[str]) -> dict[str, Any] | None:
@@ -3548,7 +4219,7 @@ def _maybe_remember(
     topic_matched = key in answers.TOPICS
     if kind == "sensitive":
         reply = sess.ask(
-            f"Should I remember this answer for future applications? (yes/no)"
+            "Should I remember this answer for future applications? (yes/no)"
         )
         if not _is_affirmative(reply):
             return
@@ -3829,10 +4500,20 @@ def _execute(
     if locator.count() == 0:
         raise StaleField(_field_label(field))
     label = _field_label(field)
+    # Only what can be seen can be scrolled to. A hidden box waited out the
+    # full five seconds here: DentCare's permanent address, hidden by ticking
+    # "same as present address", cost 6.5 s a box, five boxes running (Oct
+    # 2026). A file input or a native tick box is often hidden behind the
+    # control that stands in for it; those are worked on hidden.
     try:
-        locator.scroll_into_view_if_needed(timeout=5000)
+        shown = locator.is_visible()
     except Exception:
-        pass
+        shown = True
+    if shown:
+        try:
+            locator.scroll_into_view_if_needed(timeout=5000)
+        except Exception:
+            pass
 
     if action.action == "click":
         how = browser.click(locator, timeout=15000)
@@ -3852,7 +4533,9 @@ def _execute(
     chosen = action.value if value is None else value
     if action.action == "check":
         # "check" means tick unless the model explicitly wrote a negative value.
-        wants_on = True if not chosen.strip() else _is_affirmative(chosen)
+        # Naming the box itself ("none" for "None of the above") is a tick.
+        wants_on = True if not chosen.strip() else (
+            _names_option(field, chosen) or _is_affirmative(chosen))
         _apply_value(page, field, chosen, pdf_path, sess, wants_on=wants_on)
         return
     if action.action == "uncheck":
@@ -3971,7 +4654,8 @@ def _apply_value(
     # pass reads the page again and finds them under their new ones. A file
     # input and a native tick box are routinely invisible (the styled control
     # stands in front), so for those only "gone" counts.
-    problem, _ = browser.await_usable(locator)
+    problem, _ = browser.await_usable(
+        locator, hidden_ok=field_type in ("file", "checkbox", "radio"))
     if problem == "gone" or (problem and field_type not in ("file", "checkbox", "radio")):
         raise browser.Unreachable(browser.PROBLEMS[problem])
 
@@ -4029,7 +4713,8 @@ def _apply_value(
         return
 
     if field_type in ("checkbox", "radio"):
-        on = wants_on if wants_on is not None else _is_affirmative(value)
+        on = wants_on if wants_on is not None else (
+            _names_option(field, value) or _is_affirmative(value))
         if not on and field_type == "radio":
             raise ValueError(
                 "a radio option cannot be unchecked; choose the option that should be selected"
@@ -4229,14 +4914,23 @@ def _set_checked(page, locator, field: dict[str, Any], on: bool) -> None:
                 f"clicked '{_field_label(field)}' but it is still "
                 f"{'unticked' if on else 'ticked'}")
         return
+    # A box painted out of existence behind its label (EPAM's 0x0 relocation
+    # Yes / No, Oct 2026) can never pass check()'s visibility wait: it spent
+    # its full 8 s timing out before the fallbacks below ticked it at once.
     try:
-        if on:
-            locator.check(timeout=8000)
-        else:
-            locator.uncheck(timeout=8000)
-        return
-    except Exception as exc:
-        first = exc
+        shown = locator.is_visible()
+    except Exception:
+        shown = True
+    first: Exception = RuntimeError(f"'{_field_label(field)}' could not be ticked")
+    if shown:
+        try:
+            if on:
+                locator.check(timeout=8000)
+            else:
+                locator.uncheck(timeout=8000)
+            return
+        except Exception as exc:
+            first = exc
 
     def state() -> bool | None:
         try:
@@ -4271,8 +4965,11 @@ DATE_BOX_LABEL_RE = re.compile(
     r"^(from|to|start|end|start date|end date|date|date of birth|dob)\s*\*?$", re.IGNORECASE
 )
 # "startDate", "start_date", "date" - but never "candidate" or "update",
-# whose fill would otherwise be refused as "not a date".
-DATE_BOX_NAME_RE = re.compile(r"(?<![A-Za-z])date\b|[a-z]Date\b|\bdob\b")
+# whose fill would otherwise be refused as "not a date". And with a capital
+# after it: EPAM's "startDateAtRecentEmployer" (Oct 2026) was read as a
+# typeahead, its calendar's month cells as suggestions, and the Escape that
+# closed that "list" closed the application popup.
+DATE_BOX_NAME_RE = re.compile(r"(?<![A-Za-z])date\b|[a-z]Date(?![a-z])|\bdob\b")
 _MONTH_NAMES = ("january", "february", "march", "april", "may", "june", "july",
                 "august", "september", "october", "november", "december")
 
@@ -4347,6 +5044,9 @@ def _type_date_box(page, locator, value: str, label: str, prefix: str, sess,
     wipes the box when it closes with nothing selected. So a box that comes
     back empty is filled from the calendar itself."""
     month, day, year = _parse_date(value)
+    if year and month is None and day is None:
+        _type_year_box(page, locator, year, label, prefix, sess, field)
+        return
     mask = _date_mask(field, _shown(locator)) or ("MM/YYYY" if day is None else "MM/DD/YYYY")
     if day is None and "DD" in mask and field.get("work_entry") is not None:
         # A job's start month is what matters; the profile holds no day and
@@ -4362,10 +5062,7 @@ def _type_date_box(page, locator, value: str, label: str, prefix: str, sess,
     except Exception:
         pass
     locator.press_sequentially(text, delay=30, timeout=10000)
-    try:
-        page.keyboard.press("Escape")   # close the date picker without picking
-    except Exception:
-        pass
+    _dismiss(page, locator, date=True)   # close the date picker without picking
     if _same_digits(_shown(locator), text):
         sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {text}")
         return
@@ -4380,8 +5077,79 @@ def _type_date_box(page, locator, value: str, label: str, prefix: str, sess,
     )
 
 
+def _type_year_box(page, locator, year: int, label: str, prefix: str, sess,
+                   field: dict[str, Any]) -> None:
+    """A year and nothing else - EPAM's "Education Years" (Oct 2026), where
+    the profile knows 2015-2019 and no month. The year is typed as it is,
+    then chosen in the picker's year grid. A box that will only take a month
+    or a day as well is refused by name: a month made up for the candidate
+    would be a claim about them."""
+    mask = _date_mask(field, _shown(locator))
+    if mask and mask != "YYYY":
+        raise ValueError(f"'{label}' wants a full date ({mask}); the profile has only the year {year}")
+    locator.focus(timeout=5000)
+    try:
+        locator.fill("", timeout=3000)
+    except Exception:
+        pass
+    locator.press_sequentially(str(year), delay=30, timeout=10000)
+    _dismiss(page, locator, date=True)
+    if _digits(_shown(locator)) == str(year):
+        sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {year}")
+        return
+    if _pick_year_in_calendar(page, locator, year) and str(year) in _shown(locator):
+        sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {_shown(locator)} (chosen in the date picker)")
+        return
+    try:
+        locator.fill("", timeout=3000)
+    except Exception:
+        pass
+    raise ValueError(f"'{label}' did not take the year {year} on its own and wants a month "
+                     "or a day as well, which the profile does not hold")
+
+
+YEAR_CELL = ".react-datepicker__year-text, [class*='year-text']"
+
+
+def _pick_year_in_calendar(page, locator, year: int) -> bool:
+    """Click the year in a year-only picker (react-datepicker showYearPicker:
+    a grid of twelve years, paged by the arrows)."""
+    try:
+        browser.click(locator, timeout=5000)
+        page.wait_for_timeout(300)
+        calendar = browser.target(page).locator(CALENDAR).last
+        if not calendar.count() or not calendar.locator(YEAR_CELL).count():
+            return False
+        for _ in range(20):
+            cell = calendar.locator(YEAR_CELL).filter(has_text=re.compile(rf"^\s*{year}\s*$"))
+            if cell.count():
+                browser.click(cell.first, timeout=3000)
+                page.wait_for_timeout(250)
+                return True
+            shown = [int(y) for y in re.findall(r"(?:19|20)\d{2}", calendar.inner_text())]
+            if not shown or min(shown) <= year <= max(shown):
+                # In view but not a cell that can be clicked (disabled, or
+                # only in a header): paging on would only move away from it.
+                return False
+            nav = calendar.locator(PREV_NAV if year < min(shown) else NEXT_NAV)
+            if not nav.count():
+                return False
+            browser.click(nav.first, timeout=3000)
+            page.wait_for_timeout(120)
+        return False
+    except Exception:
+        return False
+
+
+_NON_DIGIT_RE = re.compile(r"\D")
+
+
+def _digits(text: str) -> str:
+    return _NON_DIGIT_RE.sub("", text or "")
+
+
 def _same_digits(shown: str, text: str) -> bool:
-    return re.sub(r"\D", "", shown or "") == re.sub(r"\D", "", text or "")
+    return _digits(shown) == _digits(text)
 
 
 # react-datepicker's own class names (Esko's DOM dump carries them:
@@ -4479,17 +5247,15 @@ def _type_date_part(page, locator, value: str, label: str, prefix: str, sess) ->
     shown = _shown(locator)
     # "07" is shown as "7" by the widget: the same month.
     held = _holds(locator, digits) or _same_number(shown, digits)
-    try:
-        page.keyboard.press("Escape")  # close a picker the focus may have opened
-    except Exception:
-        pass
+    # Not Tab: the segments move on by themselves (see the docstring).
+    _dismiss(page, locator)  # close a picker the focus may have opened
     if not held:
         raise ValueError(f"typed '{digits}' into '{label}' but it shows '{shown}'")
     sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {digits}")
 
 
 def _same_number(shown: str, typed: str) -> bool:
-    a, b = re.sub(r"\D", "", shown or ""), re.sub(r"\D", "", typed or "")
+    a, b = _digits(shown), _digits(typed)
     return bool(a) and bool(b) and int(a) == int(b)
 
 
@@ -4523,7 +5289,7 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
     for query in queries:
         before = {resolver.plain(c) for c in _chips(locator)}
         try:
-            page.keyboard.press("Escape")   # close a results popup left open by the last pick
+            _dismiss(page, locator)         # close a results popup left open by the last pick
             locator.focus(timeout=3000)     # a click would be blocked by that popup
             locator.fill("")
             locator.press_sequentially(query, delay=25, timeout=15000)
@@ -4545,10 +5311,7 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
             chosen = _auto_pick(added, value, query)
             if chosen:
                 sess.log(f"{prefix}Selected '{chosen}' for {_brief(label, LOG_LABEL)} (typeahead, the search's only hit)")
-                try:
-                    page.keyboard.press("Escape")
-                except Exception:
-                    pass
+                _dismiss(page, locator)
                 return True
             if tick == 8 and not pressed_enter:   # ~1.2s in, as before
                 # Workday searches only on Enter: typing alone shows nothing
@@ -4581,8 +5344,8 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
             except Exception:
                 pass
         if index < 0:
+            _dismiss(page, locator)
             try:
-                page.keyboard.press("Escape")
                 locator.fill("")  # leave no half-typed text behind
             except Exception:
                 pass
@@ -4612,7 +5375,7 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
             if multi and not any(resolver.plain(c) == resolver.plain(chosen) for c in _chips(locator)):
                 locator.press("Enter")
             else:
-                page.keyboard.press("Escape")
+                _dismiss(page, locator)
             page.wait_for_timeout(300)
         except Exception:
             pass
@@ -4661,6 +5424,11 @@ def _is_skills_box(field: dict[str, Any]) -> bool:
     section = str(field.get("section") or "")
     # An open question is never a skills list, however often it says "skill".
     if "?" in label or len(label) > 80:
+        return False
+    # ONE skill: EPAM's "Primary Skill*" (Oct 2026) is a single-choice
+    # dropdown, and the whole list was typed at it one skill at a time. The
+    # profile's first skill is its answer (resolver's primary_skill).
+    if re.match(r"^\s*(primary|main|core) skill\s*[:*]?\s*$", label, re.IGNORECASE):
         return False
     if SKILLS_BOX_RE.search(label):
         return True
@@ -5283,10 +6051,7 @@ def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess,
     """Open a dropdown BUTTON and click the option for `value`. No match:
     close it and say which options there are, so the model or the user can
     pick one; nothing is chosen by guesswork."""
-    try:
-        page.keyboard.press("Escape")  # close any popup left open by an earlier field
-    except Exception:
-        pass
+    _dismiss(page)  # close any popup left open by an earlier field
     browser.click(locator, timeout=5000)
     # Workday fills its lists lazily: "Select One" alone means not loaded yet.
     options, texts, index = None, [], -1
@@ -5299,10 +6064,7 @@ def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess,
     if index < 0 and options is not None:
         options, texts, index = _scroll_for_match(page, locator, value, options, texts, prefer)
     if index < 0:
-        try:
-            page.keyboard.press("Escape")
-        except Exception:
-            pass
+        _dismiss(page, locator, toggle=True)
         shown = ", ".join(t for t in texts[:15] if t) or "(no options appeared)"
         raise ValueError(f"'{value}' matches none of the dropdown's options; pick one of: {shown}")
     browser.click(options.nth(index), timeout=5000)
@@ -5379,11 +6141,15 @@ def _type_to_filter(page, locator, text: str, baseline: list[str] | None = None,
         locator.fill(text, timeout=10000)
     except Exception:
         return _wait_for_options(page, locator)
-    visible, shown = _wait_for_change(page, locator, baseline)
+    visible, shown = _settled_filter(page, locator, baseline, text)
     # Unchanged means the box never ran its filter - and "unchanged" includes
     # empty-to-empty, which is where the fallback is needed most: a widget
     # that ignored the fill shows either the list it had or nothing at all.
-    if shown != baseline:
+    # A list that CHANGED but is still long and shows nothing like the text
+    # has not filtered either: SuccessFactors' State box (Oct 2026) re-drew
+    # its 200-row page of the world on fill() and filtered only on keys, so
+    # "Haryana" was looked for among "Aarhus, Abaco, Abidjan...".
+    if shown != baseline and _filtered_on(shown, text):
         return visible, shown
     # Say so. This fallback failed silently on Rippling's country box and left
     # nothing in the transcript to say whether it had even been tried, which
@@ -5400,11 +6166,49 @@ def _type_to_filter(page, locator, text: str, baseline: list[str] | None = None,
     except Exception as exc:
         note(f"typing it failed ({_short(exc)}); the list is as it was")
         return visible, shown
-    visible, shown = _wait_for_change(page, locator, baseline)
+    visible, shown = _settled_filter(page, locator, baseline, text)
     if shown == baseline:
         note("typing moved nothing either - this widget is not filtering on "
              "what is typed at it")
     return visible, shown
+
+
+def _settled_filter(page, locator, baseline: list[str], text: str):
+    """The rows once the list has answered `text`, not merely changed.
+
+    SuccessFactors' State box (Oct 2026) went from its 200-row page of the
+    world, through an EMPTY list while it re-drew, to "Haryana" a second
+    later; the empty moment read as "no hits" and the search was over. So a
+    list that is empty, or long and naming nothing of the text, is given a
+    little longer to become the filter's answer."""
+    visible, shown = _wait_for_change(page, locator, baseline)
+    if shown == baseline:
+        return visible, shown
+    waited = 0
+    while waited < 2500:
+        rows = [s for s in shown if s and not _PLACEHOLDER_ROW_RE.match(s)]
+        if rows and _filtered_on(shown, text):
+            break
+        if not rows and waited >= 1200:
+            break        # a real "no hits", most likely
+        page.wait_for_timeout(150)
+        waited += 150
+        visible, shown = _visible_options(page, locator)
+    return visible, shown
+
+
+# Rows a filter on `text` could have left: any naming it, or a short list
+# (a search with few or no hits). A long list naming nothing of it is the
+# whole catalogue, whatever else changed about it.
+FILTERED_MAX_ROWS = 12
+
+
+def _filtered_on(shown: list[str], text: str) -> bool:
+    rows = [s for s in shown if s and not _PLACEHOLDER_ROW_RE.match(s)]
+    want = resolver.plain(text)
+    if not want or len(rows) <= FILTERED_MAX_ROWS:
+        return True
+    return any(want in resolver.plain(row) for row in rows)
 
 
 # The control a custom dropdown really listens to. react-select renders its
@@ -5522,6 +6326,13 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         was = ""
     visible, shown = _type_to_filter(page, locator, value, opening, sess, label, prefix)
     index = _choose_option(shown, value, prefer)
+    if index < 0 and _real_suggestions(shown):
+        # A list still showing rows, worded another way: "Available now" for
+        # "Immediate Joiner".
+        for alt in resolver.equivalents(value):
+            index = _choose_option(shown, alt, prefer)
+            if index >= 0:
+                break
     if index < 0 and opening and not _real_suggestions(shown):
         # The box filters on what is typed, and the profile's wording is not
         # the option's: "Immediate Joiner" typed at a list of "Immediate /
@@ -5531,6 +6342,11 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         # in hand. Clear the box to get it back, then take that option by its
         # own name.
         want = _choose_option(opening, value, prefer)
+        for alt in resolver.equivalents(value) if want < 0 else ():
+            # "Immediate Joiner" against EPAM's "Available now".
+            want = _choose_option(opening, alt, prefer)
+            if want >= 0:
+                break
         if want >= 0:
             wanted_text = opening[want]
             try:
@@ -5594,10 +6410,21 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
     if index >= 0:
         try:
             visible.nth(index).click(timeout=2500)
+            clicked = True
+        except Exception:
+            clicked = False
+        if clicked:
+            # What the box shows now is the evidence, not the row we clicked.
+            # A widget that shows nothing in its own box (a chip list) cannot
+            # be checked this way and is taken at its word, as before.
+            page.wait_for_timeout(100)
+            taken = _combobox_shows(locator)
+            if taken and not _same_answer(taken, shown[index]):
+                raise ValueError(
+                    f"picked '{_brief(shown[index], 40)}' but the box shows "
+                    f"'{_brief(taken, 40)}' - not entered")
             sess.log(f"{prefix}Selected '{shown[index]}' for {_brief(label, LOG_LABEL)} (dropdown)")
             return "picked"
-        except Exception:
-            pass
     if len(shown) > 1 or narrowed_list or (opening and not shown):
         # Enter takes whatever the widget has highlighted, so it is never the
         # way out of a narrowed list: one wrong row left standing would be
@@ -5612,11 +6439,18 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
             locator.fill(was, timeout=10000)
         except Exception:
             pass
+        # And close the list. Left open, SuccessFactors' State menu lay over
+        # the next box, and "How did you hear about this position?" could not
+        # be clicked for three seconds (Oct 2026).
+        _dismiss(page, locator)
         # Say which of the two it was. "matches none of the options; pick one
         # of:" followed by nothing is the message a Greenhouse run produced
         # three times, and it reads as "your answer is wrong" when what
         # actually happened is that no list was ever read.
-        listed = ", ".join(t for t in shown[:12] if t)
+        # A list that emptied on typing WAS read - before typing. Name those
+        # rows; "could not read this dropdown's options" was said about
+        # EPAM's notice-period list, which was right there.
+        listed = ", ".join(t for t in (shown or opening or [])[:12] if t)
         raise ValueError(
             f"'{value}' matches none of the dropdown's options; pick one of: {listed}"
             if listed else
@@ -5632,13 +6466,46 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
     # it is worth logging in place of what we typed.
     taken = _combobox_shows(locator, value)
     if not taken:
+        # Refused, not "unverified". A box that echoes the typed text is,
+        # on react-select, the search term sitting in the input while the
+        # widget still reads "Select..." - and logging that as a pick told
+        # the candidate a required dropdown was answered when it was not
+        # (reactselect_check). A refusal costs a question; a false pick
+        # costs an application that goes in with the box empty. A code
+        # review changed this to log-and-continue in Oct 2026 and the check
+        # caught it.
         raise ValueError(
             f"'{value}' was typed at this dropdown but it took nothing; "
             "its list never opened"
         )
+    if not _same_answer(taken, value):
+        # Enter took SOMETHING, but not this. EPAM (Oct 2026): "Selected
+        # 'India: Chennai' for Total Professional Experience" - the box the
+        # keys went to was the job page's location box behind the popup, and
+        # its own value was read back as the answer.
+        raise ValueError(
+            f"'{value}' was typed at this dropdown but it now shows "
+            f"'{_brief(taken, 40)}' - not entered")
     sess.log(f"{prefix}Selected '{_brief(taken, 40)}' for "
              f"{_brief(label, LOG_LABEL)} (dropdown, keyboard)")
     return "picked"
+
+
+def _same_answer(shown: str, wanted: str) -> bool:
+    """Does what a dropdown shows answer what was asked of it? "6 years" for
+    6, "Use this ZIP Code: 560001" for 560001, "Available now" for an
+    immediate notice - but never "India: Chennai" for 6."""
+    a, b = resolver.plain(shown), resolver.plain(wanted)
+    if not a or not b:
+        return False
+    # Whole words: "6" is in "6 years", never in "16 years".
+    if a == b or re.search(rf"(?<!\w){re.escape(b)}(?!\w)", a) or re.search(rf"(?<!\w){re.escape(a)}(?!\w)", b):
+        return True
+    if resolver.match_option(wanted, [shown]):
+        return True
+    have, want = re.search(r"\d+(?:\.\d+)?", a), re.search(r"\d+(?:\.\d+)?", b)
+    return bool(have and want and have.group() == want.group()
+                and not re.sub(r"[\d\s.]+|years?|yrs?|months?|days?|lpa|inr", "", b))
 
 
 def _is_short_yes(reply: str) -> bool:
@@ -5656,6 +6523,32 @@ def _is_affirmative(value: str) -> bool:
     if words & NEGATIVE_WORDS:
         return False
     return bool(words & AFFIRMATIVE_WORDS)
+
+
+def _choice_group(field: dict[str, Any]) -> str:
+    """The list one option belongs to: a radio's name or question, a
+    checkbox's shared name. '' for anything else."""
+    field_type = (field.get("type") or "").lower()
+    if field_type == "radio":
+        return str(field.get("name") or field.get("group") or "")
+    if field_type == "checkbox":
+        return str(field.get("name") or "")
+    return ""
+
+
+def _names_option(field: dict[str, Any], answer: str) -> bool:
+    """The answer is this option's own name, not a yes or a no: "none" to
+    "should 'None of the above' be ticked?" Read as a yes/no, "none" and
+    "not applicable" both said no, and Databricks' sanctions boxes were
+    unticked instead of ticked (Oct 2026)."""
+    def words(text: str) -> list[str]:
+        return _WORDS.findall(str(text or "").lower().replace("'", "").replace("’", ""))
+    said = words(answer)
+    if not said or set(said) <= AFFIRMATIVE_WORDS | NEGATIVE_WORDS:
+        return False
+    phrase = " ".join(said)
+    return any(re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", " ".join(words(text)))
+               for text in (field.get("label"), field.get("text")) if text)
 
 
 def _sibling_option(fields: list[dict[str, Any]], field: dict[str, Any], answer: str):
@@ -5782,7 +6675,8 @@ DUMP_HTML_JS = """() => {
     if (tag === 'script' || tag === 'noscript') return '';
     let s = '<' + tag;
     for (const a of node.attributes) s += ' ' + a.name + '="' + attr(a.value) + '"';
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') s += ' data-live-value="' + attr(node.value == null ? '' : node.value) + '"';
+    // A password box's value never reaches disk, whatever the candidate typed into it.
+    if ((tag === 'input' || tag === 'textarea' || tag === 'select') && node.type !== 'password') s += ' data-live-value="' + attr(node.value == null ? '' : node.value) + '"';
     if (tag === 'input' && (node.type === 'checkbox' || node.type === 'radio')) s += ' data-live-checked="' + node.checked + '"';
     if (node === active) s += ' data-live-focused="1"';
     s += '>';
@@ -5971,7 +6865,7 @@ def _open_profile_sections(page, fields, handled, sess) -> bool:
             present = sum(
                 1 for f in fields
                 if resolver.LANGUAGES_SECTION_RE.search(str(f.get("section") or ""))
-                and re.match(r"^\s*languages?\b", str(f.get("label") or ""), re.IGNORECASE)
+                and resolver.is_language_name_label(str(f.get("label") or ""))
                 and f.get("tag") in ("select", "input", "button")
             )
             what = "Languages"
@@ -6048,6 +6942,25 @@ def _accepts_value(field: dict[str, Any]) -> bool:
     return (field.get("type") or "").lower() not in ("submit", "button", "reset", "image")
 
 
+# The button on a job's own page that opens its application.
+APPLY_OPENER_RE = re.compile(
+    r"^\s*(?:apply|apply now|apply online|apply for (?:this )?(?:job|position|role|vacancy))\s*$",
+    re.IGNORECASE,
+)
+
+
+def _opens_the_application(field: dict[str, Any], history: list) -> bool:
+    """An "Apply" button that only opens the form, though it is type=submit.
+
+    EPAM's job page (Oct 2026) has one, in no form at all, and the agent's
+    first words were "Everything I can fill is done. Review the form and click
+    'APPLY' yourself" - about a page with no application on it. A submit
+    button outside any form has nothing to send. Only before anything has
+    been done in the session: a final step is never the first page."""
+    return (not history and field.get("tag") == "button" and field.get("form") == -1
+            and APPLY_OPENER_RE.match(_field_label(field) or "") is not None)
+
+
 def _is_submit(field: dict[str, Any]) -> bool:
     """Only clickable controls count, matched on whole words ("Finish later" != submit)."""
     field_type = (field.get("type") or "").lower()
@@ -6063,7 +6976,7 @@ def _is_submit(field: dict[str, Any]) -> bool:
     if not clickable:
         return False
     text = f"{field.get('text', '')} {field.get('label', '')} {field.get('value', '')}".lower()
-    return any(re.search(rf"\b{re.escape(word)}\b", text) for word in SUBMIT_WORDS)
+    return _SUBMIT_RE.search(text) is not None
 
 
 def _field_by_id(fields: list[dict[str, Any]], field_id: int) -> dict[str, Any] | None:

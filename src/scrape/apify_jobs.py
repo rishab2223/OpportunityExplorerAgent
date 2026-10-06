@@ -176,15 +176,17 @@ def _collect(
     items: list[dict[str, Any]],
     mapper: Callable[[dict[str, Any]], JobPosting],
     scrape: ScrapeConfig,
+    source: str,
 ) -> list[JobPosting]:
     jobs: list[JobPosting] = []
+    cap = scrape.cap(source)
     for item in items:
         posting = mapper(item)
         blob = f"{posting.title} {posting.company} {posting.description}"
         if excluded(blob, scrape.exclude_keywords):
             continue
         jobs.append(posting)
-        if len(jobs) >= scrape.max_detail_jobs:
+        if len(jobs) >= cap:
             break
     return jobs
 
@@ -201,9 +203,9 @@ def scrape_indeed_apify(
         run_input["keyword"] = scrape.keywords
     run_input.update(apify.indeed_input)
     run_input["fromDays"] = INDEED_FROM_DAYS.get(scrape.posted_within, "3")
-    run_input["maxItems"] = scrape.max_detail_jobs
+    run_input["maxItems"] = scrape.cap("indeed")
     items = _run_actor(env.apify_token, apify.indeed_actor, run_input)
-    return _collect(items, _map_indeed, scrape)
+    return _collect(items, _map_indeed, scrape, "indeed")
 
 
 def scrape_linkedin_apify(
@@ -221,9 +223,9 @@ def scrape_linkedin_apify(
         for url in run_input.get("searchUrls") or []
     ]
     run_input["datePosted"] = LINKEDIN_DATE_POSTED.get(scrape.posted_within, "pastWeek")
-    run_input["maxResults"] = scrape.max_detail_jobs
+    run_input["maxResults"] = scrape.cap("linkedin")
     items = _run_actor(env.apify_token, apify.linkedin_actor, run_input)
-    return _collect(items, _map_linkedin, scrape)
+    return _collect(items, _map_linkedin, scrape, "linkedin")
 
 
 def _with_lookback(url: str, posted_within: str) -> str:

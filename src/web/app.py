@@ -16,7 +16,7 @@ from src.config import load_env, load_yaml_config
 from src.errors import StepError
 from src.pdf_compile import ensure_pdf
 from src.resume.loader import load_resume
-from src.web import applyqueue, runner, runs
+from src.web import applyqueue, fit_chat, run_options, runner, runs
 
 HEARTBEAT_SECONDS = 15
 
@@ -40,21 +40,121 @@ def index() -> FileResponse:
 
 @app.get("/api/runs")
 def api_runs() -> dict:
-    return {"stamps": runs.list_stamps(), **runner.status()}
+    listed = runs.list_runs()
+    return {"stamps": [r["stamp"] for r in listed], "runs": listed, **runner.status()}
+
+
+@app.get("/api/held")
+def api_held() -> dict:
+    """The Held back tab: waiting jobs from every run, not just the one on screen."""
+    return {"jobs": runs.load_held_waiting()}
 
 
 @app.post("/api/runs", status_code=202)
 def api_start_run(payload: dict = Body(default={})) -> dict:
     try:
         stamp = runner.start(
-            resume_path=str(payload.get("resume_path") or ""),
-            max_detail_jobs=payload.get("max_detail_jobs"),
+            overrides=payload.get("settings") or None,
+            remember=bool(payload.get("remember")),
         )
     except runner.RunBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"stamp": stamp}
+
+
+@app.get("/api/run-options")
+def api_run_options() -> dict:
+    """What the run settings popup shows: values, choices, limits."""
+    return run_options.describe()
+
+
+@app.delete("/api/run-options")
+def api_forget_run_options() -> dict:
+    """Back to settings.yaml for the next run."""
+    run_options.clear_preferences()
+    return run_options.describe()
+
+
+# ------------------------------------------------------------- Resume fit tab
+
+
+def _fit_call(fn, *args):
+    try:
+        return fn(*args)
+    except (runs.RunNotFound, runs.JobNotFound) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/fit")
+def api_fit_state() -> dict:
+    return _fit_call(fit_chat.state)
+
+
+@app.post("/api/fit/chat")
+def api_fit_chat(payload: dict = Body(default={})) -> dict:
+    try:
+        return fit_chat.chat(str(payload.get("text") or ""), str(payload.get("subject") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"the model could not answer: {exc}") from exc
+
+
+@app.post("/api/fit/preview")
+def api_fit_preview(payload: dict = Body(default={})) -> dict:
+    return _fit_call(fit_chat.edit_steps, payload.get("steps") or [],
+                     str(payload.get("guidance") or ""), str(payload.get("subject") or ""))
+
+
+@app.get("/api/fit/preview.pdf")
+def api_fit_preview_pdf(v: str = "") -> FileResponse:
+    pdf = fit_chat.preview_pdf(v)
+    if pdf is None:
+        raise HTTPException(status_code=404, detail="no preview yet")
+    return FileResponse(pdf, media_type="application/pdf", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/fit/policy")
+def api_fit_save(payload: dict = Body(default={})) -> dict:
+    return _fit_call(fit_chat.agree, payload.get("steps") or [], str(payload.get("guidance") or ""))
+
+
+@app.delete("/api/fit/policy")
+def api_fit_forget() -> dict:
+    return _fit_call(fit_chat.back_to_default)
+
+
+@app.delete("/api/fit/draft")
+def api_fit_restart() -> dict:
+    return _fit_call(fit_chat.restart)
+
+
+@app.post("/api/runs/{stamp}/jobs/{job_id}/prep")
+def api_write_prep(stamp: str, job_id: str) -> dict:
+    """Interview prep for one job, written now (runs leave it for later)."""
+    from src import llm_cache
+    from src.agent.nodes.enrich import write_prep
+    from src.llm import describe_provider, make_invoker
+    from src.models import ScoredJob
+
+    job = _job_or_404(stamp, job_id)
+    # The run's own settings: the resume it tailored from, its model.
+    cfg = run_options.config_for_run(stamp)
+    try:
+        resume = load_resume(cfg)[0]
+        prep = write_prep(make_invoker(cfg, load_env(), "enrich"), resume, ScoredJob.model_validate(job),
+                          cache_key=llm_cache.key("prep", describe_provider(cfg, "enrich"), resume,
+                                                  str(job.get("description") or "")))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"could not write interview prep: {exc}") from exc
+    if not prep:
+        raise HTTPException(status_code=502, detail="the model returned no interview prep")
+    runs.update_job(stamp, job_id, {"interview_prep": prep})
+    return {"interview_prep": prep}
 
 
 @app.get("/api/runs/status")
@@ -109,7 +209,15 @@ def api_decision(stamp: str, job_id: str, payload: dict = Body(...)) -> dict:
     status = "skipped" if decision == "no" else "pending"
     if decision == "no":
         # Recorded for reference; skipped jobs still return next run unless
-        # history.skip_skipped is turned on.
+        # history.skip_skipped is turned on. A row already applied to or
+        # closed keeps that record: the UI hides Skip there, and the
+        # endpoint must not let a stray request overwrite it.
+        current = history.lookup(job_id)
+        if current and current["status"] in ("applied", "closed"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"this job is recorded as {current['status']}; Unmark it first",
+            )
         history.record(job, "skipped", stamp=stamp)
     return runs.save_decision(stamp, job_id, decision=decision, status=status)
 
@@ -121,7 +229,13 @@ def api_history(stamp: str, job_id: str, payload: dict = Body(...)) -> dict:
     contact = str(payload.get("contact") or "").strip()
     job = _job_or_404(stamp, job_id)
     if not status:
-        removed = history.forget(job_id)
+        # A row the table marked from a similar posting (same company and
+        # title under another site's id) has no row under THIS id; Unmark
+        # on it must remove the one it was matched to, or the button does
+        # nothing and Start apply stays disabled.
+        removed = history.forget(job_id) or history.forget_similar(
+            job.get("company") or "", job.get("title") or ""
+        )
         return {"job_id": job_id, "history_status": "", "removed": removed}
     if status not in history.VALID_STATUSES:
         raise HTTPException(
@@ -174,6 +288,61 @@ def api_default_resume() -> FileResponse:
         raise HTTPException(status_code=422, detail=error)
     headers = {"X-Resume-Warning": warning} if warning else None
     return FileResponse(pdf_path, media_type="application/pdf", headers=headers)
+
+
+@app.get("/api/profile")
+def api_profile() -> dict:
+    from src.apply import profile as apply_profile
+
+    return apply_profile.page_data()
+
+
+@app.put("/api/profile")
+def api_profile_save(payload: dict = Body(...)) -> dict:
+    """Save the keys the page changed. Only those are sent, so a value already
+    in the file that the checks would reject cannot block an unrelated edit."""
+    from src.apply import profile as apply_profile
+
+    updates = payload.get("values")
+    if not isinstance(updates, dict) or not updates:
+        raise HTTPException(status_code=422, detail={"errors": {"": "nothing to save"}})
+    errors = apply_profile.save_profile(updates)
+    if errors:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+    return apply_profile.page_data()
+
+
+@app.get("/api/answers")
+def api_answers() -> dict:
+    from src import answers
+
+    return {"answers": answers.all_entries()}
+
+
+@app.put("/api/answers/{key}")
+def api_answer_update(key: str, payload: dict = Body(...)) -> dict:
+    from src import answers
+
+    error = answers.update(key, str(payload.get("answer") or ""))
+    if error:
+        raise HTTPException(status_code=404 if error.startswith("no saved") else 422, detail=error)
+    return {"answers": answers.all_entries()}
+
+
+@app.delete("/api/answers/{key}")
+def api_answer_delete(key: str) -> dict:
+    from src import answers
+
+    if not answers.forget(key):
+        raise HTTPException(status_code=404, detail="no saved answer with that key")
+    return {"answers": answers.all_entries()}
+
+
+@app.get("/api/held/insight")
+def api_held_insight() -> dict:
+    from src.web import held_insight
+
+    return held_insight.summary()
 
 
 @app.post("/api/apply/start")
@@ -305,10 +474,20 @@ def api_apply_events(session_id: str) -> StreamingResponse:
 
 @app.post("/api/apply/{session_id}/chat")
 def api_apply_chat(session_id: str, payload: dict = Body(...)) -> dict:
+    from src.apply import session as apply_session
+
     sess = _session_or_404(session_id)
     text = str(payload.get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
+    dump = apply_session.DUMP_COMMAND_RE.match(text)
+    if dump and sess.status != "waiting_for_user":
+        # Not an answer, so never refused as one: it waits for the worker's
+        # next pause (see ApplySession.request_dump). At a prompt it goes
+        # through the answer path as before, so the prompt stays open.
+        sess.request_dump(int(dump.group(1) or 0))
+        sess.emit("answer", text)
+        return sess.snapshot()
     if sess.status != "waiting_for_user":
         # Anything queued while the worker is busy would be consumed as the
         # answer to its NEXT question - typed into a field and possibly saved

@@ -99,6 +99,20 @@ class ParkAndAbortTests(QueueTestCase):
         applyqueue.release("failed")
         self.assertEqual(self.started, ["job1", "job2"])
 
+    def test_a_browser_that_would_not_open_stops_the_queue(self) -> None:
+        # The launch fails on the worker thread, after the starter has
+        # returned, so it arrives as an ordinary release. It is not: the
+        # next job meets the same closed browser, and churning through the
+        # queue marked every row failed.
+        applyqueue.start([job(1), job(2), job(3)], self.starter)
+        applyqueue.release("failed", "a browser is already using the profile")
+        state = applyqueue.state()
+        self.assertEqual(self.started, ["job1"])
+        self.assertEqual(state["current"], None)
+        self.assertEqual(state["pending"], [])
+        self.assertIn("already using the profile", state["note"])
+        self.assertEqual([d["job_id"] for d in state["done"]], ["job1"])
+
 
 class QueueFailureTests(QueueTestCase):
     def test_a_starter_that_raises_stops_rather_than_churning(self) -> None:
@@ -272,7 +286,7 @@ class CrashedSessionTests(unittest.TestCase):
         def blow_up(*args, **kwargs):
             raise RuntimeError("chrome went away")
 
-        def note(status: str) -> None:
+        def note(status: str, stop_reason: str = "") -> None:
             if also_release is not None:
                 also_release(status)
             released.append(status)
@@ -316,7 +330,8 @@ class CrashedSessionTests(unittest.TestCase):
         worker.start_apply(
             "20260914T090000", {"job_id": "j2", "company": "X", "title": "Y"},
             "resume", None, None,
-            on_finish=outcomes.append, on_released=released.append,
+            on_finish=outcomes.append,
+            on_released=lambda status, reason="": released.append(status),
         )
         for _ in range(200):
             if released:

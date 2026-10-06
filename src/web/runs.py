@@ -36,6 +36,53 @@ def list_stamps() -> list[str]:
     return sorted(stamps, reverse=True)
 
 
+def list_runs() -> list[dict[str, Any]]:
+    """Each run, newest first, with what the Run dropdown names it by."""
+    found = []
+    for stamp in list_stamps():
+        try:
+            run = _read_json(OUTPUT_DIR / stamp / "run.json")
+        except (OSError, ValueError):
+            run = {}
+        run = run if isinstance(run, dict) else {}
+        found.append({"stamp": stamp, "status": run.get("status", ""),
+                      "match_count": int(run.get("match_count") or 0),
+                      "held_back_count": int(run.get("held_back_count") or 0)})
+    return found
+
+
+def load_held_waiting() -> list[dict[str, Any]]:
+    """Every held-back job not yet acted on, from every run.
+
+    A job is held in the run that found it, but it waits for the candidate
+    until they act on it, whichever run is on screen. Each row carries its
+    `stamp`, so actions reach that run's files. A job held in several runs
+    (same id, or same company and title) is shown once, from the newest.
+    """
+    waiting: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for stamp in list_stamps():                       # newest first
+        if not (OUTPUT_DIR / stamp / "held_back.json").exists():
+            continue
+        for row in load_jobs(stamp):
+            if not row.get("held_back"):
+                continue
+            keys = {k for k in (row.get("job_id") or "",
+                                history.fingerprint(row.get("company") or "", row.get("title") or ""))
+                    if k}
+            # The newest copy settles it, acted on or not: moving Wednesday's
+            # copy to the shortlist must not leave Monday's still waiting.
+            if keys & seen:
+                continue
+            seen |= keys
+            if row.get("history_status") or row.get("decision"):
+                continue
+            row["stamp"] = stamp
+            waiting.append(row)
+    waiting.sort(key=lambda row: -int(row.get("relevance") or 0))
+    return waiting
+
+
 def run_dir(stamp: str) -> Path:
     if not STAMP_RE.match(stamp or ""):
         raise RunNotFound(f"invalid run id: {stamp}")
@@ -54,13 +101,27 @@ def load_run(stamp: str) -> dict[str, Any]:
     return payload
 
 
-def load_jobs(stamp: str) -> list[dict[str, Any]]:
-    directory = run_dir(stamp)
-    path = directory / "shortlisted.json"
+def _rows(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     rows = _read_json(path)
-    if not isinstance(rows, list):
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def load_jobs(stamp: str) -> list[dict[str, Any]]:
+    """The shortlist, then the jobs a filter held back for review.
+
+    One list, so every endpoint that looks a job up - Start apply, Skip,
+    Mark applied, Referral - works on a held-back job as it does on any
+    other. A held-back row carries `held_back` (the reason); the page sorts
+    the two apart.
+    """
+    directory = run_dir(stamp)
+    rows = _rows(directory / "shortlisted.json")
+    for row in _rows(directory / "held_back.json"):
+        row["held_back"] = row.get("held_back") or "held back by a filter"
+        rows.append(row)
+    if not rows:
         return []
     decisions = load_decisions(stamp)
     history_by_id, history_by_fp = history.snapshot()
@@ -128,6 +189,30 @@ def save_decision(
         data[job_id] = entry
         path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
     return entry
+
+
+def raw_rows(stamp: str) -> list[dict[str, Any]]:
+    """The run's rows as written, shortlist then held back, without the
+    decision and history columns load_jobs adds (and without its database
+    read) - for callers that only need a file name or a title."""
+    directory = run_dir(stamp)
+    return _rows(directory / "shortlisted.json") + _rows(directory / "held_back.json")
+
+
+def update_job(stamp: str, job_id: str, fields: dict[str, Any]) -> None:
+    """Write fields onto one job of the run (interview prep written on
+    demand), in whichever of its files holds it."""
+    directory = run_dir(stamp)
+    with _DECISION_LOCK:
+        for name in ("shortlisted.json", "held_back.json"):
+            path = directory / name
+            rows = _rows(path)
+            for row in rows:
+                if row.get("job_id") == job_id:
+                    row.update(fields)
+                    path.write_text(json.dumps(rows, indent=2, default=str), encoding="utf-8")
+                    return
+    raise JobNotFound(f"no job {job_id} in run {stamp}")
 
 
 def read_log(stamp: str) -> list[str]:

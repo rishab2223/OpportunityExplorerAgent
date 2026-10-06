@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Apply - Example (SuccessFactors-like)</title></head>
+<body>
+<!-- Modelled on Ericsson's SuccessFactors form (Oct 2026): State/Province
+     sits ABOVE "Country/Region of Residence", and its list follows the
+     country - with none chosen it offers the whole world, without Indian
+     states. -->
+<form onsubmit="event.preventDefault()">
+  <label for="state">State/Province</label>
+  <select id="state"><option value="">No Selection</option><option>Aarhus</option>
+    <option>Abaco</option><option>Abu Dhabi</option></select>
+  <label for="country">Country/Region of Residence:*</label>
+  <select id="country" required><option value="">No Selection</option><option>Germany</option>
+    <option>India</option><option>Sweden</option></select>
+  <button type="submit">Submit application</button>
+</form>
+<script>
+  const STATES = { India: ["Haryana", "Karnataka", "Maharashtra"], Germany: ["Bavaria", "Berlin"] };
+  document.getElementById("country").addEventListener("change", (e) => {
+    const state = document.getElementById("state");
+    state.innerHTML = '<option value="">No Selection</option>' +
+      (STATES[e.target.value] || []).map((s) => "<option>" + s + "</option>").join("");
+  });
+</script>
+</body>
+</html>

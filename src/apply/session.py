@@ -54,6 +54,14 @@ class Submitted(Exception):
     confirmed it - because the person who pressed the button says it did."""
 
 
+# How often a waiting prompt looks at the page. Each look is a few
+# milliseconds; at one second, with the scan on every other tick, a new
+# wizard step sat untouched for up to two seconds and looked finished
+# (EPAM, Oct 2026: the site's own CV pre-fill on screen, the agent's
+# corrections still to come).
+WAIT_TICK_S = 0.4
+
+
 class PageChanged(Exception):
     """Raised from idle_tick while the worker waits at a hand-off prompt: the
     user opened a form (an Easy Apply popup, a new tab) or submitted the
@@ -75,6 +83,10 @@ class ApplySession:
         self.label = label
         self.status = "running"
         self.pending_question = ""
+        # Set when the browser itself would not open: a queue following this
+        # session must stop rather than try the next job against the same
+        # closed door.
+        self.queue_stop = ""
         # Every event carries seconds since the session began. Where an apply
         # actually spends its time is not guessable from the outside - three
         # rounds of guessing at LinkedIn's timings proved that - and a harness
@@ -99,9 +111,17 @@ class ApplySession:
         self.on_outcome = None
         # Called roughly once a second while waiting for the user (see _wait).
         self.idle_tick = None
+        # Called while a model call runs, so page events still arrive.
+        self.pump = None
         # Called with a delay in seconds when the user types "dump [N]" at a
         # prompt; the worker saves the live page under outputs/dom/.
         self.on_dump = None
+        # Dumps asked for while the worker was busy. Not answers - a dump at
+        # a model call was refused as "the agent is busy" and the candidate
+        # had to press it again after the call (Puma, Oct 2 2026) - so they
+        # wait here, like park, and the worker takes them at its next pause:
+        # the prompt wait below, or the poll around a model call.
+        self._dumps: Queue = Queue()
 
     def emit(self, event_type: str, text: str, **extra: Any) -> None:
         # extra may itself carry a "kind" key (choice events), so the event
@@ -139,12 +159,13 @@ class ApplySession:
         self.emit(event_type, question, **extra)
         while True:
             try:
-                answer = self._answers.get(timeout=1)
+                answer = self._answers.get(timeout=WAIT_TICK_S)
             except Empty:
                 if self._abort.is_set():
                     raise Aborted("session aborted")
                 if self._park.is_set():
                     raise Parked("parked by the candidate")
+                self.service_dumps()
                 # Sync Playwright only delivers page events (a file picker the
                 # user just opened) while the worker is talking to the browser;
                 # the worker installs a tick so those are serviced mid-wait.
@@ -188,6 +209,27 @@ class ApplySession:
 
     def answer(self, text: str) -> None:
         self._answers.put(text)
+
+    def request_dump(self, delay: int = 0) -> None:
+        """Save the page at the worker's next pause, whatever it is doing.
+        Safe from any thread: only the worker touches the browser."""
+        self._dumps.put(delay)
+
+    def service_dumps(self) -> None:
+        """Run the dumps asked for so far. Worker thread only - the page
+        belongs to it."""
+        while True:
+            try:
+                delay = self._dumps.get_nowait()
+            except Empty:
+                return
+            if self.on_dump is None:
+                self.log("Page dump is not available yet: the browser is still opening.")
+                continue
+            try:
+                self.on_dump(int(delay or 0))
+            except Exception as exc:
+                self.log(f"Page dump failed: {str(exc).splitlines()[0][:200]}")
 
     def abort(self) -> None:
         self._abort.set()

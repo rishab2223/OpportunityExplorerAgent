@@ -93,7 +93,6 @@ class ScriptedSession(apply_session.ApplySession):
 QUESTION = ("llm: Tell us something you have built or solved using AI that you are "
             "proud of. What problem does it solve?")
 sess = ScriptedSession([
-    "done",       # ready to start
     QUESTION,     # at the submit prompt: ask for a draft
     DRAFT_TEXT,   # the UI pre-fills the draft; pressing Enter sends it back
     "done",       # submitted by me

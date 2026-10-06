@@ -118,6 +118,21 @@ TOPICS: dict[str, Any] = {
     "veteran": re.compile(r"\bveteran\b|\bmilitary\b"),
     "race_ethnicity": re.compile(r"\brace\b|\bethnicit\w*\b"),
     "criminal_record": re.compile(r"\bcriminal\b|\bconvict\w*\b|\bbackground check\b"),
+    # A first or only citizenship. "Citizenship 2" (SuccessFactors) is a
+    # second one: given its own key, it is never filled with the first's
+    # answer.
+    "citizenship": lambda text: bool(
+        re.search(r"\b(citizenship|nationality)\b|\bcitizen of\b", text)
+        and not re.search(r"\b(2|second|secondary|additional|dual|another)\b", text)),
+    # "Do you have a potential Conflict of Interest as described above?"
+    "conflict_of_interest": re.compile(r"\bconflicts? of interest\b"),
+    "marital_status": re.compile(r"\bmarital\b|\bmarried\b"),
+    # Holding one, yes or no. Its NUMBER is a government identifier and is
+    # never stored (remember() refuses it). "(Yes/No)" in a label is not a
+    # number, so a bare "no" does not count.
+    "driving_licence_held": lambda text: bool(
+        re.search(r"\bdriv(ing|ers?) licen[cs]e\b", text)
+        and not re.search(r"\b(number|no\.|id)\b", text)),
     "referral_source": re.compile(r"\bhow did you (hear|find|learn)\b"),
 }
 
@@ -125,7 +140,8 @@ TOPICS: dict[str, Any] = {
 # confirmation, and every reuse is logged loudly by the caller.
 SENSITIVE_TOPICS = frozenset(
     ("work_authorization", "sponsorship", "gender", "disability", "veteran",
-     "race_ethnicity", "criminal_record")
+     "race_ethnicity", "criminal_record", "citizenship", "conflict_of_interest",
+     "marital_status")
 )
 
 
@@ -155,20 +171,58 @@ def classify(label: str, group: str = "") -> str:
     return "neutral"
 
 
-def recall(label: str, group: str = "") -> dict[str, str] | None:
-    """The stored entry for this question, bumping its usage counter."""
-    key = question_key(label, group)
-    if not key:
-        return None
+# The whole table, read once per process and again after this process writes
+# to it. The sweep looks a key up for every unresolved field of every
+# snapshot, and each lookup was a connection, a query and a close. Only the
+# web worker writes this table, so a stale read from another process is not
+# a case that arises; the usage counters are not cached, so touch() need not
+# invalidate.
+_cache: dict[str, dict[str, str]] | None = None
+_cache_path = ""
+
+
+def _table() -> dict[str, dict[str, str]]:
+    global _cache, _cache_path
+    path = str(db._db_path())
+    if _cache is not None and _cache_path == path:
+        return _cache
     conn = db.connect()
     try:
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT question_key, question, answer, kind FROM known_answers"
-            " WHERE question_key = ?",
-            (key,),
-        ).fetchone()
-        if row is None:
-            return None
+        ).fetchall()
+    finally:
+        conn.close()
+    _cache = {
+        row["question_key"]: {"key": row["question_key"], "question": row["question"],
+                              "answer": row["answer"], "kind": row["kind"]}
+        for row in rows
+    }
+    _cache_path = path
+    return _cache
+
+
+def _invalidate() -> None:
+    global _cache
+    _cache = None
+
+
+def recall(label: str, group: str = "") -> dict[str, str] | None:
+    """The stored entry for this question, bumping its usage counter."""
+    entry = lookup(question_key(label, group))
+    if entry is not None:
+        touch(entry["key"])
+    return entry
+
+
+def touch(key: str) -> None:
+    """Count one use of an entry. Separate from recall so that a sweep which
+    looks an answer up and then cannot place it (no matching option, a type
+    that takes no text) does not inflate the counter the prompt is ordered by."""
+    if not key:
+        return
+    conn = db.connect()
+    try:
         with conn:
             conn.execute(
                 "UPDATE known_answers SET times_used = times_used + 1, last_used = ?"
@@ -177,27 +231,14 @@ def recall(label: str, group: str = "") -> dict[str, str] | None:
             )
     finally:
         conn.close()
-    return {"key": row["question_key"], "question": row["question"],
-            "answer": row["answer"], "kind": row["kind"]}
 
 
 def lookup(key: str) -> dict[str, str] | None:
     """The stored entry for a topic slug, without counting it as a use."""
     if not key:
         return None
-    conn = db.connect()
-    try:
-        row = conn.execute(
-            "SELECT question_key, question, answer, kind FROM known_answers"
-            " WHERE question_key = ?",
-            (key,),
-        ).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        return None
-    return {"key": row["question_key"], "question": row["question"],
-            "answer": row["answer"], "kind": row["kind"]}
+    entry = _table().get(key)
+    return dict(entry) if entry is not None else None
 
 
 def remember(label: str, answer: str, group: str = "", company: str = "") -> str:
@@ -208,6 +249,9 @@ def remember(label: str, answer: str, group: str = "", company: str = "") -> str
     if not key or not answer:
         return ""
     if profile.is_secret(text) or profile.is_secret(answer):
+        return ""
+    # A government identifier's number is never kept, here as in the profile.
+    if profile.is_identifier(text) and key != "driving_licence_held":
         return ""
     # A question or answer naming this company is company-specific by
     # definition; replaying it elsewhere would be wrong.
@@ -233,6 +277,7 @@ def remember(label: str, answer: str, group: str = "", company: str = "") -> str
             )
     finally:
         conn.close()
+    _invalidate()
     return key
 
 
@@ -244,6 +289,39 @@ def forget(key: str) -> bool:
         return cursor.rowcount > 0
     finally:
         conn.close()
+        _invalidate()
+
+
+def all_entries() -> list[dict[str, Any]]:
+    """Every saved answer, for the Saved answers page."""
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT question_key, question, answer, kind, times_used, first_seen, last_used"
+            " FROM known_answers ORDER BY question COLLATE NOCASE"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
+def update(key: str, answer: str) -> str:
+    """Replace one saved answer by hand. Returns an error, or '' on success.
+    The same guards as remember(): nothing secret is ever stored."""
+    answer = (answer or "").strip()
+    if not answer:
+        return "an answer cannot be empty; delete it instead"
+    if profile.is_secret(answer):
+        return "that looks like a password or code, which is never stored"
+    conn = db.connect()
+    try:
+        with conn:
+            cursor = conn.execute(
+                "UPDATE known_answers SET answer = ? WHERE question_key = ?", (answer, key))
+    finally:
+        conn.close()
+        _invalidate()
+    return "" if cursor.rowcount else "no saved answer with that key"
 
 
 def entries(limit: int = 40) -> list[dict[str, Any]]:

@@ -310,17 +310,52 @@ class LetterReuseTests(unittest.TestCase):
         job = {"job_id": job_id, "company": "X", "title": "Y"}
         return Attachments(sess, job, "resume text", self._invoke, None, self.dir)
 
-    def test_second_session_reopens_the_same_letter_without_a_call(self) -> None:
+    def test_an_accepted_letter_goes_in_again_without_a_call_or_a_review(self) -> None:
+        # Ericsson (Oct 2026), retried four times: every retry opened the
+        # review on a letter already accepted, and rebuilt it as if new.
         first = ScriptedSession(["__use__\nDrafted letter, hand-edited."])
         self.assertEqual(self._attach(first).cover_letter(for_upload=False), "Drafted letter, hand-edited.")
         self.assertEqual(self.calls, 1)
 
-        second = ScriptedSession(["__use__\nDrafted letter, hand-edited."])
-        attach = self._attach(second)
-        self.assertEqual(attach.cover_letter(for_upload=False), "Drafted letter, hand-edited.")
-        self.assertEqual(self.calls, 1)  # no second draft
-        self.assertEqual(second.choices[0][1]["text"], "Drafted letter, hand-edited.")
+        second = ScriptedSession([])
+        self.assertEqual(self._attach(second).cover_letter(for_upload=False), "Drafted letter, hand-edited.")
+        self.assertEqual(self.calls, 1)          # no second draft
+        self.assertEqual(second.choices, [])     # and no review
+        self.assertTrue(any("accepted earlier" in line for line in second.logs), second.logs)
+
+        # Uploaded as a file, the same: the accepted text, as a PDF.
+        third = ScriptedSession([])
+        self.assertTrue(self._attach(third).cover_letter(for_upload=True).endswith(".pdf"))
+        self.assertEqual(third.choices, [])
+
+    def test_the_cover_letter_command_still_opens_an_accepted_letter(self) -> None:
+        self._attach(ScriptedSession(["__use__\nDrafted letter."])).cover_letter(for_upload=False)
+        again = ScriptedSession(["__use__\nDrafted letter, changed."])
+        self.assertEqual(self._attach(again).cover_letter(for_upload=False, review=True),
+                         "Drafted letter, changed.")
+        self.assertEqual(again.choices[0][1]["text"], "Drafted letter.")
+        self.assertEqual(self.calls, 1)
+
+    def test_a_changed_letter_is_not_accepted_until_used(self) -> None:
+        from src.apply import cover_letter
+
+        self._attach(ScriptedSession(["__use__\nDrafted letter."])).cover_letter(for_upload=False)
+        self.assertTrue(cover_letter.is_accepted("test:reuse"))
+        cover_letter.save("test:reuse", {"company": "X"}, "A redraft nobody has read.")
+        self.assertFalse(cover_letter.is_accepted("test:reuse"))
+        cover_letter.save("test:reuse", {"company": "X"}, "A redraft nobody has read.")
+        self.assertFalse(cover_letter.is_accepted("test:reuse"))
+        cover_letter.save("test:reuse", {"company": "X"}, "A redraft nobody has read.", accepted=True)
+        cover_letter.save("test:reuse", {"company": "X"}, "A redraft nobody has read.")  # same text
+        self.assertTrue(cover_letter.is_accepted("test:reuse"))
+
+    def test_a_letter_never_accepted_is_reopened_for_review(self) -> None:
+        self._attach(ScriptedSession(["skip"])).cover_letter(for_upload=False)
+        second = ScriptedSession(["skip"])
+        self._attach(second).cover_letter(for_upload=False)
+        self.assertEqual(len(second.choices), 1)
         self.assertTrue(any("Reusing the cover letter" in line for line in second.logs), second.logs)
+        self.assertEqual(self.calls, 1)
 
     def test_abort_right_after_the_draft_still_reuses_it(self) -> None:
         from src.apply.session import Aborted
@@ -345,8 +380,9 @@ class LetterReuseTests(unittest.TestCase):
         self.assertEqual(self.calls, 2)
 
         again = ScriptedSession(["skip"])
-        self._attach(again).cover_letter(for_upload=False)
-        self.assertEqual(again.choices[0][1]["text"], "Revised letter.")
+        # Accepted after the revision, so it goes in as it is.
+        self.assertEqual(self._attach(again).cover_letter(for_upload=False), "Revised letter.")
+        self.assertEqual(again.choices, [])
         self.assertEqual(self.calls, 2)
 
         other = ScriptedSession(["skip"])

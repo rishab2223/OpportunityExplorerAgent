@@ -56,6 +56,14 @@ profile.PROFILE_PATH.write_text(json.dumps({
     "linkedin": "https://linkedin.com/in/test",
     "github": "https://github.com/test",
     "skills": "JavaScript, Node.js, Python, AWS, AWS SDK",
+    "postal_code": "560001",
+    "willing_to_relocate": "Yes",
+    "total_experience_years": "6",
+    "relevant_experience_years": "5",
+    "current_title": "Software Engineer",
+    "current_company": "Acme Corp",
+    "current_ctc": "2500000",
+    "not_employment": "Applied AI & LLM Agents",
 }), encoding="utf-8")
 PDF = SCRATCH / "dummy_resume.pdf"
 PDF.write_bytes(b"%PDF-1.4 dummy resume for e2e\n%%EOF\n")
@@ -88,7 +96,8 @@ def fake_invoke(system: str, user: str, schema):
         if f.get("already_handled"):
             continue  # the prompt marks these; a real model leaves them alone
         if ("favourite programming language" in label or "favourite editor" in label
-                or "permanent account number" in label) and not f.get("value"):
+                or "permanent account number" in label
+                or "preferred epam office locations" in label) and not f.get("value"):
             actions.append(ApplyAction(action="ask", field_id=f["id"],
                                        question="", reason="unknown", confidence=0.9,
                                        reusable=True))

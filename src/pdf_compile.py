@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -91,30 +92,21 @@ def compile_tex(tex_path: Path, timeout: int = TIMEOUT_SECONDS) -> tuple[Path | 
         return None, MISSING_TOOLCHAIN
 
     out_dir = tex_path.parent
-    if Path(tool).stem.lower() == "latexmk":
-        commands = [
-            [
-                tool,
-                "-pdf",
-                "-interaction=nonstopmode",
-                "-halt-on-error",
-                f"-outdir={out_dir}",
-                tex_path.name,
-            ]
-        ]
+    latexmk = Path(tool).stem.lower() == "latexmk"
+    if latexmk:
+        command = [tool, "-pdf", "-interaction=nonstopmode", "-halt-on-error",
+                   f"-outdir={out_dir}", tex_path.name]
     else:
-        # pdflatex needs two passes for references to settle.
-        commands = [
-            [
-                tool,
-                "-interaction=nonstopmode",
-                "-halt-on-error",
-                f"-output-directory={out_dir}",
-                tex_path.name,
-            ]
-        ] * 2
+        command = [tool, "-interaction=nonstopmode", "-halt-on-error",
+                   f"-output-directory={out_dir}", tex_path.name]
 
-    for command in commands:
+    # latexmk reruns by itself. pdflatex gets a second pass only when the
+    # first says references moved: a resume has none, and the unconditional
+    # second pass doubled every compile (117 resumes, up to three compiles
+    # each, in one run).
+    for attempt in range(1 if latexmk else 2):
+        if attempt and not _wants_rerun(tex_path):
+            break
         try:
             proc = subprocess.run(
                 command,
@@ -144,6 +136,17 @@ def ensure_pdf(tex_path: Path) -> tuple[Path | None, str]:
     if not is_stale(tex_path, pdf_path):
         return pdf_path, ""
     return compile_tex(tex_path)
+
+
+_RERUN_RE = re.compile(r"Rerun to get|Label\(s\) may have changed|Rerun LaTeX", re.IGNORECASE)
+
+
+def _wants_rerun(tex_path: Path) -> bool:
+    try:
+        return bool(_RERUN_RE.search(
+            tex_path.with_suffix(".log").read_text(encoding="utf-8", errors="replace")))
+    except OSError:
+        return True   # no log to go by: the old two passes
 
 
 def _error_tail(tex_path: Path, stdout: str, stderr: str) -> str:

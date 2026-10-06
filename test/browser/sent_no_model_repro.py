@@ -75,7 +75,7 @@ class ScriptedSession(apply_session.ApplySession):
         super().finish(status, text)
 
 
-sess = ScriptedSession(["done"])          # only the "ready to start" prompt
+sess = ScriptedSession([])          # nothing is asked: the page says it was sent
 job = {"job_id": "sent:1", "company": "Katapult", "title": "Junior Backend Developer",
        "description": "Build things.",
        "apply_url": (E2E / "fixture_sent_with_button.html").as_uri()}

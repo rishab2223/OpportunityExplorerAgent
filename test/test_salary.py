@@ -73,9 +73,13 @@ class ForFieldTests(unittest.TestCase):
     def test_monthly_field(self) -> None:
         self.assertEqual(salary.for_field("24 LPA", field("Current monthly salary")), "200000")
 
-    def test_unitless_text_field_keeps_the_words(self) -> None:
-        self.assertEqual(salary.for_field("18 LPA", field("Current CTC")), "18 LPA")
+    def test_unitless_boxes_all_get_rupees(self) -> None:
+        # CryptoMize (Oct 2 2026): Current CTC "2500000" from the profile beside
+        # Expected CTC "30 LPA" from the estimate - two units on one form.
+        self.assertEqual(salary.for_field("18 LPA", field("Current CTC")), "1800000")
         self.assertEqual(salary.for_field("1800000", field("Current CTC")), "1800000")
+        self.assertEqual(salary.for_field("30 LPA", field("Expected CTC")),
+                         salary.for_field("3000000", field("Expected CTC")))
 
     def test_ranges_prose_and_other_fields_pass_through(self) -> None:
         self.assertEqual(salary.for_field("18-22 LPA", field("Expected CTC (in LPA)")), "18-22 LPA")

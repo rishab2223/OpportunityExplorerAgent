@@ -100,6 +100,41 @@ def forget(job_id: str) -> bool:
         conn.close()
 
 
+def forget_similar(company: str, title: str) -> bool:
+    """Drop the row a company + title fingerprint matched (Unmark on a row the
+    table marked "similar"). That row carries another site's id for the same
+    posting, so forgetting by this job's id found nothing and the button did
+    nothing. Returns True if a row went."""
+    fp = fingerprint(company, title)
+    if not fp:
+        return False
+    conn = db.connect()
+    try:
+        with conn:
+            cursor = conn.execute("DELETE FROM job_history WHERE fingerprint = ?", (fp,))
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def lookup(job_id: str) -> dict[str, str] | None:
+    """The stored entry for one job id, or None."""
+    if not job_id:
+        return None
+    conn = db.connect()
+    try:
+        row = conn.execute(
+            "SELECT status, contact, marked_at FROM job_history WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return {"status": row["status"], "contact": row["contact"] or "",
+            "marked_at": row["marked_at"] or ""}
+
+
 def snapshot(
     statuses: set[str] | None = None,
 ) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:

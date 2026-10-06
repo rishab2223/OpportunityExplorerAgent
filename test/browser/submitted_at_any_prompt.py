@@ -88,7 +88,7 @@ class ScriptedSession(apply_session.ApplySession):
 
 
 recorded: list[str] = []
-sess = ScriptedSession(["done", "i submitted"])
+sess = ScriptedSession(["i submitted"])
 sess.on_outcome = recorded.append
 job = {"job_id": "isub:1", "company": "Airblack", "title": "Lead Backend Engineer",
        "description": "Build consumer AI.",

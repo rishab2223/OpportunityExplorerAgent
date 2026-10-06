@@ -82,7 +82,7 @@ class ScriptedSession(apply_session.ApplySession):
         super().finish(status, text)
 
 
-sess = ScriptedSession(["done", "__wait__"])
+sess = ScriptedSession(["__wait__"])
 job = {"job_id": "boiler:1", "company": "Acme", "title": "Senior Software Engineer",
        "description": "Build things.",
        "apply_url": (E2E / "fixture_boilerplate.html").as_uri()}

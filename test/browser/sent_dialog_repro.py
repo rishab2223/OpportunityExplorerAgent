@@ -86,7 +86,7 @@ class ScriptedSession(apply_session.ApplySession):
         super().finish(status, text)
 
 
-sess = ScriptedSession(["done", "__wait__"])
+sess = ScriptedSession(["__wait__"])
 job = {"job_id": "sentdlg:1", "company": "UbiqEdge", "title": "Senior Software Engineer",
        "description": "Build things.",
        "apply_url": (E2E / "fixture_sent_dialog.html").as_uri()}

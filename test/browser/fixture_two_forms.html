@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Software Developer - Careers</title>
+<!-- Modelled on cryptomize.com/careers (Oct 2 2026): the application form,
+     each of its custom radio groups named only by aria-label, a honeypot box
+     in both forms, and a footer "Contact us" form below the application. -->
+<style>
+  .trap { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+  .opt { display: inline-flex; gap: 4px; margin-right: 12px; }
+  button[role=radio] { width: 16px; height: 16px; }
+</style>
+</head>
+<body>
+<h1>Job Openings Application</h1>
+<form novalidate>
+  <div aria-hidden="true" class="trap">
+    <input type="text" tabindex="-1" autocomplete="off" name="company">
+  </div>
+  <label for="name">Full Name *</label> <input id="name" name="name" required><br>
+  <label for="cv">Resume *</label> <input id="cv" type="file" accept=".pdf"><br>
+  <div>
+    <span>Gender *</span>
+    <div role="radiogroup" aria-label="Gender (required)">
+      <label class="opt"><button type="button" role="radio" aria-checked="false" aria-label="Male"></button>Male</label>
+      <label class="opt"><button type="button" role="radio" aria-checked="false" aria-label="Female"></button>Female</label>
+      <label class="opt"><button type="button" role="radio" aria-checked="false" aria-label="Other"></button>Other</label>
+    </div>
+  </div>
+  <div>
+    <span>Marital Status *</span>
+    <div role="radiogroup" aria-label="Marital Status (required)">
+      <label class="opt"><button type="button" role="radio" aria-checked="false" aria-label="Single"></button>Single</label>
+      <label class="opt"><button type="button" role="radio" aria-checked="false" aria-label="Married"></button>Married</label>
+    </div>
+  </div>
+  <label for="details">Professional Details *</label>
+  <textarea id="details" required placeholder="Your current role, domain expertise"></textarea><br>
+  <label for="quals">Qualifications *</label>
+  <textarea id="quals" required></textarea><br>
+  <button type="submit">Apply</button>
+</form>
+
+<footer>
+  <h2>What happens after you apply</h2>
+  <form>
+    <div aria-hidden="true" class="trap">
+      <input type="text" tabindex="-1" autocomplete="off" name="company">
+    </div>
+    <label for="cname">Full Name</label> <input id="cname" required>
+    <label for="cmail">E-Mail Address</label> <input id="cmail" type="email" required>
+    <label for="cmsg">Message</label> <input id="cmsg" required>
+    <button type="submit">Send</button>
+  </form>
+</footer>
+</body>
+</html>

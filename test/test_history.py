@@ -129,6 +129,22 @@ class MigrationTests(HistoryTestCase):
 
 
 class ForgetTests(HistoryTestCase):
+    def test_forget_similar_removes_the_row_a_fingerprint_matched(self) -> None:
+        # The same posting under another site's id: Unmark on the row the
+        # table marked "similar" must remove the row it was matched to.
+        history.record(JOB, "applied")
+        other = {**JOB, "job_id": "linkedin:zzz"}
+        self.assertFalse(history.forget(other["job_id"]))
+        self.assertTrue(history.forget_similar(other["company"], other["title"]))
+        self.assertIsNone(history.lookup(JOB["job_id"]))
+        self.assertFalse(history.forget_similar("", ""))
+
+    def test_lookup_returns_the_entry_or_none(self) -> None:
+        self.assertIsNone(history.lookup(JOB["job_id"]))
+        history.record(JOB, "closed", contact="")
+        self.assertEqual(history.lookup(JOB["job_id"])["status"], "closed")
+        self.assertIsNone(history.lookup(""))
+
     def test_forget_round_trip(self) -> None:
         history.record(JOB, "applied")
         self.assertTrue(history.forget(JOB["job_id"]))

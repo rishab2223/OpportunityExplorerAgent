@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apply - Example</title>
+<!-- Modelled on CryptoMize's form (Oct 2 2026): a resume drop zone and, beside
+     it, an "Upload photo" box whose hidden input says nothing about itself. -->
+</head>
+<body>
+<form>
+  <div class="field">
+    <span>Resume *</span>
+    <label class="tile" for="cv">Drop your resume here</label>
+    <input type="file" id="cv" accept=".pdf,.doc,.docx" style="display:none">
+  </div>
+  <div class="field">
+    <span>Upload photo</span>
+    <label class="tile" for="pic">Choose file</label>
+    <input type="file" id="pic" style="display:none">
+  </div>
+  <div class="field">
+    <span>Attachment</span>
+    <label class="tile" for="img">Choose file</label>
+    <input type="file" id="img" accept="image/png, image/jpeg" style="display:none">
+  </div>
+</form>
+</body>
+</html>

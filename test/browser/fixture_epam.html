@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lead Software Developer - Example Careers</title>
+<style>
+  /* EPAM's controls (Oct 2026): the real upload and the real radios are 0x0
+     and transparent; the <label> the candidate clicks is what shows. */
+  .hidden-control { width: 0; height: 0; opacity: 0; display: block; border: 0; padding: 0; margin: 0; }
+  .file-label { display: block; border: 1px solid #888; padding: 16px; width: 600px; cursor: pointer; }
+  .tile { display: inline-block; width: 280px; height: 44px; line-height: 44px; text-align: center; border: 1px solid #888; }
+  .tile.on { background: #36f; color: #fff; }
+  .step { display: none; }
+</style>
+</head>
+<body>
+  <h1>Lead Software Developer</h1>
+  <!-- type=submit, in no form: it only opens the application. -->
+  <button type="submit" id="cta_job_apply">APPLY</button>
+  <button>Share Vacancy</button>
+
+  <div id="modal" role="dialog" aria-modal="true" aria-label="Application"
+       style="display:none; position:fixed; top:20px; left:20px; width:760px; height:520px; background:#fff; border:1px solid #888; padding:20px; overflow:auto">
+    <h2>Application</h2>
+    <div id="where">Step 1 of 7 &middot; CV Upload</div>
+
+    <form class="step" id="step1" novalidate onsubmit="event.preventDefault()">
+      <label><span>Please upload your most recent resume in English</span><span>*</span></label>
+      <label class="file-label">
+        <input class="hidden-control" type="file" name="file" accept="application/pdf,application/msword"
+               onchange="cvChosen(this)">
+        <p>Upload your CV in English</p>
+        <p>Click here to upload your CV for the initial review.</p>
+        <p>PDF, DOC, DOCX &middot; max 5 MB</p>
+      </label>
+      <div id="chosen"></div>
+      <button type="button">CANCEL</button>
+      <button type="submit">NEXT</button>
+    </form>
+
+    <!-- Filled by the site from the CV; the only empty box is optional. -->
+    <form class="step" id="step2" novalidate onsubmit="event.preventDefault()">
+      <label for="fn">First Name*</label><input id="fn" value="Test">
+      <label for="ln">Last Name*</label><input id="ln" value="User">
+      <label for="pr">Pronouns</label>
+      <select id="pr"><option value="">Select pronouns...</option><option>He/Him</option>
+        <option>She/Her</option><option>They/Them</option></select>
+      <button type="button">BACK</button>
+      <button type="submit">NEXT</button>
+    </form>
+
+    <form class="step" id="step3" novalidate onsubmit="event.preventDefault()">
+      <label for="pin">PIN code (postal code)*</label><input id="pin">
+      <label id="reloc-label">Are you willing to relocate to the specified job location?*</label>
+      <div role="radiogroup" aria-labelledby="reloc-label">
+        <input class="hidden-control" type="radio" id="r0" name="relocate" value="yes" onchange="tiles()">
+        <label class="tile" for="r0">Yes</label>
+        <input class="hidden-control" type="radio" id="r1" name="relocate" value="no" onchange="tiles()">
+        <label class="tile" for="r1">No</label>
+      </div>
+      <!-- No profile value: the model asks, and the candidate moves on
+           without answering. -->
+      <label for="offices">Preferred EPAM Office Locations*</label><input id="offices">
+      <button type="button">BACK</button>
+      <button type="submit">NEXT</button>
+    </form>
+
+    <!-- Pre-filled by the site from its reading of the CV, wrongly. -->
+    <form class="step" id="step4" novalidate onsubmit="event.preventDefault()">
+      <label for="primary">Primary Skill*</label>
+      <select id="primary"><option>Amazon Web Services</option><option>JavaScript</option>
+        <option>Python</option></select>
+      <label for="total">Total Professional Experience*</label>
+      <select id="total"><option>0 years</option><option>5 years</option><option>6 years</option>
+        <option selected>7 years</option></select>
+      <label for="relevant">Relevant Experience in Primary skill*</label>
+      <select id="relevant"><option selected>0 years</option><option>5 years</option>
+        <option>6 years</option></select>
+      <button type="button">BACK</button>
+      <button type="submit">NEXT</button>
+    </form>
+
+    <form class="step" id="step5" novalidate onsubmit="event.preventDefault()">
+      <label for="employer">Most recent employer</label><input id="employer">
+      <label for="jobtitle">Job Title at Recent employer</label>
+      <input id="jobtitle" value="Applied AI &amp; LLM Agents">
+      <label for="cur">Current Annual Compensation</label><input id="cur">
+      <label for="exp">Expected Annual Compensation</label><input id="exp">
+      <label for="notice">Notice Period*</label>
+      <select id="notice"><option value="">Select notice period</option><option>Immediate</option>
+        <option>30 days</option><option>60 days</option><option>90 days</option></select>
+      <button type="button">BACK</button>
+      <button type="submit">NEXT</button>
+    </form>
+  </div>
+  <script>
+    // The candidate's clicks - APPLY, and NEXT on each step - are timers here,
+    // while the agent waits at its hand-off.
+    function show(n, label) {
+      for (const s of document.querySelectorAll('.step')) s.style.display = 'none';
+      document.getElementById('step' + n).style.display = 'block';
+      document.getElementById('where').textContent = 'Step ' + n + ' of 7 · ' + label;
+    }
+    function openModal() { document.getElementById('modal').style.display = 'block'; show(1, 'CV Upload'); }
+    function cvChosen(input) {
+      document.getElementById('chosen').textContent = input.files[0] ? input.files[0].name : '';
+      setTimeout(function () { show(2, 'Personal & Contact'); }, 2500);
+      setTimeout(function () { show(3, 'Location & Relocation'); }, 9000);
+      setTimeout(function () { show(4, 'Background'); }, 18000);
+      setTimeout(function () { show(5, 'Employment History'); }, 26000);
+    }
+    function tiles() {
+      for (const r of document.querySelectorAll('input[name=relocate]')) {
+        document.querySelector('label[for=' + r.id + ']').classList.toggle('on', r.checked);
+      }
+    }
+    document.getElementById('cta_job_apply').onclick = openModal;
+    setTimeout(openModal, 3000);
+  </script>
+</body>
+</html>

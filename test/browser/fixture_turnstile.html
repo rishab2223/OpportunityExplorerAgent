@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apply - Example</title>
+<!-- A form carrying Cloudflare's human check beside Submit, as CryptoMize's
+     did (Oct 2 2026). The widget is only its marker div here: nothing is
+     loaded from Cloudflare, and the agent must never touch it anyway. -->
+</head>
+<body>
+<form>
+  <label for="name">Full Name *</label>
+  <input id="name" name="name" required>
+  <!-- The size the rendered widget has on a real page. -->
+  <div class="cf-turnstile" data-sitekey="0x0000000000000000000000"
+       style="width:300px;height:65px;border:1px solid #ccc"></div>
+  <button type="submit">Submit</button>
+</form>
+</body>
+</html>

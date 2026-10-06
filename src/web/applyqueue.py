@@ -91,9 +91,16 @@ def _advance() -> None:
             _pending.clear()
 
 
-def release(status: str) -> None:
+def release(status: str, stop_reason: str = "") -> None:
     """One session has ended AND its browser is closed. Called on the worker
-    thread from start_apply's on_released."""
+    thread from start_apply's on_released.
+
+    `stop_reason` is set when the job never got as far as a page - the
+    browser would not open. The starter cannot report that, because the
+    launch happens on the worker thread after start_apply has returned, so
+    the failure arrives here like any other. It is not like any other:
+    whatever kept Chrome closed keeps it closed for the next job too, and
+    without this every queued row was marked failed in turn."""
     global _current, _note
     with _LOCK:
         entry, _current = _current, None
@@ -107,6 +114,9 @@ def release(status: str) -> None:
             # Abort means stop everything; park is the one that moves on.
             if _pending:
                 _note = f"aborted with {len(_pending)} job(s) still queued"
+            _pending.clear()
+        elif stop_reason:
+            _note = f"stopped: {stop_reason.splitlines()[0][:200]}"
             _pending.clear()
     _advance()
 

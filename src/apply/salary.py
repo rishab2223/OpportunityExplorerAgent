@@ -119,18 +119,22 @@ def canonical(annual_inr: int) -> str:
     return f"{_trim(annual_inr / LAKH)} LPA"
 
 
-def format_for(annual_inr: int, field: dict[str, Any], fallback: str) -> str:
-    """The amount written the way this field asks; the fallback text when the
-    field names no unit and is not numeric."""
+def format_for(annual_inr: int, field: dict[str, Any], fallback: str = "") -> str:
+    """The amount written the way this field asks.
+
+    A box that names no unit gets plain annual rupees, whatever the source
+    said. It used to get the source's own words, and the sources differ: on
+    CryptoMize's form (Oct 2 2026) Current CTC came from the profile as
+    "2500000" and Expected CTC from the estimate as "30 LPA" - two units side
+    by side on one application. Digits rather than "LPA" because a box that
+    wants a number may refuse letters; digits it never refuses. `fallback` is
+    kept for callers and no longer used."""
     unit = unit_of(field)
-    numeric = (field.get("type") or "").lower() == "number"
     if unit == "lpa":
         return _trim(annual_inr / LAKH)
     if unit == "monthly":
         return str(int(round(annual_inr / 12)))
-    if unit == "annual" or numeric:
-        return str(annual_inr)
-    return fallback
+    return str(annual_inr)
 
 
 def for_field(value: str, field: dict[str, Any]) -> str:

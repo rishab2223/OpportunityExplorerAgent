@@ -202,6 +202,48 @@ with sync_playwright() as pw:
           "Immediate / Available to join" in page.locator("#log").inner_text(),
           repr(page.locator("#log").inner_text()))
 
+    print("\nand a list that words it another way entirely")
+    # EPAM (Oct 2026) offers "Available now": not one word in common with
+    # "Immediate Joiner", and the candidate was told the list could not be
+    # read at all.
+    page.goto((HERE / "fixture_reactselect.html").as_uri())
+    page.wait_for_timeout(200)
+    page.evaluate("() => { OPTIONS.q2 = ['Less than 2 weeks', 'Available now', '1 month', '2 months'];"
+                  " const box = document.querySelector('#q2').closest('.select__value-container');"
+                  " box.querySelector('.select__single-value').outerHTML ="
+                  " '<div class=\"select__placeholder\">Select...</div>'; }")
+    page.wait_for_timeout(100)
+    epam_box = {str(f.get("label") or "").split("*")[0].strip(): f
+                for f in browser.snapshot(page)}["What is your notice period?"]
+    sess4 = Sess()
+    try:
+        worker._commit_combobox(page, browser.locate(page, epam_box["id"], str(epam_box.get("elid") or "")),
+                                "Immediate Joiner", "What is your notice period?", "", sess4, [])
+    except Exception as exc:
+        sess4.log(f"refused: {exc}")
+    got4 = page.locator("#log").inner_text()
+    check("'Immediate Joiner' takes 'Available now'", "Available now" in got4,
+          repr(got4) + " " + str(sess4.lines)[:160])
+    check("  never a short notice instead", "Less than 2 weeks" not in got4, repr(got4))
+
+    print("\nand a list that has no such answer names what it has")
+    page.goto((HERE / "fixture_reactselect.html").as_uri())
+    page.wait_for_timeout(200)
+    page.evaluate("() => { OPTIONS.q2 = ['30 days', '60 days', '90 days'];"
+                  " const box = document.querySelector('#q2').closest('.select__value-container');"
+                  " box.querySelector('.select__single-value').outerHTML ="
+                  " '<div class=\"select__placeholder\">Select...</div>'; }")
+    page.wait_for_timeout(100)
+    none_box = {str(f.get("label") or "").split("*")[0].strip(): f
+                for f in browser.snapshot(page)}["What is your notice period?"]
+    try:
+        worker._commit_combobox(page, browser.locate(page, none_box["id"], str(none_box.get("elid") or "")),
+                                "Immediate Joiner", "What is your notice period?", "", Sess(), [])
+        said = "took something"
+    except Exception as exc:
+        said = str(exc)
+    check("the refusal lists the options it read", "30 days" in said and "could not read" not in said, said)
+
     print("\nand a dropdown that took nothing is never reported as filled")
     # Found by disabling the control-open above and watching what was left:
     # Enter at a widget whose list never opened does nothing, and the agent

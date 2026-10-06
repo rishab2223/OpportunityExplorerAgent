@@ -2,7 +2,7 @@
 
 Not wired into the main agent. Run from the project root:
 
-    python test/test_linkedin_apify.py
+    python test/probe_linkedin_apify.py
 """
 
 from __future__ import annotations

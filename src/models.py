@@ -21,6 +21,9 @@ class JobPosting(BaseModel):
     salary: str = ""
     employment_type: str = ""
     description: str = ""
+    # Why a filter in review mode held this job back, e.g. "asks for 8+
+    # years; your limit is 7". Empty for a job no filter touched.
+    held_back: str = ""
     scraped_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 

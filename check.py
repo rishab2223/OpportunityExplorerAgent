@@ -55,9 +55,11 @@ GROUPS: dict[str, list[str]] = {
         "dump_check.py", "fallback_check.py", "cf7_check.py",
         "foreground_check.py", "settle_check.py", "reactselect_check.py",
         "longradio_check.py", "page_signals_check.py", "failfast_check.py",
-        "late_continue_check.py",
+        "late_continue_check.py", "two_forms_check.py", "stale_locate_check.py",
+        "year_box_check.py", "escape_check.py", "sf_filter_check.py",
     ],
-    "attach": ["chooser_check.py", "jobvite_upload_check.py", "taleo_check.py"],
+    "attach": ["chooser_check.py", "jobvite_upload_check.py", "taleo_check.py",
+               "photo_picker_check.py"],
     "linkedin": ["li_ready_e2e.py", "li_noisy_repro.py", "li_rerender_repro.py",
                  "li_unwired_check.py"],
     "indeed": ["indeed_check.py"],
@@ -68,7 +70,8 @@ GROUPS: dict[str, list[str]] = {
     ],
     "queue": ["queue_e2e.py"],
     "ui": ["ui_check.py", "queue_ui_check.py", "chat_ui_check.py",
-           "pager_check.py", "readme_check.py"],
+           "pager_check.py", "profile_ui_check.py", "held_ui_check.py",
+           "answers_ui_check.py", "readme_check.py", "run_settings_ui_check.py", "fit_ui_check.py"],
 }
 
 # The slow ones, worst first, so -j starts them before it starts anything it
@@ -100,8 +103,8 @@ TOUCHES: list[tuple[str, tuple[str, ...]]] = [
     ("src/apply/worker.py", ("apply", "sites", "attach", "submit", "queue", "indeed")),
     ("src/apply/browser.py", ("apply", "sites", "attach")),
     ("src/apply/resolver.py", ("apply", "sites")),
-    ("src/apply/profile.py", ("apply", "sites")),
-    ("src/answers.py", ("apply", "sites")),
+    ("src/apply/profile.py", ("apply", "sites", "ui")),   # the Profile page reads and saves it
+    ("src/answers.py", ("apply", "sites", "ui")),   # the Saved answers page edits it
     ("src/apply/", ("apply", "sites")),
     ("src/web/static/", ("ui", "queue")),
     ("src/web/", ("ui", "queue")),

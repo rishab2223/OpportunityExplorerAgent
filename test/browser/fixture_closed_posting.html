@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Modelled on careers.cisco.com/global/en/job/2021693 (Oct 2026): a closed
+     posting that still carries its Save job / Apply Now buttons, under a
+     cookie banner. -->
+<title>Job</title>
+</head>
+<body>
+<div role="dialog" aria-label="Privacy">
+  <p>Cookies allow us to optimise your use of our website.</p>
+  <button>Reject</button> <button>Accept</button>
+</div>
+<main id="job"></main>
+<script>
+  // Like Phenom, the job is drawn a moment after the page itself loads, so
+  // the closed check that runs on arrival sees an empty page.
+  setTimeout(function () {
+    document.getElementById("job").innerHTML =
+      '<h1>Software Engineer</h1>' +
+      '<button>Save job</button> <a href="#" class="button">Apply Now</a> <button>Share</button>' +
+      '<p>Thanks for your interest in Example. We are not accepting new applications for this ' +
+      'role at this time. Please check back later for updates or explore other ' +
+      'opportunities with us.</p>';
+  }, 1200);
+</script>
+</body>
+</html>

@@ -13,7 +13,6 @@ from e2e_common import E2E, TIMES, answers, run, time, worker
 
 # Pass 1: cold bank. Resume choice + cover letter (one revision) + one plan call.
 s1 = run("easy-pass1", easy_url, [
-    "done",                          # ready
     "tailored",                      # resume choice modal
     "__revise__ make it shorter",    # cover letter: ask for changes
     "__use__\nMy own final wording.",  # cover letter: hand-edited, accepted
@@ -39,7 +38,6 @@ assert answers.recall("Do you need visa sponsorship?")["answer"] == "No"
 # Pass 2: warm bank. Resume remembered? No - new session, so it asks again.
 # Letter is redrafted (per job), accepted as-is with no revision.
 s2 = run("easy-pass2", easy_url, [
-    "done",
     "default",                    # this time pick the default resume
     "__use__\nDrafted letter body.",
     "done",
@@ -55,7 +53,7 @@ assert all("sponsorship" not in q.lower() for q in s2.asked), s2.asked
 # application from another origin): the top document has no fields, the
 # frame does, and everything - fills, the upload, the letter - works there.
 iframe_url = (E2E / "fixture_iframe.html").as_uri()
-s2b = run("iframe", iframe_url, ["done", "default", "__use__\nDrafted letter body.", "done"], expect_calls=2)
+s2b = run("iframe", iframe_url, ["default", "__use__\nDrafted letter body.", "done"], expect_calls=2)
 logs2b = "\n".join(s2b.logs)
 assert "[profile] Filled Full name = Test User" in logs2b, logs2b
 assert "[resume] Uploaded default_resume.pdf" in logs2b, logs2b
@@ -66,7 +64,7 @@ assert not any("cannot see any form fields" in q for q in s2b.asked), s2b.asked
 # letter" command at the SUBMIT HAND-OFF prompt reopens the letter modal
 # (typing it there used to loop the same prompt forever).
 s3 = run("easy-skip", easy_url, [
-    "done", "skip", "skip",
+    "skip", "skip",
     "cover letter",                # at the hand-off: must open the modal
     "__use__\nLate letter.",       # accept -> saved to the run folder
     "done",
@@ -78,7 +76,7 @@ assert "Cover letter ready" in logs3, logs3
 assert (SCRATCH / "cover_DummyCo_Software_Engineer.tex").exists(), "letter not saved"
 
 # External path: listing -> new tab -> employer form (no attachments there).
-s4 = run("external", listing_url, ["done", "done"], expect_calls=1)
+s4 = run("external", listing_url, ["done"], expect_calls=1)
 logs4 = "\n".join(s4.logs)
 assert "Clicked Apply for this job" in logs4
 assert "Switched to" in logs4 and "fixture_form" in logs4
@@ -88,7 +86,7 @@ assert "Switched to" in logs4 and "fixture_form" in logs4
 # snapshot must scope to the dialog: profile fills the field, no model call,
 # and no background junk is ever touched.
 modal_url = (E2E / "fixture_modal.html").as_uri()
-s5 = run("modal", modal_url, ["done", "done"], expect_calls=0)
+s5 = run("modal", modal_url, ["done"], expect_calls=0)
 logs5 = "\n".join(s5.logs)
 assert "[profile] Filled Full name = Test User" in logs5, logs5
 assert "Junk" not in logs5, logs5
@@ -102,7 +100,7 @@ greenhouse_url = (E2E / "fixture_greenhouse.html").as_uri()
 # id. The resume goes straight into its input (no tile clicking), the letter
 # input drafts a letter (1 call) which is skipped here, and the tiles stay
 # silent for the resume (already attached) but hint for the skipped letter.
-s6 = run("greenhouse", greenhouse_url, ["done", "tailored", "skip", "done"], expect_calls=1)
+s6 = run("greenhouse", greenhouse_url, ["tailored", "skip", "done"], expect_calls=1)
 logs6 = "\n".join(s6.logs)
 assert s6.choices == ["resume", "cover_letter"], s6.choices
 assert "[resume] Uploaded dummy_resume.pdf to Attach" in logs6, logs6
@@ -118,7 +116,7 @@ assert "[profile] Filled Full name = Test User" in logs6, logs6
 # agent hands off, the USER opens the popup (timer here), and the watch ends
 # the wait so the popup's fields get filled - no clicking by the agent.
 popup_url = (E2E / "fixture_popup.html").as_uri()
-s7 = run("popup", popup_url, ["done", "__wait__", "done"], expect_calls=0)
+s7 = run("popup", popup_url, ["__wait__", "done"], expect_calls=0)
 logs7 = "\n".join(s7.logs)
 assert "The page changed" in logs7, logs7
 assert "[profile] Filled Full name = Test User" in logs7, logs7
@@ -131,7 +129,7 @@ assert "Everything I can fill is done" in s7.asked[-1] and "Submit application" 
 # modal (where it used to ask the model, which clicked the blocked background
 # "Easy Apply" button and scrolled the page under the popup).
 late_url = (E2E / "fixture_latemodal.html").as_uri()
-s8 = run("late-modal", late_url, ["done", "done"], expect_calls=0)
+s8 = run("late-modal", late_url, ["done"], expect_calls=0)
 logs8 = "\n".join(s8.logs)
 assert "still loading; waiting" in logs8, logs8
 assert "[profile] Filled Full name = Test User" in logs8, logs8
@@ -141,7 +139,7 @@ assert "Easy Apply" not in logs8 and "search" not in logs8.lower(), logs8
 # Plain DOM queries could not see it, so the scan read the page behind the
 # modal; the snapshot must walk shadow roots and scope to the dialog inside.
 shadow_url = (E2E / "fixture_shadow.html").as_uri()
-s9 = run("shadow-modal", shadow_url, ["done", "done"], expect_calls=0)
+s9 = run("shadow-modal", shadow_url, ["done"], expect_calls=0)
 logs9 = "\n".join(s9.logs)
 assert "[profile] Filled Full name = Test User" in logs9, logs9
 assert "[profile] Filled Location (city) = Bangalore" in logs9, logs9
@@ -153,7 +151,7 @@ assert "Submit application" in s9.asked[-1], s9.asked
 # in the shadow root. The hand-off watch must read it and END the session as
 # applied - the user typed nothing, and nothing was left open.
 sent_url = (E2E / "fixture_sent.html").as_uri()
-s10 = run("sent", sent_url, ["done", "__wait__"], expect_calls=0)
+s10 = run("sent", sent_url, ["__wait__"], expect_calls=0)
 logs10 = "\n".join(s10.logs)
 assert "The page confirms the application was sent" in logs10, logs10
 assert "Not now" not in logs10 and "Update profile" not in logs10, logs10
@@ -161,7 +159,7 @@ assert "Not now" not in logs10 and "Update profile" not in logs10, logs10
 # Workday shape: "Select file" over a display:none input (upload goes straight
 # in, no clicking asked of the user), then dropdown BUTTONS - Country and the
 # phone code from the profile, the device type from the model - then submit.
-s11 = run("workday", workday_url, ["done", "tailored", "done"], expect_calls=1)
+s11 = run("workday", workday_url, ["tailored", "done"], expect_calls=1)
 logs11 = "\n".join(s11.logs)
 assert "[resume] Uploaded dummy_resume.pdf via 'Select file'" in logs11, logs11
 assert "Now click" not in logs11, logs11
@@ -176,7 +174,7 @@ assert "Submit application" in s11.asked[-1], s11.asked
 # A Next that goes nowhere: three tries, then ask the user with the page's
 # error text - never fifteen "Clicked Next" lines.
 stuck_url = (E2E / "fixture_stuck.html").as_uri()
-s12 = run("stuck-next", stuck_url, ["done", "done", "done"], expect_calls=0)
+s12 = run("stuck-next", stuck_url, ["done", "done"], expect_calls=0)
 logs12 = "\n".join(s12.logs)
 assert logs12.count("Clicked Next") == 3, logs12   # 2 stuck (page named the error) + 1 that moved on
 assert any("not moving the form on" in q and "Work Authorization is required" in q for q in s12.asked), s12.asked

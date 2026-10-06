@@ -36,10 +36,13 @@ def cmd_run(config_path: Path | None) -> int:
     state = initial_state(cfg, env)
     ts = state["run_timestamp"]
     progress.start_run(stamp_for(ts), run_dir_for(ts))
+    result: dict = {}
     try:
         result = graph.invoke(state)
     finally:
-        progress.finish_run("done")
+        # The web runner reports the real outcome; the CLI said "done" even
+        # when a step had failed, so run.log contradicted run.json.
+        progress.finish_run("failed" if result.get("failed_step") else "done")
     n = len(result.get("matches") or [])
     run_dir = result.get("run_dir") or ""
     run_path = result.get("run_output_path") or ""
@@ -56,7 +59,9 @@ def cmd_run(config_path: Path | None) -> int:
         elif run_path:
             print(f"Run output: {run_path}", file=sys.stderr)
         return 1
-    print(f"OK: {n} match(es)")
+    held = len(result.get("held_back") or [])
+    print(f"OK: {n} match(es)" + (f", {held} held back for review (see Held back in the web UI)"
+                                  if held else ""))
     if run_dir:
         print(f"Run folder: {run_dir}")
     if run_path:

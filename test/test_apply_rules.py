@@ -136,6 +136,15 @@ class SubmittedPageTests(unittest.TestCase):
             "This posting has expired and applications are closed.",
             "This job has expired",
             "No longer accepting applications",
+            # Cisco's closed posting still carries its Apply Now button.
+            "Save job Apply Now Share Thanks for your interest in Cisco. We are not "
+            "accepting new applications for this role at this time.",
+            "We are no longer accepting further applications.",
+            # US Bank on Phenom, under a cookie banner and a job search bar.
+            "Candidate login Saved jobs (0) Careers home About us\n"
+            "The job you are searching for is not available.\n"
+            "Find more jobs to match your strengths.",
+            "This position is currently not available",
             # A posting taken down does not use the word "closed" at all.
             "Unable to load the page. Job id provided may not be valid or the "
             "job posting has been removed.",
@@ -147,9 +156,29 @@ class SubmittedPageTests(unittest.TestCase):
             "Job openings at Capgemini",
             # "removed" on its own is ordinary form wording.
             "Remove experience. Removed the attachment from your application.",
+            # A live form's own wording about applications.
+            "We are accepting new applications for this role. Review applications below.",
+            # Job descriptions, not a closed posting.
+            "This position is not available for remote work. Apply below.",
+            "The role is not available to candidates outside India, so please apply only if local.",
             "",
         ):
             self.assertFalse(_looks_closed(text), text)
+
+    def test_a_greenhouse_link_to_a_closed_job_is_read_by_its_address(self) -> None:
+        # Speechify (Oct 2026): grnh.se -> the board with ?error=true, and a
+        # red banner that fades before anyone reads it.
+        from src.apply.worker import CLOSED_ADDRESS_RE
+
+        for url in ("https://job-boards.greenhouse.io/speechify?error=true",
+                    "https://boards.greenhouse.io/acme/?gh_src=x&error=true",
+                    "https://job-boards.eu.greenhouse.io/acme?error=true"):
+            self.assertTrue(CLOSED_ADDRESS_RE.search(url), url)
+        for url in ("https://job-boards.greenhouse.io/speechify/jobs/4000123?error=true",
+                    "https://job-boards.greenhouse.io/speechify",
+                    "https://job-boards.greenhouse.io/speechify?error=false",
+                    "https://example.com/careers?error=true"):
+            self.assertFalse(CLOSED_ADDRESS_RE.search(url), url)
 
     def test_submitted_words_exclude_done(self) -> None:
         # On the no-fields prompt "done" means "I opened the form", so it must
@@ -211,6 +240,65 @@ class AffirmativeTests(unittest.TestCase):
     def test_words_not_substrings(self) -> None:
         self.assertFalse(_is_affirmative("yearly"))  # contains "y"
         self.assertFalse(_is_affirmative("may"))
+
+
+class StepOnlyTests(unittest.TestCase):
+    def test_a_next_is_a_step_and_review_and_submit_is_the_end(self) -> None:
+        from src.apply.worker import _is_step_only
+
+        for label in ("Next", "Continue", "Save and Continue", "Review", "Next step"):
+            self.assertTrue(_is_step_only(label), label)
+        for label in ("Review and Submit", "Review & submit application", "Submit", ""):
+            self.assertFalse(_is_step_only(label), label)
+
+
+class NamedOptionTests(unittest.TestCase):
+    """Databricks (Oct 2026): asked whether to tick 'None of the above', the
+    candidate said "none", which read as a no and unticked it."""
+
+    NONE = {"tag": "input", "type": "checkbox", "label": "None of the above"}
+    NA = {"tag": "input", "type": "checkbox",
+          "label": "Not applicable (i.e., I selected “none of the above” for the prior question)"}
+
+    def test_naming_the_box_ticks_it(self) -> None:
+        from src.apply.worker import _names_option
+
+        self.assertTrue(_names_option(self.NONE, "none"))
+        self.assertTrue(_names_option(self.NONE, "None of the above"))
+        self.assertTrue(_names_option(self.NA, "not applicable"))
+
+    def test_a_yes_or_no_is_still_a_yes_or_no(self) -> None:
+        from src.apply.worker import _names_option
+
+        for said in ("no", "not", "yes", "leave", "", "dont"):
+            self.assertFalse(_names_option(self.NONE, said), said)
+        self.assertFalse(_names_option(self.NONE, "above all"))   # not a phrase in it
+        self.assertFalse(_names_option(self.NONE, "no"))
+
+    def test_a_check_action_with_the_name_ticks(self) -> None:
+        from unittest import mock
+
+        from src.apply import worker
+
+        with mock.patch.object(worker.browser, "locate") as locate, \
+                mock.patch.object(worker, "_apply_value") as apply_value:
+            locate.return_value.count.return_value = 1
+            locate.return_value.is_visible.return_value = False
+            action = worker.ApplyAction(action="check", field_id=1, value="none")
+            worker._execute(None, action, {**self.NONE, "id": 1}, "", mock.MagicMock())
+        self.assertIs(apply_value.call_args.kwargs["wants_on"], True)
+
+
+class ChoiceGroupTests(unittest.TestCase):
+    def test_a_checkbox_list_is_one_question_only_by_shared_name(self) -> None:
+        from src.apply.worker import _choice_group
+
+        boxed = {"type": "checkbox", "name": "question_351[]", "group": "Select all that apply"}
+        consent = {"type": "checkbox", "name": "", "group": "Declarations"}
+        self.assertEqual(_choice_group(boxed), "question_351[]")
+        self.assertEqual(_choice_group(consent), "")
+        self.assertEqual(_choice_group({"type": "radio", "name": "", "group": "Q"}), "Q")
+        self.assertEqual(_choice_group({"type": "text", "name": "x"}), "")
 
 
 class SubmitDetectionTests(unittest.TestCase):
@@ -792,7 +880,6 @@ class WorkSectionAddTests(TempDbTestCase):
 
     def _profile(self, **extra):
         from src.apply import profile
-        import json as _json
         profile.PROFILE_PATH.write_text(
             json.dumps({"full_name": "T", **extra}), encoding="utf-8")
 
@@ -1311,18 +1398,64 @@ class OpeningTests(TempDbTestCase):
             worker.run_session(sess, {"apply_url": url}, "", worker.AppConfig(), None)
         return seen
 
-    def test_dump_is_understood_from_the_very_first_question(self) -> None:
-        # The Dump button pressed at "Ready to start?" was taken as the answer
-        # "ready": the hook went in fifty lines after that question.
-        (question, could_dump), = self._open("https://careers.example.test/job/1")
-        self.assertIn("Ready to start", question)
-        self.assertTrue(could_dump)
+    def test_any_other_site_starts_without_asking(self) -> None:
+        # "Ready to start? Type done" stopped every employer-site job before
+        # anything happened - 55 of 61 Indeed jobs link straight to one (Oct
+        # 2 2026). The loop is reached with nothing asked, and the Dump hook
+        # is already in place there: Dump pressed at the old question was
+        # once taken as the answer "ready".
+        def reached_loop(page):
+            seen.append(("loop", sess_ref[0].on_dump is not None))
+            raise apply_session.Aborted("stop here")
+
+        from src.apply import session as apply_session
+
+        seen: list[tuple[str, bool]] = []
+        sess_ref: list = []
+
+        class Sess(apply_session.ApplySession):
+            def ask(self, question, suggestion=""):
+                seen.append((question, self.on_dump is not None))
+                raise apply_session.Aborted("stop here")
+
+        sess = Sess("stamp", "job", "label")
+        sess_ref.append(sess)
+        url = "https://careers.example.test/job/1"
+        page = type("P", (), {"url": url})()
+        context = type("C", (), {"pages": [page], "close": lambda self: None})()
+        with unittest.mock.patch.object(worker.browser, "launch", return_value=(None, context, page)), \
+             unittest.mock.patch.object(worker, "make_invoker", return_value=None), \
+             unittest.mock.patch.object(worker.browser, "current_page", lambda c, p: p), \
+             unittest.mock.patch.object(worker.browser, "page_blocked", reached_loop):
+            worker.run_session(sess, {"apply_url": url}, "", worker.AppConfig(), None)
+        self.assertEqual(seen, [("loop", True)])
 
     def test_an_indeed_job_starts_without_asking(self) -> None:
         # "Ready to start? Type done" sat unanswered for three minutes on a
         # real Indeed session, the Apply button in plain view.
         seen = self._open("https://in.indeed.com/job/software-developer-1")
         self.assertEqual(seen, [("indeed.start", True)])
+
+    def test_an_expired_indeed_job_is_recorded_closed_without_asking(self) -> None:
+        from src.apply import session as apply_session
+
+        asked: list[str] = []
+
+        class Sess(apply_session.ApplySession):
+            def ask(self, question, suggestion=""):
+                asked.append(question)
+                raise apply_session.Aborted("stop here")
+
+        sess = Sess("stamp", "job", "label")
+        url = "https://in.indeed.com/viewjob?jk=1"
+        page = type("P", (), {"url": url})()
+        context = type("C", (), {"pages": [page], "close": lambda self: None})()
+        with unittest.mock.patch.object(worker.browser, "launch", return_value=(None, context, page)), \
+             unittest.mock.patch.object(worker, "make_invoker", return_value=None), \
+             unittest.mock.patch.object(worker.indeed, "start", lambda page, sess: "closed"):
+            worker.run_session(sess, {"apply_url": url}, "", worker.AppConfig(), None)
+        self.assertEqual(asked, [])
+        self.assertEqual(sess.status, "closed")
 
 
 class DuplicateRowTests(TempDbTestCase):
@@ -1335,6 +1468,53 @@ class DuplicateRowTests(TempDbTestCase):
         self.assertEqual(worker._choose_option(["Afghanistan (+93)", "Afghanistan (+93)", "India (+91)", "India (+91)"], "+91"), 2)
         # Two DIFFERENT rows containing the value stay ambiguous.
         self.assertEqual(worker._choose_option(["Bangalore, Odisha", "Bangalore, Karnataka"], "Bangalore,"), -1)
+
+
+class ReplyAtHandOffTests(unittest.TestCase):
+    """At "This step is filled in", the candidate typed the exact name of
+    the option a retired dropdown needed, and was asked the same again."""
+
+    def select(self, fid, label, options, value="", required=True):
+        return {"id": fid, "tag": "select", "type": "", "label": label, "value": value,
+                "required": required, "options": options}
+
+    def run_reply(self, fields, reply, every=None):
+        applied = []
+        with unittest.mock.patch.object(worker, "_apply_value",
+                                        lambda page, field, value, pdf, sess, **kw: applied.append(
+                                            (field["label"], value, kw.get("source")))), \
+             unittest.mock.patch.object(worker.browser, "locate", lambda *a: None), \
+             unittest.mock.patch.object(worker, "_all_select_options", lambda loc: every or []):
+            picked = worker._reply_picks_option(None, fields, reply, types.SimpleNamespace(log=print))
+        return picked, applied
+
+    def test_an_option_name_is_selected(self) -> None:
+        study = self.select(31, "Field of study*", ["Please Select", "Accounting"])
+        picked, applied = self.run_reply(
+            [study], "computer and information science",
+            every=["Please Select", "Accounting", "Computer and Information Science"])
+        self.assertIs(picked, study)
+        self.assertEqual(applied, [("Field of study*", "Computer and Information Science", "you")])
+
+    def test_ambiguous_or_unknown_replies_are_left_alone(self) -> None:
+        a = self.select(1, "Degree*", ["Please Select", "Other"])
+        b = self.select(2, "Field of study*", ["Please Select", "Other"])
+        self.assertEqual(self.run_reply([a, b], "Other"), (None, []))
+        self.assertEqual(self.run_reply([a], "please fix the degree"), (None, []))
+
+    def test_a_filled_dropdown_is_not_changed(self) -> None:
+        done = self.select(1, "Degree*", ["Please Select", "Bachelors"], value="Bachelors")
+        self.assertEqual(self.run_reply([done], "Bachelors"), (None, []))
+
+    def test_guidance_reopens_retired_required_fields(self) -> None:
+        empty = self.select(31, "Field of study*", ["Please Select"])
+        optional = self.select(32, "Minor", ["Please Select"], required=False)
+        key = _field_key(empty, worker._field_label(empty))
+        other = _field_key(optional, worker._field_label(optional))
+        handled, attempts, ignored = {key, other}, {key: 3}, {}
+        self.assertEqual(worker._reopen_required([empty, optional], handled, attempts, ignored), 1)
+        self.assertEqual(handled, {other})        # the optional one stays retired
+        self.assertNotIn(key, attempts)
 
 
 class SkillsBoxTests(TempDbTestCase):
@@ -2102,6 +2282,212 @@ class PromptFieldBudgetTests(TempDbTestCase):
         self.assertNotIn("FIELDS NOT LISTED", prompt_for([self._box(n) for n in range(5)]))
 
 
+class DumpWhileBusyTests(unittest.TestCase):
+    """Dump pressed during a model call was refused as "the agent is busy",
+    and had to be pressed again once the call ended (Puma, Oct 2 2026)."""
+
+    def session(self):
+        from src.apply import session as apply_session
+
+        sess = apply_session.ApplySession("stamp", "job", "label")
+        sess.dumped = []
+        sess.on_dump = lambda delay=0: sess.dumped.append(delay)
+        return sess
+
+    def test_a_dump_waits_for_the_next_pause_and_runs_once(self) -> None:
+        sess = self.session()
+        sess.request_dump(0)
+        sess.request_dump(10)
+        self.assertEqual(sess.dumped, [])
+        sess.service_dumps()
+        sess.service_dumps()
+        self.assertEqual(sess.dumped, [0, 10])
+
+    def test_a_dump_is_saved_while_the_model_is_still_thinking(self) -> None:
+        import threading
+        import time as clock
+
+        sess = self.session()
+        release = threading.Event()
+
+        def slow_call():
+            release.wait(5)
+            return "plan"
+
+        def press_dump_then_answer():
+            clock.sleep(0.3)
+            sess.request_dump(0)
+            clock.sleep(0.6)            # the dump is taken while the call still runs
+            self.assertEqual(sess.dumped, [0])
+            release.set()
+
+        presser = threading.Thread(target=press_dump_then_answer)
+        presser.start()
+        self.assertEqual(worker._while_model_thinks(sess, slow_call), "plan")
+        presser.join()
+        self.assertEqual(sess.dumped, [0])
+
+    def test_page_events_are_let_through_during_the_call(self) -> None:
+        # Five clicks on a photo box queued for 38 s, then landed at once.
+        import time as clock
+
+        sess = self.session()
+        pumped = []
+        sess.pump = lambda: pumped.append(1)
+        worker._while_model_thinks(sess, lambda: clock.sleep(0.8) or "plan")
+        self.assertGreaterEqual(len(pumped), 2)
+
+    def test_abort_does_not_wait_for_the_model(self) -> None:
+        import threading
+        import time as clock
+        from src.apply import session as apply_session
+
+        sess = self.session()
+        threading.Timer(0.3, sess.abort).start()
+        started = clock.monotonic()
+        with self.assertRaises(apply_session.Aborted):
+            worker._while_model_thinks(sess, lambda: clock.sleep(5))
+        self.assertLess(clock.monotonic() - started, 2)
+
+    def test_the_chat_takes_a_dump_while_the_agent_is_busy(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from src.apply import session as apply_session
+        from src.web.app import app
+
+        sess = self.session()
+        sess.status = "running"
+        with unittest.mock.patch.object(apply_session, "get", lambda sid: sess):
+            client = TestClient(app)
+            dumped = client.post("/api/apply/s1/chat", json={"text": "dump"})
+            answer = client.post("/api/apply/s1/chat", json={"text": "Immediate"})
+        self.assertEqual(dumped.status_code, 200)
+        self.assertEqual(answer.status_code, 409)       # a real answer still waits
+        sess.service_dumps()
+        self.assertEqual(sess.dumped, [0])
+
+
+class RedoByNameTests(unittest.TestCase):
+    """"fix date of birth" reopened Professional Details - the last answer
+    the candidate gave - because Date of Birth was filled by the model, not
+    answered by them (CryptoMize, Oct 2 2026)."""
+
+    ANSWERED = {"k1": {"label": "Professional Details *", "value": "I'm a software engineer..."}}
+    FIELDS = [
+        {"tag": "input", "type": "date", "label": "Date of Birth *", "id": 15, "value": "1997-10-03"},
+        {"tag": "textarea", "type": "", "label": "Professional Details *", "id": 25, "value": "..."},
+        {"tag": "input", "type": "text", "label": "Date of Joining", "id": 40, "value": ""},
+    ]
+
+    def test_words_that_name_no_answer_do_not_fall_back(self) -> None:
+        self.assertEqual(worker._redo_target(self.ANSWERED, "date of birth"), (None, None))
+
+    def test_no_words_still_means_the_last_answer(self) -> None:
+        self.assertEqual(worker._redo_target(self.ANSWERED, "")[0], "k1")
+
+    def test_a_box_is_found_by_every_word_named(self) -> None:
+        self.assertEqual(worker._field_named(self.FIELDS, "date of birth")["id"], 15)
+        self.assertIsNone(worker._field_named(self.FIELDS, "date"))      # two boxes say "date"
+        self.assertIsNone(worker._field_named(self.FIELDS, "salary"))
+
+    def test_a_date_is_spelled_out(self) -> None:
+        # The browser draws it month first; the candidate must not read March.
+        self.assertEqual(worker._spelled_date("1997-10-03"), "3 October 1997")
+
+
+class NotFoundPageTests(unittest.TestCase):
+    """Puma's posting opened "404 | PUMA®" - PAGE NOT FOUND - and the agent
+    spent two model calls on it, then offered the careers home page."""
+
+    def page(self, title: str, text: str):
+        self.addCleanup(setattr, browser, "full_page_text", browser.full_page_text)
+        browser.full_page_text = lambda page: text
+        return types.SimpleNamespace(url="https://about.puma.com/node/24623", title=lambda: title)
+
+    def test_dead_links(self) -> None:
+        for title, text in (
+            ("404 | PUMA®", "This is PUMA Newsroom Careers"),
+            ("PUMA", "404 PAGE NOT FOUND. The link you clicked may be broken or the page may "
+                     "have been removed."),
+            ("Careers", "Sorry, the page you requested could not be found."),
+            ("Error 404", ""),
+            ("Jobs", "404 - not found"),
+            # Intuit (Oct 2 2026), titled "Custom Job Error".
+            ("Custom Job Error", "Search Jobs by Keyword Location Search Jobs Job Not Found We are "
+                                 "sorry this job post no longer exists. Luckily, we have other jobs"),
+            ("Careers", "This position is no longer available."),
+        ):
+            with self.subTest(title=title, text=text[:30]):
+                self.assertTrue(worker._looks_not_found(self.page(title, text)))
+
+    def test_living_pages(self) -> None:
+        for title, text in (
+            ("Senior Engineer | Acme", "We found 404 ways to say thank you. Apply now."),
+            ("Careers", "Your search found no jobs. Try another keyword."),
+            ("Apply", "Customers can't find what they need? You'll fix that."),
+            ("Senior Engineer", "This role is no longer remote-only; you'll work from Gurgaon."),
+            ("Engineer", "Legacy job scheduler no longer exists in our new stack."),
+        ):
+            with self.subTest(text=text[:30]):
+                self.assertFalse(worker._looks_not_found(self.page(title, text)))
+
+
+class ThankYouAddressTests(unittest.TestCase):
+    """Veralto's Phenom form (Oct 2 2026) ended on
+    /global/en/applythankyou?status=thankyou&jobSeqNo=..., titled "Thank you
+    for applying", whose body says only "Thank you for your interest." - and
+    the session asked the candidate whether they had submitted it."""
+
+    FORM_URL = "https://jobs.veralto.com/global/en/apply?jobSeqNo=R1&step=2"
+    THANKS_URL = ("https://jobs.veralto.com/global/en/applythankyou?status=thankyou"
+                  "&jobSeqNo=DANVGTGLOBALR10268102EXTERNALENGLOBAL")
+    FORM = [{"tag": "input", "type": "text", "label": "Full name", "id": 1}]
+
+    def page(self, url: str, title: str, text: str):
+        self.addCleanup(setattr, browser, "full_page_text", browser.full_page_text)
+        browser.full_page_text = lambda page: text
+        return types.SimpleNamespace(url=url, title=lambda: title)
+
+    def baseline(self, title="Software Engineer Specialist | Veralto"):
+        holder: dict = {}
+        worker._take_submitted_baseline(
+            self.page(self.FORM_URL, title, "Apply now. Contact information"), self.FORM, holder)
+        return holder
+
+    def test_arriving_at_the_thank_you_address_is_a_submit(self) -> None:
+        holder = self.baseline()
+        found = worker._newly_submitted(
+            self.page(self.THANKS_URL, "", "Thank you for your interest."), holder)
+        self.assertIn("thank-you address", found)
+
+    def test_a_thank_you_title_that_was_not_there_before_counts(self) -> None:
+        holder = self.baseline()
+        found = worker._newly_submitted(
+            self.page("https://jobs.example.test/done", "Thank you for applying",
+                      "Thank you for your interest."), holder)
+        self.assertIn("thank you for applying", found)
+
+    def test_a_title_the_form_already_had_does_not(self) -> None:
+        holder = self.baseline(title="Thank you for applying - complete the form below")
+        self.assertEqual(worker._newly_submitted(
+            self.page(self.FORM_URL, "Thank you for applying - complete the form below",
+                      "Apply now."), holder), "")
+
+    def test_thank_you_for_your_interest_alone_is_not_evidence(self) -> None:
+        # Job descriptions end with it.
+        holder = self.baseline()
+        self.assertEqual(worker._newly_submitted(
+            self.page(self.FORM_URL, "Software Engineer Specialist | Veralto",
+                      "Thank you for your interest in Veralto."), holder), "")
+
+    def test_the_addresses(self) -> None:
+        for url in (self.THANKS_URL, "https://x.test/apply-thank-you", "https://x.test/en/applythankyou/"):
+            self.assertTrue(worker.SUBMITTED_URL_RE.search(url), url)
+        for url in ("https://x.test/apply?jobSeqNo=1", "https://x.test/thank-you-for-visiting",
+                    "https://x.test/apply?status=thankyounote"):
+            self.assertFalse(worker.SUBMITTED_URL_RE.search(url), url)
+
+
 class SubmittedBaselineTests(unittest.TestCase):
     """Only wording that was NOT on the page at the first read may record an
     application as applied.
@@ -2154,6 +2540,45 @@ class SubmittedBaselineTests(unittest.TestCase):
 
     def test_no_baseline_means_no_verdict(self) -> None:
         self.assertEqual(worker._newly_submitted(self._page_saying(self.CONFIRMED), {}), "")
+
+    def _page_at(self, url: str, text: str):
+        import types
+        page = self._page_saying(text)
+        return types.SimpleNamespace(url=url, _ignored=page)
+
+    def test_a_later_form_page_gets_its_own_baseline(self) -> None:
+        # Session opened on the job description (baseline taken there), then
+        # clicked through to a form whose intro says "Thank you for applying
+        # to Acme - complete the form below". That sentence was not in the
+        # first baseline, so it was read as new and the job recorded applied
+        # with nothing filled. A new URL with fields is a new document.
+        holder = {}
+        worker._take_submitted_baseline(
+            self._page_at("https://acme.test/jobs/1", self.DESCRIPTION), self.FORM, holder)
+        form = self._page_at(
+            "https://acme.test/jobs/1/apply?step=1",
+            "Thank you for applying to Acme! Please complete the form below.")
+        worker._take_submitted_baseline(form, self.FORM, holder)
+        self.assertEqual(worker._newly_submitted(form, holder), "")
+
+    def test_a_fieldless_page_after_the_form_keeps_the_forms_baseline(self) -> None:
+        # The confirmation page a submit lands on has no fields: its wording
+        # is exactly what must count, so the form's baseline stays in force.
+        holder = {}
+        worker._take_submitted_baseline(
+            self._page_at("https://acme.test/apply", self.DESCRIPTION), self.FORM, holder)
+        done = self._page_at("https://acme.test/apply/thanks", self.CONFIRMED)
+        worker._take_submitted_baseline(done, self.BUTTONS_ONLY, holder)
+        self.assertIn("application was sent to acme", worker._newly_submitted(done, holder))
+
+    def test_a_query_string_is_not_a_new_page(self) -> None:
+        holder = {}
+        worker._take_submitted_baseline(
+            self._page_at("https://acme.test/apply?step=1", self.DESCRIPTION), self.FORM, holder)
+        seen = holder["submitted_seen"]
+        worker._take_submitted_baseline(
+            self._page_at("https://acme.test/apply?step=2", self.CONFIRMED), self.FORM, holder)
+        self.assertIs(holder["submitted_seen"], seen)
 
     def test_marks_tell_sentences_apart_by_what_follows(self) -> None:
         marks = worker._submitted_marks(self.CONFIRMED)
@@ -2377,8 +2802,17 @@ class GovernmentIdentifierTests(unittest.TestCase):
         self.assertTrue(profile.is_secret("Choose Password:"))
         self.assertFalse(profile.is_identifier("Choose Password:"))
 
+    def test_a_secret_hint_is_a_whole_word(self) -> None:
+        # "pin" as a substring made "Shipping address" a secret, and refused
+        # every Indian Pincode box before the postal_code rule could see it.
+        for label in ("Security PIN", "4-digit PIN", "Enter OTP", "CVV", "Passcode"):
+            self.assertTrue(profile.is_secret(label), label)
+        for label in ("Pincode", "PIN Code", "Pin code *", "Zip / PIN", "PIN/Postal code",
+                      "Shipping address", "Your opinion", "Spinner", "Pinterest profile"):
+            self.assertFalse(profile.is_secret(label), label)
 
-class ApplyChoiceTests(unittest.TestCase):
+
+class ApplyChoiceCardTests(unittest.TestCase):
     """Two or more ways to apply is a question for the candidate. One way is
     not, and neither is a page telling you that you already applied."""
 
@@ -2411,6 +2845,17 @@ class ApplyChoiceTests(unittest.TestCase):
         # the chip's removal fix the session rather than merely tidy the list.
         self.assertEqual(
             len(worker._apply_choices([self._link("Apply on company website")])), 1)
+
+    def test_the_same_button_twice_is_one_way(self) -> None:
+        # Ashby (Proximal, Oct 2 2026): "Apply for this Job" above and below
+        # the description, and the candidate was asked to choose between
+        # "Apply for this Job / Apply for this Job".
+        top = {"tag": "a", "text": "Apply for this Job", "label": "Apply for this Job", "id": 3}
+        bottom = {"tag": "button", "text": "Apply for this job ", "label": "Apply for this job", "id": 41}
+        self.assertEqual([f["id"] for f in worker._apply_choices([top, bottom])], [3])
+        # ...while two different ways stay a choice.
+        other = {"tag": "a", "text": "Apply with LinkedIn", "label": "Apply with LinkedIn", "id": 7}
+        self.assertEqual([f["id"] for f in worker._apply_choices([top, other, bottom])], [3, 7])
 
 
 class WaitQuietTests(unittest.TestCase):
@@ -2659,7 +3104,7 @@ class LongRadioGroupTests(unittest.TestCase):
         self.assertEqual([len(f["options"]) for f in out], [46, 20])
 
 
-class SkillsBoxTests(unittest.TestCase):
+class SkillsBoxWordingTests(unittest.TestCase):
     """"Skill level" is not a skills box.
 
     A six-option proficiency dropdown was offered the profile's eleven skills,
@@ -2773,6 +3218,51 @@ class StatedLimitTests(unittest.TestCase):
         self.assertEqual(lines, [])
 
 
+class CollapsedRadioAnswerTests(TempDbTestCase):
+    """A long radio group is carried as ONE field whose label is the
+    question. When the candidate answers it through the ask gate, the answer
+    IS the option to pick. Handing on the literal "yes", as the one-option-
+    per-field radio path does, asked _pick_grouped_radio for an option called
+    "yes" on a 46-country list, and the cached answer repeated that on every
+    pass until the field was retired."""
+
+    class Sess:
+        def __init__(self, reply):
+            self.reply, self.logs, self.asked = reply, [], []
+
+        def log(self, text):
+            self.logs.append(text)
+
+        def ask(self, question, suggestion=""):
+            self.asked.append(question)
+            return self.reply
+
+    def test_the_answer_is_the_option_not_yes(self) -> None:
+        from src.apply import worker
+
+        field = {"id": 1, "tag": "input", "type": "radio", "label": "Nationality",
+                 "name": "nationality", "group": "", "section": "", "checked": False,
+                 "group_ids": list(range(10, 56)),
+                 "options": ["Afghanistan", "Albania", "India", "Zimbabwe"]}
+        seen: list[dict] = []
+
+        def fake_execute(page, action, fld, pdf_path, sess, history, notes, value=None, **kw):
+            seen.append({"field": fld, "value": value})
+            return "executed"
+
+        with unittest.mock.patch.object(worker, "_guarded_execute", fake_execute):
+            result = worker._run_action(
+                page=None,
+                action=ApplyAction(action="ask", field_id=1, confidence=0.9,
+                                   question="What is your nationality?"),
+                fields=[field], job={}, pdf_path="", sess=self.Sess("India"), history=[],
+                notes=[], handled=set(), attempts={}, session_answers={},
+                acted_keys=set(), holder=None,
+            )
+        self.assertEqual(result, "executed")
+        self.assertEqual(seen[0]["value"], "India")
+
+
 class DoneNeedsEvidenceTests(unittest.TestCase):
     """The model saying "done" is a claim, not a confirmation.
 
@@ -2812,7 +3302,7 @@ class DoneNeedsEvidenceTests(unittest.TestCase):
 
     def test_an_unconfirmed_claim_does_not_finish_the_session(self):
         sess = self.Sess()
-        self.assertEqual(self.fire(sess), "skipped")
+        self.assertEqual(self.fire(sess), "refused")
 
     def test_and_the_candidate_is_asked_rather_than_told(self):
         sess = self.Sess()
@@ -2856,7 +3346,10 @@ class DoneNeedsEvidenceTests(unittest.TestCase):
                 worker.browser, "full_page_text", return_value=text):
             seen = worker._submitted_marks(text)
             result = self.fire(sess, holder={"submitted_seen": seen})
-        self.assertEqual(result, "skipped")
+        # "refused", so the loop re-plans with the candidate's reply in hand
+        # instead of idling on an unchanged page until the no-op streak asks
+        # them again from scratch.
+        self.assertEqual(result, "refused")
         self.assertEqual(len(sess.asked), 1)
 
 

@@ -7,6 +7,16 @@ strict_sources: false
 # Compile each tailored .tex to a .pdf during the run. Needs latexmk or pdflatex
 # on PATH; when it fails the run still succeeds and records resume_pdf_error.
 compile_pdf: true
+# Resumes compiled side by side (1-16). One at a time took ~10 min for 117.
+pdf_concurrency: 6
+
+# run:       interview prep is written with every tailored resume (most of the
+#            tailoring call's time: ~60% of what it writes).
+# on_demand: written only for a job you open (Job info > Write interview prep).
+interview_prep: on_demand
+# Reuse a score or tailored resume an earlier run already made for the same
+# posting, resume and model, instead of calling the model again.
+reuse_enrichment: true
 
 # Cross-run job history (localData/job_history.db). Jobs you applied to are
 # dropped right after scrape on later runs; delete the file to reset.
@@ -16,6 +26,23 @@ history:
   skip_referral: true   # jobs with a referral pending/sent stay out until cleared as failed
   skip_closed: true     # jobs no longer accepting applications never come back
   match_similar: true   # also match by company+title when the site reissued its id
+
+# Drop jobs whose stated minimum experience is above yours, right after scrape
+# (before any scoring call). Your years come from total_experience_years in
+# your profile (user menu > Profile); the filter does nothing while it is empty.
+# Only the general requirement counts ("8+ years of software engineering
+# experience"), not skill lines ("3+ years of Kafka"); a posting that states
+# none is kept.
+experience:
+  enabled: true
+  tolerance_years: 1    # how far above your years a job may ask. 0 = strict; 1 at 6 years keeps 7+, drops 8+
+  # drop:   jobs over the limit are removed before scoring; you never see them.
+  # review: they are scored anyway (one cheap call each); those scoring
+  #         review_min_score or more appear in the Held back tab, strongest
+  #         first, at most review_max per run. Required once enabled.
+  mode: review
+  review_min_score: 9
+  review_max: 5
 
 # Which LLM writes the tailored resume + interview prep: openai | claude.
 # Scoring always uses openai.score_model (cheap, one call per scraped job).
@@ -43,8 +70,10 @@ openai:
   # Only used when apply_provider is openai.
   apply_model: gpt-5.6-luna
   # Parallel LLM calls. Scoring calls are short; enrichment calls are long.
-  score_concurrency: 8
-  enrich_concurrency: 4
+  # enrich_concurrency is used for Claude too (each agent-sdk call is its own
+  # process; lower it if your Claude plan starts refusing calls).
+  score_concurrency: 16
+  enrich_concurrency: 8
 
 resume:
   # Local file only. .tex writes tailored resumes; .pdf writes JSON only.
@@ -60,7 +89,7 @@ scrape:
   # each searchUrls entry at run time), plus a local posted_at filter.
   # 24h | 3d | 7d
   posted_within: "3d"
-  max_detail_jobs: 150
+  max_detail_jobs: 150   # per source; the run settings popup can set each source on its own
   exclude_keywords: []
   sources:
     - indeed

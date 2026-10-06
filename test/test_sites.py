@@ -557,3 +557,47 @@ class FocusEmployerTabTests(unittest.TestCase):
 
         page.context.pages[-1].bring_to_front = boom
         self.assertFalse(linkedin.focus_employer_tab(page, _Sess()))
+
+
+class IndeedExpiredTests(unittest.TestCase):
+    """An expired Indeed posting has no apply button; it used to cost the full
+    button wait and then a "type closed" question (Oct 2 2026, BlueMarvel)."""
+
+    class FakePage:
+        url = "https://in.indeed.com/viewjob?jk=1"
+
+        def __init__(self, text):
+            self.text = text
+            self.waited = 0
+
+        def wait_for_timeout(self, ms):
+            self.waited += ms
+
+        def locator(self, selector):
+            hidden = type("L", (), {"is_visible": lambda self: False})()
+            return type("Ls", (), {"first": hidden})()
+
+    def _start(self, text):
+        from src.apply import browser
+        from src.apply.sites import indeed
+
+        page = self.FakePage(text)
+        sess = _Sess()
+        self.addCleanup(setattr, browser, "page_text", browser.page_text)
+        browser.page_text = lambda target, limit=2500: target.text
+        return indeed.start(page, sess), page, sess
+
+    def test_the_expired_banner_closes_at_once(self) -> None:
+        kind, page, sess = self._start(
+            "This job has expired on Indeed\nReasons could include: the employer is "
+            "not accepting applications\nSoftware Developer\nBlueMarvel")
+        self.assertEqual(kind, "closed")
+        self.assertEqual(page.waited, 0)
+        self.assertIn("[indeed] This job has expired on Indeed.", sess.lines)
+
+    def test_a_page_without_the_banner_still_waits_for_a_button(self) -> None:
+        from src.apply.sites import indeed
+
+        kind, page, _ = self._start("Software Developer\nBlueMarvel")
+        self.assertEqual(kind, "")
+        self.assertEqual(page.waited, indeed.READY_TIMEOUT)

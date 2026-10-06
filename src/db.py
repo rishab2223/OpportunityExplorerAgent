@@ -55,6 +55,13 @@ CREATE TABLE IF NOT EXISTS cover_letters (
   text       TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS llm_cache (
+  kind       TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  value      TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (kind, key)
+);
 """
 
 _INIT_LOCK = threading.Lock()
@@ -87,6 +94,11 @@ def connect() -> sqlite3.Connection:
                     cols = {row[1] for row in conn.execute("PRAGMA table_info(job_history)")}
                     if "contact" not in cols:
                         conn.execute("ALTER TABLE job_history ADD COLUMN contact TEXT")
+                    # When the candidate pressed Use on this letter; a later
+                    # session attaches it without asking again.
+                    cols = {row[1] for row in conn.execute("PRAGMA table_info(cover_letters)")}
+                    if "accepted_at" not in cols:
+                        conn.execute("ALTER TABLE cover_letters ADD COLUMN accepted_at TEXT")
                     _initialized.add(key)
         return conn
     except BaseException:

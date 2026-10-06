@@ -70,7 +70,9 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      re.compile(r"^(last|family) name$|^surname$")),
     ("email", ("email",),
      re.compile(r"^(e?[-_]?mail|email[_ ]?address)$"),
-     re.compile(r"^(work |primary |your )?e ?mail( address)?$")),
+     # "Retype Email Address" (SuccessFactors) is the same address again.
+     re.compile(r"^(work |primary |your )?e ?mail( address)?$"
+                r"|^(retype|re ?type|re ?enter|confirm|repeat|verify)( your)? e ?mail( address)?$")),
     ("phone", ("tel", "tel-national"),
      re.compile(r"^(phone|mobile|phone[_ ]?number|mobile[_ ]?number|contact[_ ]?number)$"),
      re.compile(r"^(mobile|phone|mobile phone)( number)?$|^contact number$")),
@@ -80,10 +82,16 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
     # The value is derived in resolve() from phone_country_code / the phone.
     ("phone_country_code", (),
      re.compile(r"^(phone[_ ]?country[_ ]?code|country[_ ]?phone[_ ]?code|dial(ing)?[_ ]?code|country[_ ]?code)$"),
-     re.compile(r"^(phone |mobile )?country (phone )?code$|^country phone code$|^dial(ing)? code$|^phone code$")),
+     # "Country/Region Code" beside SuccessFactors' phone box.
+     re.compile(r"^(phone |mobile )?country (region )?(phone )?code$|^country phone code$"
+                r"|^dial(ing)? code$|^phone code$")),
     ("country", ("country-name", "country"),
      re.compile(r"^(country|country[_ ]?of[_ ]?residence|phone[_ ]?country)$"),
-     re.compile(r"^country( of residence)?$|^country ?/ ?region( code)?$")),
+     # "Country/Region of Residence:*" (SuccessFactors, Oct 2026) was left
+     # empty, and the State list below it - which follows the country - then
+     # offered the whole world.
+     re.compile(r"^country( ?/? ?region)?( of residence)?$|^country ?/ ?region( code)?$"
+                r"|^(current )?country of (residence|domicile)$")),
     # An explicit city wins over the one split out of "location".
     ("city", ("address-level2",),
      re.compile(r"^(city|town|current[_ ]?city)$"),
@@ -94,7 +102,9 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      re.compile(r"^(current |present )?(location|city)( city| of residence)?$")),
     ("state", ("address-level1",),
      re.compile(r"^(state|province|region|state[_ ]?province)$"),
-     re.compile(r"^state( ?/ ?(province|region|territory))?$|^province$")),
+     # The fingerprint drops the slash: "State/Province" reads "state province"
+     # (SuccessFactors, Oct 2026), which the slash-only pattern never matched.
+     re.compile(r"^state( ?/? ?(province|region|territory))?$|^province$")),
     ("address_line1", ("address-line1", "street-address"),
      re.compile(r"^(address|address[_ ]?line[_ ]?1|street|street[_ ]?address)$"),
      re.compile(r"^(street )?address( line ?1)?$")),
@@ -109,15 +119,21 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      # "Website link" is the label on Rippling's box; the anchored pattern
      # wanted the bare word and let it through empty.
      re.compile(r"\b(portfolio|personal (web)?site)\b|^website( link| url)?$")),
+    # EPAM (Oct 2026): "Most recent employer" and "Job Title at Recent
+    # employer". Anchored, so the title's label is not taken for the company.
     ("current_company", ("organization",),
      re.compile(r"^(company|current[_ ]?company|employer|organization)$"),
-     re.compile(r"\b(current |present )(company|employer)\b")),
+     re.compile(r"\b(current |present )(company|employer)\b"
+                r"|^(most |your )?(recent|last|latest|previous) (company|employer)( name)?$")),
     ("current_title", ("organization-title",),
      re.compile(r"^(title|job[_ ]?title|current[_ ]?title|designation)$"),
-     re.compile(r"\b(current |present )(title|designation|role)\b")),
+     re.compile(r"\b(current |present )(title|designation|role)\b"
+                r"|^(job )?(title|designation|role) at (your )?(most )?(current|recent|last|latest) "
+                r"(company|employer)$")),
+    # "Total Professional Experience*" (EPAM): a word may sit between.
     ("total_experience_years", (),
      re.compile(r"^(experience|total[_ ]?experience|years[_ ]?of[_ ]?experience)$"),
-     re.compile(r"\b(years? of|total) experience\b")),
+     re.compile(r"\b(years? of|total)( professional| work| industry| overall)? experience\b")),
     ("notice_period", (),
      re.compile(r"^notice([_ ]?period)?$"),
      re.compile(r"\bnotice period\b")),
@@ -130,18 +146,23 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
     ("salary_period", (),
      re.compile(r"^((current|expected)[_ ]?salary[_ ]?period|salary[_ ]?period|pay[_ ]?period)$"),
      re.compile(r"\b(salary|pay) period\b|\bper (annum|month)\b")),
+    # "Current Annual Compensation" (EPAM): a word may sit between.
     ("current_ctc", (),
      re.compile(r"^(current[_ ]?(ctc|salary|compensation))$"),
-     re.compile(r"\b(current|present) (ctc|salary|compensation|pay)\b")),
+     re.compile(r"\b(current|present)( annual| yearly| total| fixed| base)? (ctc|salary|compensation|pay)\b")),
     ("expected_ctc", (),
      re.compile(r"^(expected[_ ]?(ctc|salary|compensation))$"),
-     re.compile(r"\b(expected|desired) (ctc|salary|compensation|pay)\b")),
+     re.compile(r"\b(expected|desired)( annual| yearly| total| fixed| base)? (ctc|salary|compensation|pay)\b")),
     ("willing_to_relocate", (),
      re.compile(r"^(relocate|willing[_ ]?to[_ ]?relocate)$"),
      re.compile(r"\bwilling to relocate\b")),
     ("postal_code", ("postal-code",),
      re.compile(r"^(zip|zipcode|postal[_ ]?code|pin[_ ]?code|postcode)$"),
-     re.compile(r"^(zip|postal|pin)( ?/ ?postal)?( code)?$|^postcode$")),
+     # "Pincode", "PIN Code", "Zip / PIN", "PIN/Postal code": the fingerprint
+     # drops the slash, so the pair reads "zip pin". EPAM (Oct 2026): "PIN code
+     # (postal code)" reads "pin code postal code" - each name may carry its
+     # own "code".
+     re.compile(r"^(zip|postal|pin)( ?code)?( ?/? ?(postal|pin|zip)( ?code)?)?$|^postcode$")),
     ("date_of_birth", ("bday",),
      re.compile(r"^(dob|date[_ ]?of[_ ]?birth|birth[_ ]?date|birthdate)$"),
      re.compile(r"\b(date of birth|birth date)\b|^dob$")),
@@ -158,11 +179,24 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
     ("how_did_you_hear", (),
      re.compile(r"^(source|referral[_ ]?source|how[_ ]?did[_ ]?you[_ ]?hear)$"),
      re.compile(r"\bhow did you (hear|find|learn)\b|\bsource of (application|referral)\b")),
+    ("father_name", (),
+     re.compile(r"^father'?s?[_ ]?(full[_ ]?)?name$"),
+     re.compile(r"^(your )?father ?'?s? (full )?name$|^name of (your )?father$")),
+    # EPAM's optional "Preferred Pronouns" (Oct 2026). Only what the profile
+    # holds; an empty one leaves the box alone.
+    ("pronouns", (),
+     re.compile(r"^(preferred[_ ]?)?pronouns?$"),
+     re.compile(r"^(your |preferred )?pronouns?$")),
     # Relevant experience must be read BEFORE total experience, or "years of
     # relevant experience" resolves to the whole career.
     ("relevant_experience_years", (),
      re.compile(r"^(relevant[_ ]?experience|years[_ ]?of[_ ]?relevant[_ ]?experience)$"),
      re.compile(r"\brelevant experience\b")),
+    # One skill, not the list: the profile's first (strongest) skill. EPAM's
+    # "Primary Skill*" dropdown (Oct 2026). Derived in resolve().
+    ("primary_skill", (),
+     re.compile(r"^(primary|main)[_ ]?skill$"),
+     re.compile(r"^(primary|main|core) skill$")),
     # Education, split out of the one "education" line: a 345-entry "Field of
     # study" dropdown and a degree list are answered from the profile instead
     # of the model guessing "Computer Science", which is not an option.
@@ -254,6 +288,19 @@ WEBSITES_SECTION_RE = re.compile(
 _LEVEL_LABEL_RE = re.compile(r"\b(overall|proficiency|level|fluency|reading|writing|speaking)\b", re.IGNORECASE)
 _URL_LABEL_RE = re.compile(r"\b(url|website|link|address)\b", re.IGNORECASE)
 _NAMED_SITE_RE = re.compile(r"\b(linkedin|github|twitter|x\.com|facebook|instagram|stack ?overflow)\b", re.IGNORECASE)
+
+
+def plain_label(label: str) -> str:
+    """A label read as words. A box with no caption is labelled by its name -
+    DentCare's "language_proficiency[]" (Oct 2026) - and the underscore is a
+    word character, so neither "language" nor "proficiency" was a word in it:
+    the row went unfilled and its Add was clicked again for an entry that was
+    already there."""
+    return re.sub(r"[_\[\]]+", " ", label or "").strip()
+
+
+def is_language_name_label(label: str) -> bool:
+    return bool(re.match(r"^\s*languages?\b", plain_label(label), re.IGNORECASE))
 
 
 def named_link_field(field: dict[str, Any]) -> bool:
@@ -656,9 +703,9 @@ def entry_value(field: dict[str, Any], data: dict[str, Any]) -> str | None:
         if ordinal >= len(langs):
             return None
         name, level = langs[ordinal]
-        if re.match(r"^\s*languages?\b", label, re.IGNORECASE):
+        if is_language_name_label(label):
             return name
-        if _LEVEL_LABEL_RE.search(label):
+        if _LEVEL_LABEL_RE.search(plain_label(label)):
             return level or None
         return None
     if EDUCATION_SECTION_RE.search(section):
@@ -838,6 +885,10 @@ def _select_value(value: str, field: dict[str, Any]) -> str:
 _RADIO_GROUP_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("college_tier", re.compile(r"\bcollege tier\b|\binstitute tier\b"
                                 r"|\btier does your (institute|college)\b")),
+    # EPAM (Oct 2026): "Are you willing to relocate to the specified job
+    # location?" as Yes / No tiles, left empty with "Yes" in the profile.
+    ("willing_to_relocate", re.compile(r"\b(willing|open|ready|able) to relocate\b")),
+    ("willing_to_travel", re.compile(r"\b(willing|open|ready|able) to travel\b")),
 )
 
 
@@ -889,6 +940,8 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
         # input is left for the model to ask about (it used to receive the
         # resume PDF silently).
         return ("", "resume") if wants_resume(field) else None
+    if about_someone_else(field):
+        return None
     listbox = is_listbox_button(field)
     # A styled radio is a div, so the tag says nothing; what it acts as does.
     if tag not in ("input", "textarea", "select") and not listbox \
@@ -953,6 +1006,13 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
         # log line - never silently from the profile, whatever rules exist.
         return None
 
+    years = _education_year(field, data) or _tenure_date(field, data)
+    # A whole date (YYYY-MM-DD) suits a text or date box; a bare year suits
+    # a text or number box. Neither goes where it would be refused.
+    if years and tag == "input" and field_type in (
+            ("", "text", "date") if "-" in years else ("", "text", "number")):
+        return years, "profile"
+
     for key, ac_values, name_re, label_re in _RULES:
         value = str(data.get(key) or "").strip()
         derived = False
@@ -969,6 +1029,8 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
                 value = " ".join(parts[1:])
         if not value and key == "country":
             value = _country(data)
+        if not value and key == "primary_skill":
+            value = re.split(r"[,;\n]", str(data.get("skills") or ""))[0].strip()
         if not value and key == "portfolio":
             # A "Website link" box with no portfolio to put in it: GitHub is
             # the site this candidate actually has, and leaving it blank was
@@ -1014,24 +1076,274 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
             # Options are unknown until the list opens; the worker matches
             # the value against them then (and refuses when nothing fits).
             return value, "profile"
+        if tag == "input" and field_type == "date":
+            # A real date box takes YYYY-MM-DD and nothing else. It was not
+            # a fillable type here, so the profile's "03/10/1997" never went
+            # in, the model typed a format the box refused ("Malformed
+            # value"), and got it right two minutes later (CryptoMize, Oct 2
+            # 2026). The profile writes dates day first (DD/MM/YYYY).
+            iso = iso_date(value)
+            return (iso, "profile") if iso else None
         if tag == "input" and field_type not in _FILLABLE_TYPES:
             return None
         return value, "profile"
 
     # Answer bank: neutral topics only. Sensitive entries are used by the ask
     # gate (with loud logging), never silently by the sweep.
-    entry = answers.recall(label, field.get("group") or "")
+    entry = answers.lookup(answers.question_key(label, field.get("group") or ""))
     if entry and entry["kind"] == "neutral":
         value = entry["answer"]
         if tag == "select":
             option = match_option(value, field.get("options") or [])
-            return (option, "saved") if option else None
+            if not option:
+                return None
+            answers.touch(entry["key"])
+            return option, "saved"
         if listbox:
+            answers.touch(entry["key"])
             return value, "saved"
         if tag == "input" and field_type not in _FILLABLE_TYPES:
             return None
+        answers.touch(entry["key"])
         return value, "saved"
     return None
+
+
+# A school's first and last year, as one form outside an Education section
+# asks them: EPAM's "Education Years" (Oct 2026) is a start box under that
+# label and an unlabelled end box, known by their ids (educationStartDate,
+# educationEndDate). The profile's education line carries "2015-2019".
+_EDU_START_RE = re.compile(r"edu\w*?(start|from|begin)|(start|from|begin)\w*?edu", re.IGNORECASE)
+# Not "to": "educationHistory" holds it. Not the "end" of "eduAttended" either.
+_EDU_END_RE = re.compile(r"edu(?!\w*attend)\w*?(end|until|finish|graduat)|(end|until)\w*?edu",
+                         re.IGNORECASE)
+_EDU_YEARS_LABEL_RE = re.compile(r"^(education|study|studies|degree) (years|dates|period)$")
+
+
+def _education_year(field: dict[str, Any], data: dict[str, Any]) -> str:
+    if in_repeating_section(field):
+        return ""      # an Education entry has its own handling
+    ident = f"{field.get('elid') or ''} {field.get('name') or ''}"
+    label = profile.fingerprint(_without_format_hint(str(field.get("label") or "")))
+    if _EDU_END_RE.search(ident):
+        end = True
+    elif _EDU_START_RE.search(ident) or _EDU_YEARS_LABEL_RE.match(label):
+        end = False
+    else:
+        return ""
+    # The full date first, when the candidate has given one: a date picker
+    # that wants a day takes nothing less. Handed on as YYYY-MM-DD, which the
+    # date box reads without any day/month ambiguity and writes in its own
+    # format.
+    full = iso_date(str(data.get("education_end_date" if end else "education_start_date") or ""))
+    if full:
+        return full
+    years = re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", str(data.get("education") or "").split(";")[0])
+    graduated = str(data.get("graduation_year") or "").strip()
+    if end:
+        return graduated or (years[-1] if len(years) > 1 else "")
+    return years[0] if years and (not graduated or years[0] != graduated) else ""
+
+
+# The most recent job's dates, asked outside a Work Experience section: EPAM's
+# "Tenure at Recent employer" is a start box under that label and an
+# unlabelled end box (startDateAtRecentEmployer / endDateAtRecentEmployer).
+_RECENT_JOB = r"(recent|current|last|latest|present)\w*?employ"
+_TENURE_START_RE = re.compile(rf"(start|from)\w*?{_RECENT_JOB}|{_RECENT_JOB}\w*?(start|from)", re.IGNORECASE)
+_TENURE_END_RE = re.compile(rf"(end|until)\w*?{_RECENT_JOB}|{_RECENT_JOB}\w*?(end|until)", re.IGNORECASE)
+_TENURE_LABEL_RE = re.compile(r"^(tenure|dates?|period) (at|with) (your )?(most )?(recent|current|last|latest) "
+                              r"(employer|company)$")
+
+
+def _tenure_date(field: dict[str, Any], data: dict[str, Any]) -> str:
+    """YYYY-MM-01 for the latest job's start or end. The profile holds a
+    month, the box a whole date: the first of the month, as everywhere else
+    an employment date needs a day - never for anything but employment."""
+    if in_repeating_section(field):
+        return ""
+    ident = f"{field.get('elid') or ''} {field.get('name') or ''}"
+    label = profile.fingerprint(_without_format_hint(str(field.get("label") or "")))
+    if _TENURE_END_RE.search(ident):
+        end = True
+    elif _TENURE_START_RE.search(ident) or _TENURE_LABEL_RE.match(label):
+        end = False
+    else:
+        return ""
+    jobs = profile_jobs(data)
+    if not jobs:
+        return ""
+    month, year = (jobs[0]["end_month"], jobs[0]["end_year"]) if end else (
+        jobs[0]["start_month"], jobs[0]["start_year"])
+    if not (month and year):
+        return ""      # a current job has no end; a missing month is not made up
+    return f"{int(year):04d}-{int(month):02d}-01"
+
+
+# Facts a site pre-fills from its own reading of the CV, often wrongly, and
+# that the profile is the truth for. EPAM (Oct 2026) parsed the resume into
+# "7 years" of experience (the profile says 6), "Amazon Web Services" as the
+# primary skill, "0 years" of relevant experience, and the candidate's own
+# project, "Applied AI & LLM Agents", as their job title - and the agent left
+# all of it, because it never overwrites a box that holds something. Contact
+# details are not on the list: a site's own formatting of a phone number or
+# a city is not a disagreement.
+CORRECTABLE = frozenset({
+    "total_experience_years", "relevant_experience_years", "primary_skill",
+    "current_company", "current_title", "notice_period",
+})
+
+
+def rule_key(field: dict[str, Any]) -> str:
+    return _rule_key(field)
+
+
+# A section about another person: its Name, Phone and Qualification are
+# theirs. DentCare (Oct 2026) put the candidate's own name and phone in the
+# Family Details rows and "Bachelors" in three family members' qualification.
+OTHER_PERSON_SECTION_RE = re.compile(
+    r"\b(family|dependents?|references?|referees?|emergency contacts?|next of kin|spouse"
+    r"|guardians?|nominees?|parents?|relatives?)\b", re.IGNORECASE)
+
+
+def about_someone_else(field: dict[str, Any]) -> bool:
+    return bool(OTHER_PERSON_SECTION_RE.search(str(field.get("section") or "")))
+
+
+# "Do you currently or have you previously worked for Databricks?" - the
+# profile's employers already answer it, and the candidate was asked in chat
+# (Databricks, Oct 2026). Only the hiring company counts: "Have you worked for
+# a startup?" names no one, and a question about someone the candidate knows
+# there is not about their own employment.
+_WORKED_HERE_RE = re.compile(
+    r"\b(?:worked|employed|been an? (?:employee|intern|contractor)"
+    r"|(?:former|ex|previous|past|current)[- ](?:\w+ )?(?:employee|intern|contractor)"
+    r"|work(?:ing)? (?:for|at|with))\b", re.IGNORECASE)
+_NOT_OWN_EMPLOYMENT_RE = re.compile(
+    r"\b(?:know|knows|refer\w*|relatives?|related|family|friends?|anyone|someone|spouse"
+    r"|why|what|how|describe)\b", re.IGNORECASE)
+_COMPANY_SUFFIX_RE = re.compile(
+    r"[,.]?\s+(?:inc|incorporated|llc|ltd|limited|corp|corporation|co|plc|gmbh|ag|pvt|private"
+    r"|technologies|technology|systems|software|solutions|labs)\.?$", re.IGNORECASE)
+
+
+def _company_core(name: str) -> str:
+    """"Cisco Systems, Inc." -> "cisco": the part a question would say."""
+    core = " ".join(str(name or "").split())
+    while True:
+        shorter = _COMPANY_SUFFIX_RE.sub("", core).strip()
+        if shorter == core or not shorter:
+            return core.lower()
+        core = shorter
+
+
+def _names_company(text: str, core: str) -> bool:
+    return bool(core) and bool(re.search(rf"(?<!\w){re.escape(core)}(?!\w)", text.lower()))
+
+
+def worked_here_before(field: dict[str, Any], company: str) -> tuple[str, str] | None:
+    """("No", "profile") for "have you worked for <this company>?" when no job
+    in the profile was there. One that was is left alone: the dates and the
+    role that usually follow are the candidate's to give.
+
+    Only a choice is answered (a dropdown, or the No of a radio pair); a text
+    box asking this wants more than a word."""
+    field_type = (field.get("type") or "").lower()
+    tag = field.get("tag") or ""
+    radio = field_type == "radio"
+    choice = (tag == "select" or radio or is_listbox_button(field)
+              or (tag == "input" and field.get("role") == "combobox"))
+    if not choice or about_someone_else(field) or field.get("group_ids"):
+        return None
+    if radio:
+        if field.get("checked") or not re.match(r"\s*no\b", str(field.get("label") or ""), re.IGNORECASE):
+            return None
+        question = str(field.get("group") or "")
+    else:
+        if not is_blank(field):
+            return None
+        question = str(field.get("label") or "")
+    core = _company_core(company)
+    if (len(core) < 2 or not _WORKED_HERE_RE.search(question)
+            or _NOT_OWN_EMPLOYMENT_RE.search(question) or not _names_company(question, core)):
+        return None
+    data = profile.load_profile()
+    employers = [_company_core(j["company"]) for j in profile_jobs(data) if j.get("company")]
+    if str(data.get("current_company") or "").strip():
+        employers.append(_company_core(str(data["current_company"])))
+    if not employers:
+        return None   # nothing to go on: an empty profile is not "never"
+    if any(e == core or _names_company(e, core) or _names_company(core, e) for e in employers):
+        return None
+    if radio:
+        return "yes", "profile"
+    if tag == "select":
+        option = _select_value("No", field)
+        return (option, "profile") if option else None
+    return "No", "profile"
+
+
+def _rule_key(field: dict[str, Any]) -> str:
+    """Which profile rule this box answers to, '' for none - by the same
+    autocomplete / name / label tests resolve() uses."""
+    label = field.get("label") or ""
+    name = (field.get("name") or "").strip().lower()
+    autocomplete = (field.get("autocomplete") or "").strip().lower()
+    norm_label = profile.fingerprint(_without_format_hint(label))
+    for key, ac_values, name_re, label_re in _RULES:
+        if ((autocomplete and autocomplete in ac_values)
+                or (name and name_re.fullmatch(name) is not None)
+                or (norm_label and label_re.search(norm_label) is not None)):
+            return key
+    return ""
+
+
+def _agrees(key: str, wanted: str, current: str) -> bool:
+    if key.endswith("_years"):
+        # "7 years" against 6; "6 years" against "6.5" is the years box of a
+        # years-and-months pair, and agrees.
+        have = re.search(r"\d+(?:\.\d+)?", current)
+        want = re.search(r"\d+(?:\.\d+)?", wanted)
+        return bool(have and want) and int(float(have.group())) == int(float(want.group()))
+    a = re.sub(r"[^a-z0-9]", "", wanted.lower())
+    b = re.sub(r"[^a-z0-9]", "", current.lower())
+    # "Cadence" for "Cadence Design Systems", "Immediately" for "Immediate".
+    # Not a shared start: "Software Architect" is not "Software Engineer".
+    return bool(a and b) and (a in b or b in a)
+
+
+def correction(field: dict[str, Any]) -> tuple[str, str] | None:
+    """(profile value, current value) for a box that already holds something
+    the profile contradicts - only for the CORRECTABLE facts - else None."""
+    current = str(field.get("value") or "").strip()
+    if not current or is_blank(field) or about_someone_else(field):
+        return None
+    # EPAM pre-filled "Tenure at Recent employer" with 02/01/2026 - the start
+    # of the candidate's own project, not of the job.
+    tenure = _tenure_date(field, profile.load_profile())
+    if tenure:
+        year, month = tenure[:4], int(tenure[5:7])
+        numbers = [int(n) for n in re.findall(r"\d+", current)]
+        agrees = (year in current and any(n == month for n in numbers if n <= 12))
+        return None if agrees else (tenure, current)
+    key = _rule_key(field)
+    if key not in CORRECTABLE or in_repeating_section(field):
+        return None
+    resolved = resolve(dict(field, value=""))
+    if resolved is None or resolved[1] != "profile":
+        return None
+    wanted = resolved[0]
+    # A project is never a job title, however the two compare.
+    if _agrees(key, wanted, current) and not (key == "current_title" and _is_project_entry(current)):
+        return None
+    return wanted, current
+
+
+def _is_project_entry(text: str) -> bool:
+    """One of the candidate's own projects, which is never a job title."""
+    projects = str(profile.load_profile().get("not_employment") or "")
+    t = re.sub(r"[^a-z0-9]", "", text.lower())
+    return bool(t) and any(
+        t == re.sub(r"[^a-z0-9]", "", p.lower()) for p in re.split(r"[;\n]", projects) if p.strip())
 
 
 # Renamed cities: a form's list may carry either name, and searching one
@@ -1066,10 +1378,46 @@ def plain(text: str) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c)).strip().lower()
 
 
+_ISO_DATE_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$")
+_DAY_FIRST_RE = re.compile(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$")
+
+
+def iso_date(value: str) -> str:
+    """A profile date as YYYY-MM-DD: ISO as it is, otherwise day first
+    (DD/MM/YYYY, as the profile asks for). '' when it is not a real date -
+    never a guess at which number is the month."""
+    from datetime import date
+
+    text = (value or "").strip()
+    found = _ISO_DATE_RE.match(text)
+    if found:
+        year, month, day = (int(g) for g in found.groups())
+    else:
+        found = _DAY_FIRST_RE.match(text)
+        if not found:
+            return ""
+        day, month, year = (int(g) for g in found.groups())
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return ""
+
+
 def match_option(value: str, options: list[str]) -> str:
     """Pick the <select> option for a value in code: exact, case- and
     accent-insensitive, then whole-word containment - never a bare substring
-    guess."""
+    guess. Then the same answer's other wordings (equivalents())."""
+    found = _match_option(value, options)
+    if found or not value:
+        return found
+    for alt in equivalents(value):
+        found = _match_option(alt, options)
+        if found:
+            return found
+    return ""
+
+
+def _match_option(value: str, options: list[str]) -> str:
     if not value:
         return ""
     for option in options:
@@ -1082,3 +1430,22 @@ def match_option(value: str, options: list[str]) -> str:
     pattern = re.compile(rf"\b{re.escape(lowered)}\b")
     hits = [o for o in options if pattern.search(plain(o))]
     return hits[0] if len(hits) == 1 else ""
+
+
+# An immediate notice period, as forms word it. EPAM (Oct 2026) offers
+# "Available now", and "Immediate Joiner" shares no word with it: the list
+# emptied on typing and the box was left. Only a phrase that is ABOUT
+# availability triggers it: "None" or "0" could be the answer to anything,
+# and "Now" matches too much ("Not now").
+_IMMEDIATE_ANSWER_RE = re.compile(
+    r"^(immediate(ly)?( joiner| joining| start| availability| availability to join)?"
+    r"|available (now|immediately)|no notice( period)?)$")
+_IMMEDIATE_WORDINGS = ("Available now", "Immediately available", "Immediately", "Immediate",
+                       "Immediate joiner", "0 days", "No notice period", "Currently available")
+
+
+def equivalents(value: str) -> list[str]:
+    """Other ways a form words the same answer; empty when there are none."""
+    if _IMMEDIATE_ANSWER_RE.match(plain(value)):
+        return [w for w in _IMMEDIATE_WORDINGS if plain(w) != plain(value)]
+    return []

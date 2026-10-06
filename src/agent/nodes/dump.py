@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src import progress
+from src import llm_cache, progress
+from src.agent.parallel import run_pool
 from src.agent.filenames import unique_tex_name
 from src.agent.state import AgentState
 from src.config import ROOT, AppConfig
 from src.errors import STEP_LABELS
 from src.models import MatchRecord
-from src.resume.one_page import fit_to_one_page
+from src.resume import fit_policy
+from src.resume.one_page import TrimResult, fit_to_one_page
 
 OUTPUT_DIR = ROOT / "outputs"
+# Inside a run folder: the tailored resumes as written, before the fit
+# policy took anything out of them.
+FULL_DIR = "full"
 
 
 def _stamp(run_timestamp: str) -> str:
@@ -29,21 +35,49 @@ def run_dir_for(run_timestamp: str) -> Path:
     return OUTPUT_DIR / _stamp(run_timestamp)
 
 
-def _compile_pdfs(tex_jobs: list[tuple[MatchRecord, Path]]) -> int:
-    """Best effort: a PDF failure is recorded on the record and never fails the run."""
+def _compile_pdfs(tex_jobs: list[tuple[MatchRecord, Path, str]], workers: int = 1,
+                  enrich_keys: dict[str, str] | None = None) -> int:
+    """Best effort: a PDF failure is recorded on the record and never fails the run.
+
+    `tex_jobs` carries each resume's source as written, so a copy can be kept
+    when the fit policy shortens it. Side by side: each compile is its own
+    pdflatex process writing its own files, and one at a time took ten
+    minutes for 117 resumes."""
     total = len(tex_jobs)
     compiled = 0
     trimmed = 0
-    progress.log(f"[pdf] Compiling {total} resume(s)…")
-    for i, (rec, tex_path) in enumerate(tex_jobs, start=1):
+    workers = max(1, min(workers, total))
+    progress.log(f"[pdf] Compiling {total} resume(s) with {workers} worker(s)…")
+
+    # One policy for the whole run, read once: the candidate's (Resume fit
+    # tab) or the old fixed order.
+    steps = fit_policy.load().steps
+
+    def fit(job: tuple[MatchRecord, Path, str], _tag: str) -> TrimResult:
+        # Compiles, measures, and applies the policy only if the PDF runs
+        # past one page. A crash here is this resume's failure, not the run's.
+        try:
+            return fit_to_one_page(job[1], steps=steps)
+        except Exception as exc:
+            return TrimResult(note=f"could not fit: {str(exc)[:300]}")
+
+    def finished(index: int, result: TrimResult) -> None:
+        nonlocal compiled, trimmed
+        rec, tex_path, body = tex_jobs[index]
+        i = index + 1
         label = f"{rec.company}  {rec.title}".strip() or rec.job_id
         progress.log(f"[pdf] {i}/{total}  {label}")
-        # Compiles, measures, and trims the least valuable content only if the
-        # PDF runs past one page.
-        result = fit_to_one_page(tex_path)
         if result.cuts:
             trimmed += 1
-            progress.log(f"[pdf] {i}/{total}  dropped {', '.join(result.cuts)} to fit one page")
+            progress.log(f"[pdf] {i}/{total}  to fit one page: {'; '.join(result.cuts)}")
+            # What the resume was before anything was taken out of it, so
+            # the Resume fit tab can show the policy at work on a real overflow.
+            full = tex_path.parent / FULL_DIR / tex_path.name
+            try:
+                full.parent.mkdir(exist_ok=True)
+                full.write_text(body, encoding="utf-8")
+            except OSError:
+                pass
         if result.note:
             progress.log(f"[pdf] {i}/{total}  {result.note}")
         pdf_path = tex_path.with_suffix(".pdf")
@@ -54,9 +88,19 @@ def _compile_pdfs(tex_jobs: list[tuple[MatchRecord, Path]]) -> int:
             compiled += 1
             if result.pages > 1:
                 rec.resume_pdf_error = result.note or f"{result.pages} pages"
+            elif result.pages == 0:
+                # The PDF exists but could not be read back: an unreadable
+                # file is not a one-page resume, and the row must say so.
+                rec.resume_pdf_error = result.note or "could not read the compiled PDF"
         else:
             rec.resume_pdf_error = result.note or "compile produced no PDF"
             progress.log(f"[pdf] {i}/{total}  failed: {rec.resume_pdf_error}")
+        if rec.resume_pdf_error and enrich_keys and rec.job_id in enrich_keys:
+            # A tailoring that would not fit the page is not worth repeating
+            # tomorrow: the next run makes a fresh attempt.
+            llm_cache.forget("enrich", enrich_keys[rec.job_id])
+
+    run_pool(tex_jobs, fit, workers, finished)
     progress.log(f"[pdf] Compiled {compiled} of {total}" + (f", trimmed {trimmed}" if trimmed else ""))
     return compiled
 
@@ -85,7 +129,7 @@ def node_dump(state: AgentState, cfg: AppConfig | None = None) -> AgentState:
         now = datetime.now(timezone.utc).isoformat()
         records = []
         used_names: set[str] = set()
-        tex_jobs: list[tuple[MatchRecord, Path]] = []
+        tex_jobs: list[tuple[MatchRecord, Path, str]] = []
         for item in raw_matches:
             rec = MatchRecord.model_validate(item)
             rec.written_at = now
@@ -97,19 +141,30 @@ def node_dump(state: AgentState, cfg: AppConfig | None = None) -> AgentState:
                 tex_path.write_text(body, encoding="utf-8")
                 rec.resume_tex_file = name
                 tex_count += 1
-                tex_jobs.append((rec, tex_path))
+                tex_jobs.append((rec, tex_path, body))
             records.append(rec)
 
         if tex_jobs and compile_pdf:
-            pdf_count = _compile_pdfs(tex_jobs)
+            pdf_started = time.monotonic()
+            pdf_count = _compile_pdfs(tex_jobs, cfg.pdf_concurrency if cfg is not None else 1,
+                                      state.get("enrich_keys") or {})
+            timings = dict(state.get("timings") or {})
+            timings["pdf"] = round(time.monotonic() - pdf_started, 1)
+            state["timings"] = timings
         elif tex_jobs:
-            for rec, _ in tex_jobs:
+            for rec, _, _ in tex_jobs:
                 rec.resume_pdf_error = "compile_pdf disabled in config"
 
         records = [rec.model_dump() for rec in records]
         state["matches"] = records
         shortlisted_path = _write_json(run_dir / "shortlisted.json", records)
         _write_json(OUTPUT_DIR / "shortlisted.json", records)
+        # Never enriched, so there is no resume to write: Apply from Held
+        # back uses the base resume.
+        held = [MatchRecord.model_validate({**item, "written_at": now}).model_dump()
+                for item in state.get("held_back") or []]
+        if held:
+            _write_json(run_dir / "held_back.json", held)
 
     state["resume_tex_count"] = tex_count
     state["resume_pdf_count"] = pdf_count
@@ -128,9 +183,12 @@ def node_dump(state: AgentState, cfg: AppConfig | None = None) -> AgentState:
         "raw_job_count": len(state.get("raw_jobs") or []),
         "scored_count": len(state.get("scored") or []),
         "match_count": len(state.get("matches") or []),
+        "held_back_count": 0 if failed else len(state.get("held_back") or []),
         "resume_tex_count": tex_count,
         "resume_pdf_count": pdf_count,
         "shortlisted_path": shortlisted_path,
+        # Seconds per step (scrape, score, enrich, pdf...): where the time went.
+        "timings": state.get("timings") or {},
     }
     run_path = _write_json(run_dir / "run.json", run_payload)
     _write_json(OUTPUT_DIR / "run.json", run_payload)

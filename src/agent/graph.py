@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
+from typing import Callable
 
 from langgraph.graph import END, StateGraph
 
@@ -15,6 +17,19 @@ from src.config import AppConfig, EnvSettings
 
 def _failed(state: AgentState) -> bool:
     return bool(state.get("failed_step"))
+
+
+def _timed(name: str, step: Callable[[AgentState], AgentState]) -> Callable[[AgentState], AgentState]:
+    """Record how long a step took in state["timings"] (seconds), for run.json
+    and the run settings popup. An hour-long run has to say where the hour went."""
+    def run(state: AgentState) -> AgentState:
+        started = time.monotonic()
+        out = step(state)
+        timings = dict(out.get("timings") or {})
+        timings[name] = round(time.monotonic() - started, 1)
+        out["timings"] = timings
+        return out
+    return run
 
 
 def build_graph(cfg: AppConfig, env: EnvSettings):
@@ -38,11 +53,11 @@ def build_graph(cfg: AppConfig, env: EnvSettings):
     def dump(state: AgentState) -> AgentState:
         return node_dump(state, cfg)
 
-    graph.add_node("load_resume", load_resume)
-    graph.add_node("scrape", scrape)
-    graph.add_node("score", score)
-    graph.add_node("filter_matches", filter_matches)
-    graph.add_node("enrich", enrich)
+    graph.add_node("load_resume", _timed("load_resume", load_resume))
+    graph.add_node("scrape", _timed("scrape", scrape))
+    graph.add_node("score", _timed("score", score))
+    graph.add_node("filter_matches", _timed("filter_matches", filter_matches))
+    graph.add_node("enrich", _timed("enrich", enrich))
     graph.add_node("dump", dump)
 
     graph.set_entry_point("load_resume")

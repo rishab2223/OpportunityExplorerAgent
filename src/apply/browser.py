@@ -9,6 +9,9 @@ from urllib.parse import urlparse
 from src.config import ROOT
 
 CHROME_PROFILE_DIR = ROOT / "localData" / "chrome-profile"
+# How long a launch waits for the previous session's window to let go of the
+# profile. Longer than worker.CLOSE_GRACE_SECONDS, which is the usual reason.
+PROFILE_BUSY_WAIT_S = 12
 # A guard against a pathological page, not a budget. It used to be 60, which
 # was really the MODEL's budget applied at the wrong place: everything past it
 # was hidden from the profile, the answer bank and the sweep as well, which
@@ -94,6 +97,9 @@ SNAPSHOT_JS = """
   for (const el of deepAll(document, '[data-oea-id]')) {
     el.removeAttribute('data-oea-id');
   }
+  for (const el of deepAll(document, '[data-oea-root]')) {
+    el.removeAttribute('data-oea-root');
+  }
   // [role=combobox] / aria-haspopup catch dropdowns that are not <select> at
   // all: ALTEN's Angular Material <mat-select> (Salary Currency, Salary
   // Period) was invisible to the scan, so those boxes were never filled.
@@ -101,7 +107,7 @@ SNAPSHOT_JS = """
   // list of chosen chips), which read as a phantom dropdown field.
   const selector = 'input, textarea, select, button, [role=button], [role=checkbox],' +
     ' [role=radio], a[href], [role=combobox], [aria-haspopup=listbox]';
-  const actionable =/apply|easy apply|continue|next|start|submit|review|sign in|log in|upload|attach|resume|\bcv\b|cover letter/i;
+  const actionable =/apply|easy apply|continue|next|start|submit|review|sign in|log in|upload|attach|resume|\\bcv\\b|cover letter/i;
   // An open modal (LinkedIn Easy Apply, ATS popups) owns the page: scope the
   // scan to it. Without this the background page's dozens of buttons filled
   // the MAX_FIELDS budget and the dialog's own fields - appended at the END
@@ -114,6 +120,21 @@ SNAPSHOT_JS = """
     const dr = d.getBoundingClientRect();
     if (ds.display === 'none' || ds.visibility === 'hidden') continue;
     if (dr.width < 260 || dr.height < 120) continue;
+    // A cookie banner is not an application. Cisco's (Oct 2026) is a
+    // role=dialog holding only Manage / Reject / Accept: it read as a modal
+    // whose form was still loading - six seconds of waiting - and the scan was
+    // scoped to it, so the model saw nothing of the page. A dialog with a box
+    // to type in is kept, whatever it says about consent.
+    if (/\\bcookies?\\b|\\bconsent\\b/i.test((d.innerText || '').slice(0, 600)) &&
+        !deepAll(d, 'textarea, select, input:not([type=checkbox]):not([type=radio])' +
+                    ':not([type=hidden]):not([type=submit]):not([type=button])').length) continue;
+    // Nor is a calendar. react-datepicker's popup is role=dialog (aria-label
+    // "Choose Date"): opened over EPAM's "Education Years" (Oct 2026), the
+    // scan read only its day grid, "Message to Hiring Team" seemed to leave
+    // the page, and the model was asked about 0 fields three times.
+    const named = (d.getAttribute('aria-label') || '') + ' ' + (d.className || '').toString();
+    if (/react-datepicker|date-?picker|\\bchoose (a )?date\\b|\\bcalendar\\b/i.test(named) &&
+        !deepAll(d, 'textarea, input[type=text], input:not([type])').length) continue;
     sawDialog = true;
     // Cookie-consent wrappers are role=dialog shells whose real content sits
     // in an iframe: scoping to one hid a whole SuccessFactors form. Only a
@@ -121,6 +142,9 @@ SNAPSHOT_JS = """
     if (!deepAll(d, selector).length) continue;
     root = d;  // dialogs stack in DOM order; the last visible one is on top
   }
+  // Named, so locate() never finds a field's stand-in OUTSIDE the dialog it
+  // was read in (see locate).
+  if (root !== document) root.setAttribute('data-oea-root', '1');
   // A modal whose form is still loading (LinkedIn Easy Apply shows its shell
   // and close button first, the fields a moment later) must not hand the
   // scan to the page BEHIND it: the model then clicks background buttons the
@@ -157,8 +181,25 @@ SNAPSHOT_JS = """
   };
   for (const el of deepAll(root, selector)) {
     const style = window.getComputedStyle(el);
-    const rect = el.getBoundingClientRect();
     const type = (el.getAttribute('type') || '').toLowerCase();
+    // An upload painted out of existence inside the <label> the candidate
+    // clicks: EPAM's (Oct 2026) is 0x0 at opacity 0 inside "Upload your CV in
+    // English", so the step's one field was dropped, the agent saw only
+    // Cancel/Next, and the resume never went in. The label is what is on
+    // screen, so it stands in for the box - unless the label holds a button
+    // of its own (myKaarma's "Drop or select" tile), which is already read
+    // as the upload and would otherwise be listed twice. EPAM's radios are
+    // the same (Oct 2026): "Are you willing to relocate?" was a 0x0 Yes and
+    // No behind <label for> tiles 400px wide, and the required question was
+    // never seen. Not inside a styled [role=radio] (Rippling): that wrapper
+    // is already read as the option.
+    const fronted = ['file', 'radio', 'checkbox'].includes(type) &&
+      el.getBoundingClientRect().width === 0 && el.labels && el.labels.length &&
+      !(el.parentElement && el.parentElement.closest('[role=radio], [role=checkbox]'))
+      ? el.labels[0] : null;
+    const frontedBy = fronted && !fronted.querySelector('button, [role=button], a[href]') &&
+      fronted.getBoundingClientRect().width > 0 ? fronted : null;
+    const rect = frontedBy ? frontedBy.getBoundingClientRect() : el.getBoundingClientRect();
     if (type === 'hidden') continue;
     // Radix/shadcn renders every control TWICE: a styled button carrying the
     // real label, and a native control that mirrors it for form submission,
@@ -169,6 +210,13 @@ SNAPSHOT_JS = """
         el.getAttribute('tabindex') === '-1') continue;
     if (style.visibility === 'hidden' || style.display === 'none') continue;
     if (rect.width === 0 || rect.height === 0) continue;
+    // A box no person can see or reach: pushed off the page, or inside a
+    // block hidden from assistive technology and out of the tab order. That
+    // is a honeypot - CryptoMize's "company" sat at left:-9999px inside an
+    // aria-hidden 1px box, tabindex -1 (Oct 2 2026) - and filling it marks
+    // the application as a bot's. The agent fills what the candidate could.
+    if (rect.right + window.scrollX <= 0 || rect.bottom + window.scrollY <= 0) continue;
+    if (el.getAttribute('tabindex') === '-1' && el.closest('[aria-hidden="true"]')) continue;
     // A custom dropdown that WRAPS a real control is not the field; the
     // control inside it is (react-select puts role=combobox on its input).
     // ...unless the control inside has been painted out of existence and this
@@ -199,6 +247,11 @@ SNAPSHOT_JS = """
     // the name. What it points at wins.
     if (el.labels && el.labels.length) {
       label = labelledBy(el.labels[0]) || el.labels[0].innerText;
+      // A label that is the whole upload panel (EPAM) carries its hint and
+      // its formats too; the first line is the name.
+      if (frontedBy && type === 'file') {
+        label = (label.split('\\n').find(s => s.trim()) || label).trim();
+      }
     }
     if (!label) label = el.getAttribute('aria-label') || '';
     if (!label && el.id) {
@@ -398,8 +451,10 @@ SNAPSHOT_JS = """
     // A stand-in div carries no type attribute, so the grouping below never
     // ran for one and three college-tier options reached the model as three
     // loose words with nothing to say what they answered.
-    const actsAs = type ||
-      (standsIn ? (el.getAttribute('role') || '').toLowerCase() : '');
+    // The role first when it says radio or checkbox: shadcn/Radix radios are
+    // <button type="button" role="radio">, whose type said "button", so they
+    // were grouped like buttons - after the option before them.
+    const actsAs = (standsIn ? (el.getAttribute('role') || '').toLowerCase() : '') || type;
     if (actsAs === 'radio' || actsAs === 'checkbox') {
       const fs = el.closest('fieldset');
       const legend = fs ? fs.querySelector('legend') : null;
@@ -408,6 +463,19 @@ SNAPSHOT_JS = """
       // question sits above the box holding ALL of its options, never above
       // one option's div.
       const rg = el.closest('[role=radiogroup], [role=group]') || fs || sameNameBox(el);
+      // The group's own accessible name, when it has one, is the question as
+      // the page states it. CryptoMize's shadcn groups carry aria-label
+      // "Gender (required)" and nothing else, and the scans below named each
+      // option's group after the option before it - "Single" answered
+      // "Other" - so the model never saw Gender or Marital status asked, and
+      // a reply was banked under the question "Single Other" (Oct 2 2026).
+      if (!group && rg && rg !== fs) {
+        const ids = (rg.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean);
+        const named = rg.getAttribute('aria-label') ||
+          ids.map(id => document.getElementById(id)).filter(Boolean)
+             .map(n => (n.innerText || '').trim()).join(' ');
+        if (named) group = named.replace(/\\s*\\((required|optional)\\)\\s*$/i, '');
+      }
       // Inside the box first: UKG's question is a label there, and the scan
       // below only looks outside, so every one of its 46 countries came back
       // as its own question and ticking India left 45 looking unanswered.
@@ -515,6 +583,11 @@ SNAPSHOT_JS = """
         (standsIn && inner ? (inner.getAttribute('name') || '') : '') ||
         el.getAttribute('formcontrolname') || '',
       accept: (el.getAttribute('accept') || '').slice(0, 120),
+      // Which <form> it belongs to (-1: none), so a page carrying a second,
+      // unrelated form - a footer "Contact us" - can be told apart from the
+      // application (worker._one_form).
+      form: el.form ? Array.prototype.indexOf.call(document.forms, el.form) : -1,
+      footer: !!el.closest('footer, [role=contentinfo]'),
       elid: el.id || '',  // Greenhouse names its file inputs by id ("resume", "cover_letter")
       required: el.required === true || el.getAttribute('aria-required') === 'true',
       value: value.slice(0, 200),
@@ -561,40 +634,52 @@ def launch(url: str, headless: bool = False):
     pw = sync_playwright().start()
     context = None
     errors = []
+    # The previous session keeps its window open for a grace period after
+    # recording the outcome, and the UI lets the next Start apply in as soon
+    # as the outcome is recorded. A launch inside that window found the
+    # profile locked and failed the new job on the spot; waiting it out is
+    # the whole fix.
+    busy_deadline = time.monotonic() + PROFILE_BUSY_WAIT_S
+    launch_kwargs = dict(
+        user_data_dir=str(CHROME_PROFILE_DIR),
+        headless=headless,
+        accept_downloads=True,
+        # Form-filling needs no GPU. Career pages shipping WebGL/three.js
+        # scenes (autter.dev) plus a wake-from-sleep triggered an NVIDIA
+        # TDR reset on a 4GB card; software rendering makes this window
+        # contribute zero GPU load. Autoplay off skips video decode too.
+        args=[
+            "--start-maximized",
+            "--disable-gpu",
+            "--autoplay-policy=user-gesture-required",
+        ],
+        no_viewport=True,
+        # Ctrl+C in the server console belongs to the server. With the
+        # defaults, Playwright's driver grabs it too: the browser dies
+        # mid-application and the interrupt often never stops uvicorn.
+        handle_sigint=False,
+        handle_sigterm=False,
+        handle_sighup=False,
+    )
     for channel in ("chrome", None):
-        try:
-            context = pw.chromium.launch_persistent_context(
-                user_data_dir=str(CHROME_PROFILE_DIR),
-                headless=headless,
-                channel=channel,
-                accept_downloads=True,
-                # Form-filling needs no GPU. Career pages shipping WebGL/three.js
-                # scenes (autter.dev) plus a wake-from-sleep triggered an NVIDIA
-                # TDR reset on a 4GB card; software rendering makes this window
-                # contribute zero GPU load. Autoplay off skips video decode too.
-                args=[
-                    "--start-maximized",
-                    "--disable-gpu",
-                    "--autoplay-policy=user-gesture-required",
-                ],
-                no_viewport=True,
-                # Ctrl+C in the server console belongs to the server. With the
-                # defaults, Playwright's driver grabs it too: the browser dies
-                # mid-application and the interrupt often never stops uvicorn.
-                handle_sigint=False,
-                handle_sigterm=False,
-                handle_sighup=False,
-            )
+        while context is None:
+            try:
+                context = pw.chromium.launch_persistent_context(channel=channel, **launch_kwargs)
+            except Exception as exc:
+                message = str(exc)
+                if "existing browser session" in message or "already in use" in message:
+                    if time.monotonic() < busy_deadline:
+                        time.sleep(1)
+                        continue
+                    pw.stop()
+                    raise BrowserUnavailable(
+                        f"a browser is already using {CHROME_PROFILE_DIR}; "
+                        "close that window and start apply again"
+                    ) from exc
+                errors.append(f"{channel or 'chromium'}: {message.splitlines()[0]}")
+                break
+        if context is not None:
             break
-        except Exception as exc:
-            message = str(exc)
-            if "existing browser session" in message or "already in use" in message:
-                pw.stop()
-                raise BrowserUnavailable(
-                    f"a browser is already using {CHROME_PROFILE_DIR}; "
-                    "close that window and start apply again"
-                ) from exc
-            errors.append(f"{channel or 'chromium'}: {message.splitlines()[0]}")
     if context is None:
         pw.stop()
         raise BrowserUnavailable(
@@ -676,6 +761,49 @@ NOT_A_FORM_RE = re.compile(
     r"|hotjar|intercom|drift|zendesk|livechat|youtube\.com/embed|player\.vimeo",
     re.IGNORECASE,
 )
+
+
+# A "prove you are human" widget on the page, by where it is served from or,
+# for Cloudflare's full-page interstitial, what it says. Read so the candidate
+# can be TOLD - never so it can be answered: the agent does not touch these,
+# and nothing in this project tries to make an automated browser pass one.
+#
+# Only a widget a person can SEE counts. A script alone is not one: Intuit's
+# careers pages load Google's invisible reCAPTCHA (a 0x0 anchor frame and a
+# hidden challenge frame) on a "Job Not Found" page, and the warning fired
+# there with nothing on screen to do (Oct 2 2026). A warning that cries wolf
+# is a warning the candidate stops reading.
+HUMAN_CHECK_JS = r"""
+() => {
+  const seen = el => {
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width >= 100 && r.height >= 30 && r.right > 0 && r.bottom > 0 &&
+      s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) > 0.1;
+  };
+  const frames = Array.from(document.querySelectorAll('iframe')).filter(seen);
+  const showing = re => frames.some(f => re.test(f.src || ''));
+  const text = (document.body ? document.body.innerText : '').slice(0, 4000);
+  if (showing(/challenges\.cloudflare\.com/i) ||
+      Array.from(document.querySelectorAll('.cf-turnstile')).some(seen) ||
+      /verify you are human|checking if the site connection is secure/i.test(text))
+    return 'cloudflare';
+  // The checkbox widget, not the challenge popup it opens or an invisible one.
+  if (showing(/hcaptcha\.com\/.*frame=checkbox/i)) return 'hcaptcha';
+  if (frames.some(f => /recaptcha\/(api2|enterprise)\/anchor/i.test(f.src || '') &&
+                       !/size=invisible/i.test(f.src || ''))) return 'recaptcha';
+  return '';
+}
+"""
+
+
+def human_check(page) -> str:
+    """'cloudflare', 'recaptcha', 'hcaptcha' or '' - which human check this
+    page carries, if any. Never raises."""
+    try:
+        return page.evaluate(HUMAN_CHECK_JS) or ""
+    except Exception:
+        return ""
 
 
 def _frame_is_a_panel(page, frame) -> bool:
@@ -768,6 +896,7 @@ def snapshot(page) -> list[dict[str, Any]]:
         _last_snapshot_error = str(exc).splitlines()[0][:300]
         _last_dropped = 0
         return []
+    fields = one_form(fields)
     fields = collapse_long_groups(fields)
     # Say so when the budget bites. A silent cut is how a whole form went
     # missing: USP's had 102 controls, the last 42 of them - six required
@@ -783,6 +912,90 @@ def snapshot(page) -> list[dict[str, Any]]:
 def last_dropped() -> int:
     """Controls the last snapshot had to leave out. 0 when it all fitted."""
     return _last_dropped
+
+
+# What a second form on the page is FOR, when it is not the application:
+# its boxes say so. CryptoMize's footer "Contact us" (Oct 2 2026) held Full
+# Name / E-Mail / Phone / Message, and the agent filled it on every pass and
+# had the model draft its Message - the candidate's professional summary went
+# there instead of the application's Professional Details.
+SIDE_FORM_RE = re.compile(
+    r"\b(message|subject|comments?|enquiry|inquiry|your query|newsletter|subscribe|search)\b",
+    re.IGNORECASE)
+_FILLABLE_ROLES = ("radio", "checkbox", "combobox", "textbox", "listbox")
+# A careers site's job search: Intuit's "Search Jobs by Keyword / Location /
+# Search Jobs" bar got the candidate's location typed into it (Oct 2 2026).
+# Its button says what it is.
+SEARCH_BUTTON_RE = re.compile(
+    r"^\s*(search|find)(\s+(jobs?|roles?|openings?|positions?|careers?|now))?\s*$", re.IGNORECASE)
+SEARCH_FORM_MAX_BOXES = 3
+_last_side_forms: list[str] = []
+
+
+def _fillable(field: dict[str, Any]) -> bool:
+    if field.get("tag") in ("select", "textarea"):
+        return True
+    if field.get("tag") == "input":
+        return (field.get("type") or "").lower() not in ("button", "submit", "reset", "image")
+    return (field.get("role") or "").lower() in _FILLABLE_ROLES
+
+
+def one_form(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The fields minus any OTHER form that is plainly not the application.
+
+    Conservative on purpose: some applications split themselves over several
+    <form> elements, and dropping half of one is far worse than filling a
+    contact box. A form is set aside only when it carries a box that names a
+    contact/newsletter/search purpose (SIDE_FORM_RE), has no file upload, and
+    is either smaller than the largest form on the page or sits in the page
+    footer. The footer test is what catches it ALONE: CryptoMize's
+    application form renders a moment after load, and on the first read the
+    footer "Contact us" was the only form there - so it was filled again and
+    its Message drafted again (Oct 2 2026). Its buttons go too, so its Send
+    is never mistaken for the application's.
+    """
+    global _last_side_forms
+    _last_side_forms = []
+    groups: dict[int, list[dict[str, Any]]] = {}
+    searches: set[int] = set()
+    for field in fields:
+        index = field.get("form", -1)
+        if index < 0:
+            continue
+        if _fillable(field):
+            groups.setdefault(index, []).append(field)
+        elif SEARCH_BUTTON_RE.match(str(field.get("text") or field.get("label") or "")):
+            searches.add(index)
+    if not groups:
+        return fields
+    largest = max(len(boxes) for boxes in groups.values())
+    side: set[int] = set()
+    for index, boxes in groups.items():
+        if any((b.get("type") or "").lower() == "file" for b in boxes):
+            continue
+        # A job search is never the application, whatever its size or place.
+        if index in searches and len(boxes) <= SEARCH_FORM_MAX_BOXES:
+            side.add(index)
+            _last_side_forms.append(", ".join(
+                str(b.get("label") or b.get("name") or "").split("\n")[0].strip("* ")
+                for b in boxes[:5]) + " - a job search")
+            continue
+        in_footer = all(b.get("footer") for b in boxes)
+        if len(boxes) >= largest and not in_footer:
+            continue
+        if any(SIDE_FORM_RE.search(f"{b.get('label') or ''} {b.get('name') or ''}") for b in boxes):
+            side.add(index)
+            _last_side_forms.append(", ".join(
+                str(b.get("label") or b.get("name") or "").split("\n")[0].strip("* ")
+                for b in boxes[:5]))
+    if not side:
+        return fields
+    return [f for f in fields if f.get("form", -1) not in side]
+
+
+def last_side_forms() -> list[str]:
+    """What the last snapshot set aside, one line of box names per form."""
+    return list(_last_side_forms)
 
 
 def collapse_long_groups(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1431,11 +1644,15 @@ PROBLEMS = {
 }
 
 
-def await_usable(locator, want_clear: bool = False) -> tuple[str, str]:
+def await_usable(locator, want_clear: bool = False, hidden_ok: bool = False) -> tuple[str, str]:
     """Wait up to ACTION_SETTLE_MS for the control to be there, enabled,
     visible and - when asked - not under something else. Returns (problem,
     what is covering it): problem is '', 'gone', 'disabled' or 'hidden' (see
-    PROBLEMS for the words); both are '' when the control is ready."""
+    PROBLEMS for the words); both are '' when the control is ready.
+
+    hidden_ok: a file input or native tick box is routinely invisible behind
+    the control that stands in for it, so waiting for it to show is waiting
+    for nothing - 1.5 s on every EPAM upload and relocation tick."""
     deadline = time.monotonic() + ACTION_SETTLE_MS / 1000
     while True:
         state = _control_state(locator)
@@ -1445,6 +1662,8 @@ def await_usable(locator, want_clear: bool = False) -> tuple[str, str]:
             problem, covered = "gone", ""
         elif state["disabled"]:
             problem, covered = "disabled", ""
+        elif not state["shown"] and hidden_ok:
+            return "", ""
         elif not state["shown"]:
             problem, covered = "hidden", ""
         elif want_clear and state["covered"]:
@@ -1564,8 +1783,17 @@ def locate(page, field_id: int, elid: str = ""):
     """The field's element. Workday re-renders a widget's input when its
     list opens or closes (the search box is a fresh node), which drops the
     snapshot's marker - the element's own id, when it has one, finds the
-    replacement."""
+    replacement.
+
+    Only inside the dialog the snapshot read, when it read one. EPAM's
+    react-select ids are handed out afresh as its widgets re-mount (the job
+    page's own location box went from react-select-2 to -30), and with the
+    match taken in page order, the page BEHIND the application popup came
+    first: "Selected 'India: Chennai' for Total Professional Experience"
+    (Oct 2026) was its location box, picked and reported as the answer."""
     selector = f'[data-oea-id="{field_id}"]'
     if elid:
-        selector += f', [id="{elid.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34))}"]'
+        quoted = elid.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34))
+        selector += (f', [data-oea-root] [id="{quoted}"]'
+                     f', body:not(:has([data-oea-root])) [id="{quoted}"]')
     return target(page).locator(selector).first

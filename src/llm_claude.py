@@ -16,7 +16,9 @@ event loop per call.
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import threading
+from pathlib import Path
 from typing import Any, Coroutine, TypeVar
 
 from pydantic import BaseModel
@@ -70,13 +72,33 @@ def _run_coroutine(coro: Coroutine[Any, Any, T]) -> T:
     return outcome["value"]
 
 
+def _neutral_cwd() -> str:
+    """A folder with no Claude Code settings in it.
+
+    The binary reads .claude/settings.json from wherever it is started, and
+    started in this repo it printed "Ignoring 184 permissions.allow entries
+    ... this workspace has not been trusted" on every tailoring call (Oct
+    2026). None of that applies to a tool-less query, so it runs from an
+    empty folder of its own."""
+    path = Path(tempfile.gettempdir()) / "oea_claude_cwd"
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 async def _agent_call(system: str, user: str, schema: type[T], model: str, effort: str) -> T:
     from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system,
+        # tools=[] takes the built-in tool definitions out of the prompt;
+        # allowed_tools only says which need no approval, and left the full
+        # set in every call's input (and a denied tool call could eat one of
+        # the four turns).
+        tools=[],
         allowed_tools=[],
+        cwd=_neutral_cwd(),
+        setting_sources=[],
         # The harness delivers structured output through an internal tool call,
         # which can take more than one turn; no user tools are allowed anyway.
         max_turns=4,

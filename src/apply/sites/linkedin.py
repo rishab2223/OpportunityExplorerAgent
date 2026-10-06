@@ -113,13 +113,6 @@ APPLY_OPEN_AFTER_ERROR = 1000
 APPLY_OPEN_STEP = 100
 
 
-def visible_dialogs(page) -> int:
-    try:
-        return page.locator("div[role=dialog]:visible").count()
-    except Exception:
-        return 0
-
-
 def open_tabs(page) -> int:
     try:
         return len([p for p in page.context.pages if not p.is_closed()])

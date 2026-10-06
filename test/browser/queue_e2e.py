@@ -68,9 +68,9 @@ def starter(stamp: str, job_id: str) -> str:
     def on_finish(status: str) -> None:
         finished.append((job_id, status))
 
-    def on_released(status: str) -> None:
+    def on_released(status: str, stop_reason: str = "") -> None:
         released.append(job_id)
-        applyqueue.release(status)
+        applyqueue.release(status, stop_reason)
 
     sess = worker.start_apply(
         stamp, job, "dummy resume text", AppConfig(), load_env(),
@@ -101,7 +101,7 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 
 # --------------------------------------------------------------- run the queue
 print("== a queue of two jobs, real browsers ==")
-scripts = {"job-a": ["done", "done"], "job-b": ["done", "done"]}
+scripts = {"job-a": ["done"], "job-b": ["done"]}
 stop = threading.Event()
 threading.Thread(target=answer_machine, args=(stop, scripts), daemon=True).start()
 
@@ -141,7 +141,7 @@ print("\n== park leaves one job and moves on ==")
 opened.clear()
 released.clear()
 finished.clear()
-scripts2 = {"job-c": ["done", "park"], "job-d": ["done", "done"]}
+scripts2 = {"job-c": ["park"], "job-d": ["done"]}
 stop2 = threading.Event()
 threading.Thread(target=answer_machine, args=(stop2, scripts2), daemon=True).start()
 
@@ -175,7 +175,7 @@ check("the parked job reported parked, never applied",
 print("\n== abort stops the whole queue ==")
 opened.clear()
 finished.clear()
-scripts3 = {"job-f": ["done", "abort"], "job-g": ["done", "done"]}
+scripts3 = {"job-f": ["abort"], "job-g": ["done"]}
 stop3 = threading.Event()
 threading.Thread(target=answer_machine, args=(stop3, scripts3), daemon=True).start()
 

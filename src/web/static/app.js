@@ -13,6 +13,22 @@ const queueTicks = new Set();
 let queueState = { current: null, pending: [], parked: [], done: [], note: "", active: false };
 
 const $ = (id) => document.getElementById(id);
+
+// One element builder for every page script. Values are text, never markup:
+// a resume line or a saved answer is what the candidate typed, not HTML.
+// `class` and `text` are special; `true` sets a bare attribute; `false` and
+// null leave it out; children may be nested arrays, and nulls are skipped.
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  Object.entries(attrs || {}).forEach(([key, value]) => {
+    if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = value;
+    else if (value === true) node.setAttribute(key, "");
+    else if (value !== false && value != null) node.setAttribute(key, value);
+  });
+  children.flat().forEach((child) => child != null && node.append(child));
+  return node;
+}
 // The queue and job-info controls sit in a toolbar ABOVE and BELOW the table,
 // so a long shortlist never needs scrolling back up. Both copies are driven
 // together, which is why these are attributes rather than ids.
@@ -122,8 +138,10 @@ const APPLY_LINE_KINDS = [
   [/^(ERROR: |SESSION |Error: |Could not |Model error)/, "bad"],
   [/^(--- |\(reconnected)/, "meta"],
   [/^CHECK YOUR CONTACT DETAILS/, "warn"],
+  [/^HUMAN CHECK: /, "warn"],
+  [/^That upload box wants a photo/, "warn"],
   [/^Left empty \(optional\)/, "warn"],
-  [/^\[(profile|saved|resume|letter|estimate|again|corrected|llm|redo)\]/, "fill"],
+  [/^\[(profile|saved|resume|letter|estimate|again|corrected|llm|redo|you)\]/, "fill"],
   [/^(Asking the model|Model returned|Model calls|Compiling|Drafting|Redrafting|Estimating)/, "quiet"],
 ];
 
@@ -200,6 +218,9 @@ function resetApply(text) {
 // deliberate starts scroll; a background resync must never move the page
 // under someone who is reading something else.
 function showApplyCard() {
+  // The Apply card lives on the Jobs view. Start apply pressed in Held back
+  // would otherwise run with its chat out of sight.
+  if ($("view-jobs").hidden) showView("jobs");
   const card = $("applycard");
   if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -218,17 +239,36 @@ async function getJSON(url) {
   return res.json();
 }
 
-async function postJSON(url, payload) {
+async function sendJSON(method, url, payload) {
   const res = await fetch(url, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload || {}),
+    body: payload === undefined ? undefined : JSON.stringify(payload || {}),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || res.statusText);
   }
   return res.json();
+}
+
+// A declaration, not a const: the browser checks replace window.postJSON to
+// capture what the page sends.
+function postJSON(url, payload) {
+  return sendJSON("POST", url, payload || {});
+}
+
+// "20261002T100000" (a UTC stamp) as the candidate reads time: "2 Oct,
+// 3:30 pm", local, with the year only when it is not this one.
+function runLabel(stamp) {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})$/.exec(stamp || "");
+  if (!m) return stamp || "";
+  const when = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
+  const sameYear = when.getFullYear() === new Date().getFullYear();
+  const day = when.toLocaleDateString(undefined,
+    sameYear ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" });
+  const time = when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }).toLowerCase();
+  return `${day}, ${time}`;
 }
 
 function scoreClass(score) {
@@ -289,11 +329,16 @@ function cellButton(cell, label, title, onClick) {
   return btn;
 }
 
+// A row from Held back carries the run it was found in; every other row
+// belongs to the run on screen.
 function actionsCell(job) {
   const cell = document.createElement("td");
+  const stamp = job.stamp || currentStamp;
+  const decide = (jobId, decision) => decideIn(stamp, jobId, decision);
+  const setHistory = (jobId, status, contact) => setHistoryIn(stamp, jobId, status, contact);
   const hist = job.history_status || "";
   const blocked = hist === "applied" || hist === "closed";
-  const apply = cellButton(cell, "Start apply", "", () => startApply(job.job_id));
+  const apply = cellButton(cell, "Start apply", "", () => startApply(job.job_id, stamp));
   apply.disabled = blocked;
   if (hist === "applied") apply.title = "Already applied (see history); Unmark to re-enable";
   if (hist === "closed") apply.title = "This job stopped accepting applications; Unmark to re-enable";
@@ -356,8 +401,12 @@ function referralActionsCell(job) {
 }
 
 async function setHistory(jobId, status, contact) {
+  return setHistoryIn(currentStamp, jobId, status, contact);
+}
+
+async function setHistoryIn(stamp, jobId, status, contact) {
   try {
-    await postJSON(`/api/runs/${currentStamp}/jobs/${encodeURIComponent(jobId)}/history`, {
+    await postJSON(`/api/runs/${stamp}/jobs/${encodeURIComponent(jobId)}/history`, {
       status,
       contact: contact || "",
     });
@@ -605,11 +654,18 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("scroll", closeFilterMenu, true);
 window.addEventListener("resize", closeFilterMenu);
 
+// A held-back job waits in its own tab until it is acted on. Moved to the
+// shortlist ("yes"), skipped, applied, closed or referred, it is an ordinary
+// row from then on, and its title still says why it was held back.
+function isHeld(job) {
+  return !!job.held_back && !job.history_status && !job.decision;
+}
+
 function renderJobs(jobs) {
   lastJobs = jobs;
   jobsById = {};
   jobs.forEach((job) => (jobsById[job.job_id] = job));
-  renderShortlist(jobs.filter((j) => !REFERRAL_STATES.includes(j.history_status)));
+  renderShortlist(jobs.filter((j) => !REFERRAL_STATES.includes(j.history_status) && !isHeld(j)));
   renderReferrals(jobs.filter((j) => REFERRAL_STATES.includes(j.history_status)));
   if (currentJobId && jobsById[currentJobId]) selectJob(currentJobId);
   refreshQueueButton();
@@ -647,7 +703,12 @@ function renderShortlist(allJobs) {
 
     row.appendChild(tickCell(job));
     add(job.company);
-    add(job.title);
+    const titleCell = add(job.title);
+    if (job.held_back) {
+      titleCell.title = `Held back: ${job.held_back}`;
+      titleCell.append(" ", Object.assign(document.createElement("span"),
+        { className: "heldtag", textContent: "held back" }));
+    }
     add(job.relevance, scoreClass(job.relevance));
     add(job.location);
     add(job.source || "-", "source");
@@ -713,15 +774,113 @@ function renderReferrals(jobs) {
   });
 }
 
+// Held back is a waiting list across every run, not a view of the run on
+// screen: a job held on Monday still waits on Wednesday. Each row carries
+// the run that found it (job.stamp), and its actions go to that run.
+let heldById = {};
+
+async function loadHeld() {
+  try {
+    renderHeld((await getJSON("/api/held")).jobs || []);
+  } catch (err) {
+    $("heldinfo").textContent = `Could not load: ${err.message}`;
+  }
+}
+
+function renderHeld(jobs) {
+  heldById = {};
+  jobs.forEach((job) => (heldById[job.job_id] = job));
+  const body = document.querySelector("#heldback tbody");
+  body.replaceChildren();
+  $("nav-held").textContent = jobs.length ? `Held back (${jobs.length})` : "Held back";
+  const runCount = new Set(jobs.map((job) => job.stamp)).size;
+  $("heldinfo").textContent = jobs.length
+    ? `${jobs.length} waiting, from ${runCount} run${runCount === 1 ? "" : "s"}` : "";
+  // Every action on a row reloads the list; the suggestion may have changed.
+  if (!$("view-held").hidden) loadHeldInsight();
+  if (!jobs.length) {
+    emptyRow(body, 8, "Nothing waiting. A filter in review mode " +
+      "(experience.mode: review in settings.yaml) puts strong matches here instead of dropping them.");
+    return;
+  }
+  jobs.forEach((job) => {
+    const row = document.createElement("tr");
+    row.dataset.jobId = job.job_id;
+    const add = rowCellAdder(row);
+    add(job.company);
+    add(job.title);
+    add(job.relevance, scoreClass(job.relevance));
+    add(job.held_back, "heldreason");
+    const found = add(runLabel(job.stamp), "heldfound");
+    found.title = `Found by the run ${job.stamp}` + (job.posted_at ? `; posted ${job.posted_at}` : "");
+    add(job.location);
+    row.appendChild(linksCell(job));
+    const actions = actionsCell(job);
+    const move = document.createElement("button");
+    move.textContent = "Move to shortlist";
+    move.title = `Put this job in the shortlist of the ${runLabel(job.stamp)} run, where it can be queued`;
+    move.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      if (await decideIn(job.stamp, job.job_id, "yes")) showMoved(job);
+    });
+    actions.insertBefore(move, actions.children[1] || null);
+    row.appendChild(actions);
+    row.addEventListener("click", () => selectJob(job.job_id));
+    body.appendChild(row);
+  });
+}
+
+// Said where it went, with a way there - but no jump: someone working down
+// the list would be pulled off it after every click.
+function showMoved(job) {
+  const box = $("heldmoved");
+  const show = document.createElement("button");
+  show.type = "button";
+  show.textContent = "Show it";
+  show.addEventListener("click", () => focusJob(job.stamp, job.job_id));
+  box.replaceChildren(
+    document.createTextNode(`Moved ${job.company} · ${job.title} to the shortlist of the `),
+    Object.assign(document.createElement("b"), { textContent: runLabel(job.stamp) }),
+    document.createTextNode(" run. "),
+    show);
+  box.hidden = false;
+}
+
+// The Jobs tab, on the run that holds the job, on the page that holds it,
+// with the row picked out.
+async function focusJob(stamp, jobId) {
+  showView("jobs");
+  if (stamp !== currentStamp) {
+    $("stamp").value = stamp;
+    await loadJobs(stamp);
+  }
+  let visible = lastJobs.filter((j) => !REFERRAL_STATES.includes(j.history_status) && !isHeld(j));
+  if (!visible.filter(matchesFilters).some((j) => j.job_id === jobId)) {
+    clearFilters();                     // a filter must not hide what was asked for
+  }
+  visible = visible.filter(matchesFilters);
+  const index = visible.findIndex((j) => j.job_id === jobId);
+  if (index < 0) return;
+  shortlistPage = Math.floor(index / PAGE_SIZE);
+  renderJobs(lastJobs);
+  selectJob(jobId);
+  const row = document.querySelector(`#jobs tbody tr[data-job-id="${CSS.escape(jobId)}"]`);
+  if (row) {
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    row.classList.add("flash");
+    setTimeout(() => row.classList.remove("flash"), 2000);
+  }
+}
+
 function selectJob(jobId) {
-  const job = jobsById[jobId];
+  const job = jobsById[jobId] || heldById[jobId];
   if (!job) return;
   currentJobId = jobId;
   // Name the collapsed panel; open/closed state is the user's, changed only
   // by a direct row click (see the row listeners).
   $("jobdetailname").textContent = ` — ${job.company} · ${job.title}`;
   act("jobinfo").forEach((button) => (button.disabled = false));
-  document.querySelectorAll("#jobs tbody tr, #referrals tbody tr").forEach((row) => {
+  document.querySelectorAll("#jobs tbody tr, #referrals tbody tr, #heldback tbody tr").forEach((row) => {
     row.classList.toggle("selected", row.dataset.jobId === jobId);
   });
 
@@ -729,13 +888,35 @@ function selectJob(jobId) {
     `${job.company} - ${job.title}`,
     `Relevance ${job.relevance}: ${job.why_score || ""}`,
   ];
+  if (job.held_back) parts.push(`Held back: ${job.held_back}. No tailored resume; Start apply uses your base resume.`);
   if (job.resume_pdf_error) parts.push(`PDF compile failed: ${job.resume_pdf_error}`);
   if (job.latex_skip_reason) parts.push(`LaTeX skipped: ${job.latex_skip_reason}`);
   if (job.resume_edit_suggestions) parts.push(`\nResume changes\n${job.resume_edit_suggestions}`);
   if (job.interview_prep) parts.push(`\nInterview prep\n${job.interview_prep}`);
   $("detail").textContent = parts.join("\n");
+  // Runs leave interview prep for the jobs you open (settings: interview_prep).
+  $("preprow").hidden = Boolean(job.interview_prep);
+  $("prepnote").textContent = "";
+  $("writeprep").disabled = false;
 
   loadPreview(job);
+}
+
+async function writeInterviewPrep() {
+  const jobId = currentJobId;
+  const job = jobsById[jobId] || heldById[jobId];
+  if (!job) return;
+  $("writeprep").disabled = true;
+  $("prepnote").textContent = "Writing interview prep… (about a minute)";
+  try {
+    const stamp = job.stamp || currentStamp;
+    const data = await postJSON(`/api/runs/${stamp}/jobs/${encodeURIComponent(jobId)}/prep`, {});
+    job.interview_prep = data.interview_prep;
+    if (currentJobId === jobId) selectJob(jobId);
+  } catch (err) {
+    $("prepnote").textContent = `Could not write it: ${err.message}`;
+    $("writeprep").disabled = false;
+  }
 }
 
 let previewUrl = "";
@@ -769,14 +950,16 @@ async function loadPreview(job) {
   }
 }
 
-async function decide(jobId, decision) {
+async function decideIn(stamp, jobId, decision) {
   try {
-    await postJSON(`/api/runs/${currentStamp}/jobs/${encodeURIComponent(jobId)}/decision`, {
+    await postJSON(`/api/runs/${stamp}/jobs/${encodeURIComponent(jobId)}/decision`, {
       decision,
     });
     await loadJobs(currentStamp);
+    return true;
   } catch (err) {
     alert(`Could not save decision: ${err.message}`);
+    return false;
   }
 }
 
@@ -807,6 +990,7 @@ async function loadJobs(stamp) {
       run.status,
       `${run.raw_job_count || 0} scraped`,
       `${run.match_count || 0} shortlisted`,
+      run.held_back_count ? `${run.held_back_count} held back` : "",
       `${run.resume_pdf_count || 0} pdf`,
     ];
     if (run.status === "failed") bits.push(run.error_message || "");
@@ -815,16 +999,25 @@ async function loadJobs(stamp) {
   } catch (err) {
     $("runinfo").textContent = `Could not load run: ${err.message}`;
   }
+  // Every action reloads the run; Held back spans all runs and follows.
+  await loadHeld();
 }
 
 async function loadStamps(preferred) {
   const data = await getJSON("/api/runs");
   const select = $("stamp");
   select.replaceChildren();
+  const info = {};
+  (data.runs || []).forEach((run) => (info[run.stamp] = run));
   (data.stamps || []).forEach((stamp) => {
     const option = document.createElement("option");
     option.value = stamp;
-    option.textContent = stamp;
+    // "2 Oct, 3:30 pm · 12 jobs": the stamp itself is UTC and unreadable.
+    const run = info[stamp];
+    const tail = !run ? "" : run.status === "failed" ? " · failed"
+      : ` · ${run.match_count} job${run.match_count === 1 ? "" : "s"}`;
+    option.textContent = runLabel(stamp) + tail;
+    option.title = stamp;
     select.appendChild(option);
   });
   const chosen = preferred && (data.stamps || []).includes(preferred) ? preferred : data.stamps[0];
@@ -832,6 +1025,7 @@ async function loadStamps(preferred) {
     select.value = chosen;
     await loadJobs(chosen);
   } else {
+    await loadHeld();
     $("runinfo").textContent = "No runs yet. Start one above.";
   }
 }
@@ -843,6 +1037,7 @@ function streamRunLogs(stamp) {
   runSource = new EventSource(`/api/runs/${stamp}/logs`);
   runSource.onmessage = (ev) => {
     const event = JSON.parse(ev.data);
+    if (event.type === "ping") return;   // liveness only; it carries no text
     if (event.type === "done") {
       runSource.close();
       runSource = null;
@@ -867,21 +1062,22 @@ async function finishRun(stamp, outcome) {
   await loadStamps(stamp);
 }
 
-async function startRun() {
+// `options` is what the run settings popup chose (runsettings.js):
+// { settings, remember }. Returns the run's stamp, or "" when the server
+// refused it (the reason is in the status pill).
+async function startRun(options = {}) {
   $("start").disabled = true;
   $("status").textContent = "starting...";
   setLog($("log"), "");
-  const maxJobs = parseInt($("maxjobs").value, 10);
   try {
-    const data = await postJSON("/api/runs", {
-      resume_path: $("resume").value.trim(),
-      max_detail_jobs: Number.isFinite(maxJobs) ? maxJobs : null,
-    });
+    const data = await postJSON("/api/runs", options);
     $("status").textContent = `running ${data.stamp}`;
     streamRunLogs(data.stamp);
+    return data.stamp;
   } catch (err) {
     $("status").textContent = `could not start: ${err.message}`;
     $("start").disabled = false;
+    return "";
   }
 }
 
@@ -1203,10 +1399,16 @@ async function sendChoice(text) {
   }
 }
 
-async function startApply(jobId) {
+async function startApply(jobId, stamp) {
   if (applySessionId) {
     alert("An apply session is already running. Finish or abort it first.");
     return;
+  }
+  // Started from Held back on a job another run found: the session, its
+  // resume folder and its row all belong to that run, so show that run.
+  if (stamp && stamp !== currentStamp) {
+    $("stamp").value = stamp;
+    await loadJobs(stamp);
   }
   // Ask once, on a user gesture, so prompts can reach the user while they
   // are over in the apply browser window.
@@ -1433,12 +1635,32 @@ async function resumeActiveApply() {
   }
 }
 
+// Profile is not a tab: it opens from the user menu, and no tab is marked
+// active while it is showing.
+const VIEWS = ["jobs", "referrals", "held", "fit", "answers", "profile"];
+
 function showView(name) {
-  $("view-jobs").hidden = name !== "jobs";
-  $("view-referrals").hidden = name !== "referrals";
+  VIEWS.forEach((view) => { $("view-" + view).hidden = name !== view; });
   document.querySelectorAll("#nav button").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === name);
   });
+  if (name === "profile" && typeof loadProfile === "function") loadProfile();
+  if (name === "answers" && typeof loadAnswers === "function") loadAnswers();
+  if (name === "held") loadHeldInsight();
+  if (name === "fit" && typeof loadFit === "function") loadFit();
+}
+
+// The suggestion above Held back: what the candidate's own clicks on
+// held-back jobs say about their settings. Shown, never applied.
+async function loadHeldInsight() {
+  const box = $("heldinsight");
+  try {
+    const data = await getJSON("/api/held/insight");
+    box.textContent = data.suggestion || "";
+    box.hidden = !data.suggestion;
+  } catch {
+    box.hidden = true;
+  }
 }
 
 document.querySelectorAll("#nav button").forEach((btn) => {
@@ -1466,13 +1688,15 @@ $("modalback").addEventListener("click", (ev) => {
   if (ev.target === $("modalback")) sendChoice("skip");
 });
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape" && !$("modalback").hidden) sendChoice("skip");
+  // Not while the run settings popup is up: its own Escape closes that.
+  if (ev.key === "Escape" && !$("modalback").hidden && $("runback").hidden) sendChoice("skip");
 });
 
 $("attachresume").addEventListener("click", () => sendChoice("attach resume"));
 $("attachletter").addEventListener("click", () => sendChoice("cover letter"));
 
-$("start").addEventListener("click", startRun);
+$("start").addEventListener("click", () => openRunSettings());
+$("writeprep").addEventListener("click", writeInterviewPrep);
 $("stamp").addEventListener("change", (ev) => loadJobs(ev.target.value));
 $("refresh").addEventListener("click", () => loadStamps(currentStamp));
 $("send").addEventListener("click", sendChat);

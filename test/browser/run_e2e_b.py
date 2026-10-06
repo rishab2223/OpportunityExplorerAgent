@@ -15,7 +15,7 @@ from e2e_common import E2E, TIMES, answers, run, time, worker
 # into the job's own Location - and the From Month/Year parts are told apart
 # by their group.
 exp_url = (E2E / "fixture_experience.html").as_uri()
-s13 = run("experience", exp_url, ["done", "done"], expect_calls=3)  # WE Add, WE entry, one "any more jobs?" pass; Languages/Websites need no model
+s13 = run("experience", exp_url, ["done"], expect_calls=3)  # WE Add, WE entry, one "any more jobs?" pass; Languages/Websites need no model
 logs13 = "\n".join(s13.logs)
 assert "Clicked Add" in logs13, logs13
 assert "[profile] Filled Location = Bangalore, India" in logs13, logs13   # Contact section
@@ -35,7 +35,7 @@ assert "Submit application" in s13.asked[-1], s13.asked
 # candidate is asked and picks Autofill; the resume then goes straight into
 # the hidden input on the next step.
 choice_url = (E2E / "fixture_applychoice.html").as_uri()
-s14 = run("apply-choice", choice_url, ["done", "Autofill with Resume", "tailored", "done"], expect_calls=1)
+s14 = run("apply-choice", choice_url, ["Autofill with Resume", "tailored", "done"], expect_calls=1)
 logs14 = "\n".join(s14.logs)
 assert any("more than one way to apply" in q and "Apply Manually" in q for q in s14.asked), s14.asked
 assert "Clicked Autofill with Resume" in logs14, logs14
@@ -48,7 +48,7 @@ assert "Submit application" in s14.asked[-1], s14.asked
 # lie - the value is read back after every write.
 answers.remember("Postal Code", "560001")
 rerender_url = (E2E / "fixture_rerender.html").as_uri()
-s15 = run("rerender", rerender_url, ["done", "done"], expect_calls=0)
+s15 = run("rerender", rerender_url, ["done"], expect_calls=0)
 logs15 = "\n".join(s15.logs)
 assert logs15.count("Filled City* = Bangalore") == 2, logs15
 assert logs15.count("Filled Postal Code* = 560001") == 2, logs15
@@ -61,7 +61,7 @@ assert "Submit application" in s15.asked[-1], s15.asked
 # by one; "Computer Science" refused with the real names, then picked); the
 # Month/Year segments take digits by keystroke and move on by themselves.
 typeahead_url = (E2E / "fixture_typeahead.html").as_uri()
-s16 = run("typeahead", typeahead_url, ["done", "done"], expect_calls=2)
+s16 = run("typeahead", typeahead_url, ["done"], expect_calls=2)
 logs16 = "\n".join(s16.logs)
 assert "[profile] Selected 'India (+91)' for Country Phone Code* (typeahead)" in logs16, logs16
 for skill in ("JavaScript", "Node.js", "Python", "Amazon Web Services (AWS)", "AWS SDK"):
@@ -78,7 +78,7 @@ assert "Submit application" in s16.asked[-1], s16.asked
 
 # Ask before Next: every filled step waits for "next"; "auto next" stops it.
 worker.ASK_BEFORE_ADVANCE = True
-s17 = run("confirm-next", workday_url, ["done", "tailored", "next", "auto next", "done"], expect_calls=1)
+s17 = run("confirm-next", workday_url, ["tailored", "next", "auto next", "done"], expect_calls=1)
 worker.ASK_BEFORE_ADVANCE = False
 logs17 = "\n".join(s17.logs)
 assert sum("This step is filled in" in q for q in s17.asked) == 2, s17.asked
@@ -90,7 +90,7 @@ assert logs17.count("Clicked Next") == 2, logs17
 # confirmation and the job is applied - "check" typed an hour later used to
 # be refused as "busy".
 qsent_url = (E2E / "fixture_question_sent.html").as_uri()
-s18 = run("question-sent", qsent_url, ["done", "__wait__"], expect_calls=1)
+s18 = run("question-sent", qsent_url, ["__wait__"], expect_calls=1)
 logs18 = "\n".join(s18.logs)
 assert "The page confirms the application was sent" in logs18, logs18
 assert any("Favourite editor" in q for q in s18.asked), s18.asked
@@ -100,7 +100,7 @@ assert any("Favourite editor" in q for q in s18.asked), s18.asked
 # as it would on a form it finished - "review it and click Submit" - rather
 # than spinning to "I am not making progress" with nothing named.
 stuck_url = (E2E / "fixture_stuck_required.html").as_uri()
-s19 = run("stuck-required", stuck_url, ["done", "done"], expect_calls=1)
+s19 = run("stuck-required", stuck_url, ["done"], expect_calls=1)
 logs19 = "\n".join(s19.logs)
 assert "FILL THIS ONE YOURSELF: Which of our four values speaks to you, and why?*" in logs19, logs19
 assert "Everything I can fill is done" in s19.asked[-1], s19.asked
@@ -112,7 +112,7 @@ assert "[profile] Filled Full name = Test User" in logs19, logs19
 # candidate: nothing here holds a PAN, nothing may guess one, and the form
 # does not want it. It is left blank and the rest of the form is finished.
 optid_url = (E2E / "fixture_optional_id.html").as_uri()
-s20 = run("optional-identifier", optid_url, ["done", "done"], expect_calls=1)
+s20 = run("optional-identifier", optid_url, ["done"], expect_calls=1)
 logs20 = "\n".join(s20.logs)
 assert "Permanent account number" in logs20, logs20
 assert "left blank" in logs20, logs20
@@ -128,7 +128,7 @@ assert "Everything I can fill is done" in s20.asked[-1], s20.asked
 # the one required field on the form. Nameless, required, takes documents and
 # the only such input on the page: that is the resume.
 cf7_url = (E2E / "fixture_cf7.html").as_uri()
-s21 = run("cf7-nameless-upload", cf7_url, ["done", "tailored", "done"], expect_calls=0)
+s21 = run("cf7-nameless-upload", cf7_url, ["tailored", "done"], expect_calls=0)
 logs21 = "\n".join(s21.logs)
 assert "[resume] Uploaded dummy_resume.pdf" in logs21, logs21
 assert "names no document and is this form's only upload" in logs21, logs21
@@ -153,7 +153,6 @@ assert "Everything I can fill is done" in s21.asked[-1], s21.asked
 # required question could never be found even at a prompt that handled llm:.
 stall_url = (E2E / "fixture_stall_llm.html").as_uri()
 s22 = run("stall-llm", stall_url, [
-    "done",                                    # ready
     "llm : Have you ever been terminated, discharged, or asked to resign",
     "No, I have not.",                         # the draft, edited and sent
     "done",                                    # submitted by hand
@@ -167,6 +166,98 @@ assert "[llm] Filled Have you ever been terminated" in logs22, logs22
 # And into the right one of the two: the other question is still empty.
 assert "[llm] Filled Have you ever been employed by USP" not in logs22, logs22
 assert all("Tell me which question" not in line for line in s22.logs), logs22
+
+
+# 23. The posting's link leads to a 404 (Puma, Oct 2 2026). The question
+# about it went unseen and the session was aborted with nothing recorded;
+# a dead link before anything is done is recorded closed, unasked, like
+# LinkedIn's and Indeed's closed banners - and costs no model call.
+dead_url = (E2E / "fixture_404.html").as_uri()
+s23 = run("dead-link", dead_url, [], expect_calls=0, expect_status="closed")
+assert any("job or page was not found" in line for line in s23.logs), s23.logs
+assert not s23.asked, s23.asked
+
+# 23b. A posting that says it is closed (Cisco, Oct 2026: "We are not
+# accepting new applications for this role at this time", Apply Now still
+# on the page). Recorded closed the same way, with no question and no model
+# call - the user asked for it to close on its own.
+closed_url = (E2E / "fixture_closed_posting.html").as_uri()
+s23b = run("closed-posting", closed_url, [], expect_calls=0, expect_status="closed")
+assert any("This posting is closed" in line for line in s23b.logs), s23b.logs
+assert not s23b.asked, s23b.asked
+
+# 23c. EPAM (Oct 2026). The job page's APPLY is type=submit in no form: the
+# agent's first words were "Everything I can fill is done. Review the form
+# and click 'APPLY'". The popup's upload is a 0x0 input inside its label, so
+# the step read as Cancel/Next only and the resume never went in. Its NEXT is
+# type=submit too: still never clicked, but "done" there is not "applied".
+# Step 2 came filled from the CV with only an optional box empty, and the
+# watch slept through it; step 3's relocation Yes / No were 0x0 radios behind
+# label tiles, and its "PIN code (postal code)" matched no profile rule.
+epam_url = (E2E / "fixture_epam.html").as_uri()
+#
+# Then (Oct 2026, second run): a question about step 3's office locations
+# was left unanswered while the candidate went on, and the agent - waiting
+# in the same address - never saw steps 4 and 5. Step 4 came pre-filled
+# wrongly from the site's own CV parse; step 5's boxes matched no rule.
+s23c = run("epam", epam_url,
+           ["__wait__", "tailored", "__wait__", "__wait__",
+            "__wait__",                 # the office question, walked away from
+            "__wait__", "done", "submitted"],
+           # Step 2's optional Pronouns; step 3's office locations; step 5's
+           # expected-salary estimate (the stand-in model has none to give).
+           expect_calls=3)
+logs23c = "\n".join(s23c.logs)
+assert any("office locations" in q.lower() for q in s23c.asked), s23c.asked
+assert "That question's box is no longer on the page" in logs23c, logs23c
+# Step 4: what the site filled in from the CV, put right from the profile.
+assert "Correcting Primary Skill*: the site filled in 'Amazon Web Services'" in logs23c, logs23c
+assert "Correcting Total Professional Experience*: the site filled in '7 years'" in logs23c, logs23c
+assert "Correcting Relevant Experience in Primary skill*: the site filled in '0 years'" in logs23c, logs23c
+assert "Selected 'JavaScript' for Primary Skill*" in logs23c, logs23c
+assert "Selected '6 years' for Total Professional Experience*" in logs23c, logs23c
+assert "Selected '5 years' for Relevant Experience in Primary skill*" in logs23c, logs23c
+# Step 5: the boxes no rule reached, and a project that is not a job.
+assert "[profile] Filled Most recent employer = Acme Corp" in logs23c, logs23c
+assert "Correcting Job Title at Recent employer: the site filled in 'Applied AI & LLM Agents'" in logs23c, logs23c
+assert "[profile] Filled Job Title at Recent employer = Software Engineer" in logs23c, logs23c
+assert "[profile] Filled Current Annual Compensation" in logs23c, logs23c
+assert "[profile] Filled Expected Annual Compensation" in logs23c, logs23c
+assert "for Notice Period*" in logs23c, logs23c
+assert "job's page, not the application form" in s23c.asked[0] and "'APPLY'" in s23c.asked[0], s23c.asked
+assert "Everything I can fill is done" not in s23c.asked[0], s23c.asked
+assert "[resume] Uploaded dummy_resume.pdf to Upload your CV in English" in logs23c, logs23c
+step_asks = [q for q in s23c.asked if "on this step is done" in q and "'NEXT'" in q]
+# Step 1, step 2 (woken though nothing on it was empty), step 4, and step 5
+# twice ("done" re-read the step - it is not "applied"). Step 3 ended on the
+# question the candidate walked away from.
+assert len(step_asks) == 5, s23c.asked
+assert logs23c.count("The page changed") >= 3, logs23c
+assert "[profile] Filled PIN code (postal code)* = 560001" in logs23c, logs23c
+assert "[profile] Checked Yes" in logs23c, logs23c
+assert "Checked No" not in logs23c, logs23c
+assert "Clicked NEXT" not in logs23c, logs23c
+
+
+# 23d. Country before State (Ericsson on SuccessFactors, Oct 2026): State sat
+# above "Country/Region of Residence", whose label matched no rule, so the
+# country stayed empty and the State list offered the whole world.
+cf_url = (E2E / "fixture_country_first.html").as_uri()
+s23d = run("country-first", cf_url, ["done"], expect_calls=0)
+logs23d = "\n".join(s23d.logs)
+assert "[profile] Selected 'India' for Country/Region of Residence:*" in logs23d, logs23d
+assert "[profile] Selected 'Karnataka' for State/Province" in logs23d, logs23d
+assert logs23d.index("'India'") < logs23d.index("'Karnataka'"), logs23d
+
+
+# 24. A form with Cloudflare's human check by Submit (CryptoMize, Oct 2 2026).
+# The candidate is told once what it is and what to do if it refuses them;
+# the agent never touches it, and the rest of the session is unchanged.
+turnstile_url = (E2E / "fixture_turnstile.html").as_uri()
+s24 = run("human-check", turnstile_url, ["done"], expect_calls=0)
+told = [line for line in s24.logs if line.startswith("HUMAN CHECK: ")]
+assert len(told) == 1 and "Cloudflare" in told[0], s24.logs
+assert not any("turnstile" in line.lower() and "click" in line.lower() for line in s24.logs), s24.logs
 
 
 # Nothing here may ever click Submit. The rule is absolute, so it is

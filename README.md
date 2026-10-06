@@ -12,11 +12,11 @@ There is no email, Google Sheet, or Google Drive. The resume is always a local f
 ## Pipeline
 
 1. **Load resume** — local `.tex` (preferred) or PDF/DOCX/MD/TXT
-2. **Scrape** — Indeed and/or LinkedIn via Apify
+2. **Scrape** — Indeed and/or LinkedIn via Apify, then drop jobs already in your history and, when `experience.enabled`, jobs asking for more years than you allow
 3. **Score** — one cheap LLM call per scraped job (plain text from the resume)
 4. **Filter** — keep jobs with `relevance >= min_score` (default 7, so 7–10)
-5. **Enrich** — for `.tex` input, per-section tailored edits (summary, skills, bullet rewording) spliced into your original LaTeX source, plus interview prep; for PDF, markdown suggestions plus interview prep. The model never rewrites the whole document: the preamble, section headings, and layout come through byte-identical, sections cannot be dropped, and edits that fail validation (unbalanced braces/environments, forbidden commands, big length changes) are rejected and retried once with the reasons named — a rejected section keeps its original text
-6. **Dump** — `outputs/{timestamp}/`, compiling each tailored `.tex` to a `.pdf` and keeping it to **one page** (also writes a run summary after a failure). The model writes LaTeX blind, so length is enforced by measurement, not by asking: the model may add genuinely useful content (up to a 1.15× overall cap that blocks runaway rewrites), knowing the declared cost — if the compiled PDF runs past one page, content is dropped in a fixed priority order the model is told about: the CCNA certification bullet first, then the whole Certifications section, recompiling after each cut and stopping as soon as it fits. Every cut is named in the run log, and a resume that is still too long keeps its content and is flagged on the row rather than gutted further. Experience, Skills, Summary and Education are never touched.
+5. **Enrich** — for `.tex` input, per-section tailored edits (summary, skills, bullet rewording) spliced into your original LaTeX source; for PDF, markdown suggestions. Interview prep is written on demand by default (**Job info → Write interview prep**), or with every resume when `interview_prep: run`. Postings with the same company and title share one tailoring call, and a posting an earlier run already tailored against the same resume and model reuses that result (`reuse_enrichment`). The model never rewrites the whole document: the preamble, section headings, and layout come through byte-identical, sections cannot be dropped, and edits that fail validation (unbalanced braces/environments, forbidden commands, big length changes) are rejected and retried once with the reasons named — a rejected section keeps its original text
+6. **Dump** — `outputs/{timestamp}/`, compiling each tailored `.tex` to a `.pdf` and keeping it to **one page** (also writes a run summary after a failure). The model writes LaTeX blind, so length is enforced by measurement, not by asking: the model may add genuinely useful content (up to a 1.15× overall cap that blocks runaway rewrites), knowing the declared cost — if the compiled PDF runs past one page, your **fit policy** is applied step by step, recompiling after each and stopping as soon as it fits. You agree that policy with the AI in the **Resume fit** tab (see [Web UI](#web-ui)); until you save one, it is the old fixed order: the CCNA certification bullet first, then the whole Certifications section. Every step is named in the run log, the resume as written is kept in `{stamp}/full/`, and a resume that is still too long keeps its content and is flagged on the row rather than gutted further. PDFs compile side by side (`pdf_concurrency`).
 
 If a step fails, later steps do not run. A run summary is still written so you can see which step failed.
 
@@ -90,9 +90,9 @@ Jobs come from Apify (no local browser):
 | Search text | `scrape.keywords` → actor `keyword` (Indeed operators like `title:(...)` are allowed) | the URL-encoded `keywords=` query in `scrape.apify.linkedin_input.searchUrls` |
 | Location | `scrape.location` → actor `country` (`India` → `IN`) | the `geoId` in `searchUrls` (`102713980` = India) |
 | Recency | `scrape.posted_within`: `24h` / `3d` / `7d` → `fromDays` | derived from `scrape.posted_within`: `f_TPR` (`24h`→`r86400`, `3d`→`r259200`, `7d`→`r604800`) is injected into every `searchUrls` entry at run time |
-| Cap per source | `scrape.max_detail_jobs` → `maxItems` | `scrape.max_detail_jobs` → `maxResults` |
+| Cap per source | `scrape.max_jobs.indeed`, else `scrape.max_detail_jobs` → `maxItems` | `scrape.max_jobs.linkedin`, else `scrape.max_detail_jobs` → `maxResults` |
 
-Current defaults in `settings.yaml`: last **3 days** on both sources, **150** jobs per source. A local `posted_at` filter also drops anything older than `posted_within` regardless of source. Both actors run concurrently.
+Current defaults in `settings.yaml`: last **3 days** on both sources, **150** jobs per source (1–500; the run settings popup sets each source on its own). A local `posted_at` filter also drops anything older than `posted_within` regardless of source. Both actors run concurrently.
 
 `scrape.sources` can be `indeed`, `linkedin`, or both.
 
@@ -121,7 +121,20 @@ openai:
 
 `min_score`, not the model, is the main cost lever: every shortlisted job gets one enrichment call.
 
-`openai.score_concurrency` (default 8) and `openai.enrich_concurrency` (default 4) set how many LLM calls run in parallel per step; lower them if you hit rate limits.
+`openai.score_concurrency` (16 in `settings.yaml`, 1–32) and `openai.enrich_concurrency` (8, 1–16; used for Claude too) set how many LLM calls run in parallel per step; lower them if you hit rate limits or your Claude plan starts refusing calls.
+
+#### Speed
+
+A 266-job run took an hour; nearly all of it was tailoring (46 min) and compiling PDFs one at a time (10 min). These keep it down:
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `interview_prep` | `on_demand` | `run` writes interview prep with every tailored resume — about 60% of what that call writes. `on_demand` writes it only for a job you open (**Job info → Write interview prep**). |
+| `reuse_enrichment` | `true` | A posting scored or tailored by an earlier run, against the same resume, model and prompt, reuses that result (`llm_cache` in `localData/job_history.db`; entries older than 30 days are ignored). |
+| `pdf_concurrency` | `6` | Resumes compiled at once (1–16). |
+| `openai.enrich_concurrency` | `8` | Tailoring calls at once. |
+
+The same posting listed in several cities (same company and title, descriptions at least 97% alike) is scored and tailored once and shares the result; two different roles under one title are not merged. Each Claude call through `agent-sdk` starts a Claude Code process (about 20 s before the model sees the prompt), with no tool definitions in it and a working folder of its own, so it never reads this repo's `.claude/` settings. Each run's `run.json` records seconds per step under `timings`, and the run settings popup shows the last run's figures.
 
 ## Run
 
@@ -151,9 +164,11 @@ They cover the resolver's rules, the apply loop's guards, the answer bank, LaTeX
 Two files in `test/` are **not** unit tests: they are manual probes that call the real Apify actors and spend credits. Run them by hand when an actor's output format changes, never as part of the suite:
 
 ```powershell
-python test/test_indeed_apify.py
-python test/test_linkedin_apify.py
+python test/probe_indeed_apify.py
+python test/probe_linkedin_apify.py
 ```
+
+They are named `probe_*` so `unittest discover` does not import them on every run.
 
 They write JSON under `test/output/`.
 
@@ -171,7 +186,7 @@ python check.py all -j6    # the same, six scripts at a time (~147s, not ~480s)
 python check.py --list     # the groups and what is in them
 ```
 
-`check.py` always includes the unit suite — at ten seconds there is nothing to gain by skipping it — and picks the browser groups from which files you changed. See [test/browser/README.md](test/browser/README.md) for what each group covers and the rules for adding to it.
+`check.py` always includes the unit suite — at ten seconds there is nothing to gain by skipping it — and picks the browser groups from which files you changed. `python check.py --list` shows what each group covers.
 
 ## Outputs
 
@@ -183,10 +198,32 @@ Each run uses a timestamp folder, e.g. `outputs/20260823T140406/`:
 | `{stamp}/run.log` | always | Every progress line from that run |
 | `{stamp}/shortlisted.json` and `outputs/shortlisted.json` | success only | Enriched matches (URLs, scores, interview prep, resume-edit changelog, `resume_tex_file`, `resume_pdf_path`) |
 | `{stamp}/{company}_{job_title}.tex` | success, and resume input was `.tex` | Tailored one-page resume per shortlisted job |
-| `{stamp}/{company}_{job_title}.pdf` | when a LaTeX toolchain is installed | Compiled resume, trimmed to one page, the path shown in the UI table |
+| `{stamp}/{company}_{job_title}.pdf` | when a LaTeX toolchain is installed | Compiled resume, fitted to one page, the path shown in the UI table |
+| `{stamp}/full/{company}_{job_title}.tex` | when the fit policy had to shorten it | The tailored resume as written, before any fit step — what the Resume fit tab previews on |
+| `{stamp}/run_settings.json` | runs started from the web page | What the run settings popup chose for that run |
 | `{stamp}/applications.json` | after you skip or apply | Your per-job decision and apply status |
 
 `outputs/run.json` / `outputs/shortlisted.json` are copies of the latest run.
+
+### Experience filter
+
+Off unless `config/settings.yaml` turns it on; nothing is inferred from your resume. The rule lives in `settings.yaml`; your years are `total_experience_years` in your profile (user menu → **Profile**), the same value application forms are filled from, and the filter does nothing while it is empty.
+
+```yaml
+experience:
+  enabled: true
+  tolerance_years: 1     # 0 = strict; 1 keeps a 7+ job at 6 years and drops 8+
+  mode: review           # drop | review - required once enabled
+  review_min_score: 9    # review only: the score a held-back job needs to be shown
+  review_max: 5          # review only: at most this many per run
+```
+
+It runs right after scrape. Only the general requirement counts ("8+ years of software engineering experience"); a skill line ("3+ years of Kafka") does not, and a posting that states no minimum is kept. The reader is `src/experience.py`. What happens to a job over the limit is `mode`, which has no default — an enabled filter without one stops the run with a message saying so:
+
+- **`drop`** — removed before scoring, so it costs nothing, and logged (`Skipping 'Esko Software Engineer Specialist': asks for 8+ years; your limit is 7`). You never see it.
+- **`review`** — scored like any other job (one cheap call), never enriched. Those scoring `review_min_score` or more, strongest first and at most `review_max`, go to the **Held back** tab instead of the shortlist, each with its reason. Held back is a waiting list across **every** run, not just the one selected: a job held on Monday is still there on Wednesday, with a **Found** column naming the run that found it (a job held in several runs shows once, from the newest). **Start apply** there uses your base resume, since no tailored one was made, and switches the Jobs tab to that job's run. **Move to shortlist** puts the job in the shortlist of the run that found it and says so ("Moved … to the shortlist of the 1 Oct, 3:30 pm run") with a **Show it** link that opens that run on the Jobs tab with the row picked out — no automatic jump, so you can work down the list. Skip, Mark applied, Referral and Closed work as on any row. Acting on a row takes it off the list, and a moved job keeps a small "held back" tag in the Jobs table. The run writes them to `{stamp}/held_back.json`.
+
+Held back also reads your own clicks across every run and suggests, never applies, a change to the rule: keep 3 or more held-back jobs and at least three in four of those you decided on, and it names the `tolerance_years` that would have let them all through; skip 5 or more and keep none, and it suggests `mode: drop` to stop scoring them. Closed postings count for neither.
 
 ### Job history
 
@@ -218,7 +255,7 @@ opportunity-explorer-web       # same thing after pip install -e .
 
 One page, three cards, plus a **Referrals** tab that appears once a job is waiting on a contact:
 
-- **Run** — optional resume path and job cap, a Start run button, and the live log. Logs stream over server-sent events, so you watch `[score] 12/40 …` as it happens instead of guessing. One run at a time.
+- **Run** — **Start run…** opens the run settings popup, then the live log. Logs stream over server-sent events, so you watch `[score] 12/40 …` as it happens instead of guessing. One run at a time.
 - **Shortlist** — pick any past run from the dropdown; the table shows company, title, relevance, location, apply and listing links, the local PDF path with a copy button, status, and per-row actions. Long runs page at 15 rows: `‹ Prev  1 2 3 … [box] … 29 30  Next ›`, where the box takes a page number directly, so run 200 of a 400-job scrape is one keystroke away instead of thirty clicks. An identical toolbar sits **above and below** the table — tick boxes and **Start queue**, plus **Job info** — so a long page never has to be scrolled back up to act on it.
 - **Apply** — the transcript and chat box for an assisted apply session, directly under the table.
 
@@ -226,11 +263,33 @@ Clicking a row selects it; it does not open anything. **Job info** expands the s
 
 The UI never downloads files. Copy the path from the table and open the PDF wherever you like.
 
+### Run settings
+
+**Start run…** opens a popup instead of starting straight away. It starts from `config/settings.yaml` and covers one run:
+
+- **Job sources** — a switch per source (LinkedIn, Indeed) and how many jobs to fetch from each, 1–500, with a running total; how recent a posting must be; words that rule a posting out.
+- **Matching** — the minimum score for a tailored resume, the experience filter (tolerance, drop or hold back, the held-back bar and cap), and which past decisions keep a job out (applied, skipped, referral pending, closed).
+- **Models** — the scoring model and how many score calls run at once; Claude or OpenAI for tailoring, the model, Claude's thinking effort, and how many run at once; interview prep during the run or on demand; reusing earlier results.
+- **Resume & PDFs** — the base resume file, whether to compile PDFs, and how many at once.
+
+The footer shows how many jobs the run will fetch and how long the last run took, step by step. A value out of range says so and keeps **Start run** disabled; a control in a switched-off section is not read at all, and the server checks everything again and shows its answer in the popup, which stays open. **Keep as my defaults** saves only what differs from `settings.yaml` to `localData/run_preferences.json`, for the next run started here (the CLI reads only `settings.yaml`); a notice at the top says when saved defaults are in effect, with a **Forget them** link. **Reset to settings.yaml** puts the file's values back in the form. Each run's choices are written to `{stamp}/run_settings.json`, summed up on the first lines of its log, and used again for work on that run's jobs afterwards (interview prep is written against the resume the run tailored from).
+
+### Resume fit
+
+When a tailored resume runs past one page something has to give, and the **Resume fit** tab is where you decide what. It is a conversation with the AI on the left and a resume on the right:
+
+- Say what you want ("keep my certifications; tighten the layout first, but nothing cramped"). The assistant replies and revises the **draft policy** below the chat: an ordered list of steps, each one of — a layout change (margins 0.4–1.0in, font size 10/11/12pt, space around headings or between bullets; only ever tighter than the resume already is), dropping one bullet (if it is the only one in its list, the list goes too), dropping a section, or a **fixed shorter version** of a section it writes from your own text for you to read first. A fixed text replaces whatever the tailoring wrote in that section, so it suits sections tailoring leaves alone (Education, Certifications, Projects), not Summary or Skills. It can also note rules for the tailoring model ("never remove the AWS certification").
+- Every reply is tried on a real resume: **Try it on** lists the tailored resumes from recent runs, the ones that ran long first, rebuilt as they were before anything was cut. The trail above the PDF shows the page count as written and after each step that ran.
+- Reorder or remove a step by hand with the arrows and ×; the preview follows.
+- When the assistant thinks you have agreed it says so, but nothing changes for your runs until you press **Save as my fit policy**. From then on every run applies it, and the tailoring prompt is told what it costs to add length. **Back to the default rule** forgets it; **Start over** clears the conversation and keeps the saved policy.
+
+The policy lives in `localData/resume_fit_policy.json` and the conversation in `localData/resume_fit_draft.json`. Every step is applied by code and checked (a margin outside its range, an unbalanced section or a heading the resume does not have is refused with the reason), never as free-form edits by the model. A step that breaks the compile on some resume is skipped for that resume, named in the log, and the steps after it still get their turn. The same policy applies when you edit a resume during an apply session.
+
 ## Assisted apply
 
 Click **Start apply** on a row, or tick a few rows and use **Start queue** ([the queue](#the-queue)). Either way it is deliberately supervised and strictly one job at a time.
 
-Before the first run, fill in [`localData/apply_profile.json`](localData/) (created automatically, gitignored) with your name, email, phone, location, notice period and CTC expectations — every field filled there is a question the agent never has to ask, and a fact the model never has to be paid to re-derive from your resume. Several more keys each remove a whole class of question:
+Before the first run, fill in your profile: the user icon at the top right of the dashboard → **Profile**. It edits [`localData/apply_profile.json`](localData/) (gitignored; editing the file by hand works too), groups the keys into sections, marks the empty ones, checks numbers, emails, URLs and job dates before saving, and keeps any key it does not know. A save is used from the next box the agent fills, with no restart. Start with your name, email, phone, location, notice period and CTC expectations — every field filled there is a question the agent never has to ask, and a fact the model never has to be paid to re-derive from your resume. Several more keys each remove a whole class of question:
 
 | Key | What it fills |
 | --- | --- |
@@ -245,6 +304,9 @@ Before the first run, fill in [`localData/apply_profile.json`](localData/) (crea
 | `degree_recognized_by`, `college_tier` | asked by most Indian forms and constant for a candidate: the accrediting body (`UGC`, `AICTE`) and where an employer's tier list puts the college (`Tier 1`, `Tier 2`, `Other/Not Listed`) |
 | `gpa_10_point`, `gpa_5_point`, `gpa_scale` | the same grade on both scales, because a form asks for one or the other and converting on the spot is how a 7.4 becomes a 7.4 out of 5. Filled **only where the form makes it mandatory**. `gpa_scale` (`10` or `5`) is the scale actually studied on, so a form asking about the other one gets "I attended a university using a 10-point scale" rather than a converted figure |
 | `city`, `postal_code`, `date_of_birth` | address and identity boxes a form asks for separately from `location` |
+| `education_start_date`, `education_end_date` | DD/MM/YYYY. For a form whose education boxes are full date pickers; without them the years are taken from `education` / `graduation_year` and a box that insists on a month is left to you |
+| `father_name` | for a "Father's name" box. A form's Family Details rows are never filled from the profile: their Name and Phone are someone else's |
+| `pronouns` | optional; goes only into a "Pronouns" box, and only what you write here. Left empty, the box is left alone |
 | `preferred_location`, `willing_to_travel`, `earliest_start_date`, `how_did_you_hear`, `relevant_experience_years` | asked by most forms, and constant across them. Leave `earliest_start_date` empty and it is **worked out from `notice_period`**: today plus the notice, moved off a weekend, as `YYYY-MM-DD` (logged as `[notice period]`). A start-date dropdown ("Within 30 days") is not answered this way, since a date matches none of its options |
 | `linkedin`, `github`, `portfolio` | a box that names a site gets that link; a generic Websites/Portfolio section gets the remaining ones |
 | `phone_country_code`, `state`, `address_line1`, `current_company_location` | phone-code pickers, address blocks, and the location of your current employer's entries in a work-history section |
@@ -284,7 +346,7 @@ The system is named from the hostname when it says (`*.myworkdayjobs.com`), and 
 
 It is **not read during an application**. What it stores is what the live page already shows at fill time, so a lookup would add nothing, and acting on a stale shape is how you fill the wrong box. It is a record of every form you have met — not only the ones you dump — with nothing personal in it. Delete the file any time; it rebuilds as you apply.
 
-**The answer bank.** Any question you answer in chat is remembered in the `known_answers` table of `localData/job_history.db`, keyed by topic so every phrasing of "notice period" is one entry. Next application, it's filled automatically: neutral answers silently (logged as `[saved]`), legal/eligibility answers only after you confirmed "remember this?" once — and every reuse prints a visible `[saved] question -> answer` line. OTPs, passwords and captchas are never stored, and neither is anything mentioning the specific company. Fix a wrong entry any time: `python -m sqlite3 localData/job_history.db "SELECT * FROM known_answers"`.
+**The answer bank.** Any question you answer in chat is remembered in the `known_answers` table of `localData/job_history.db`, keyed by topic so every phrasing of "notice period" is one entry. Next application, it's filled automatically: neutral answers silently (logged as `[saved]`), legal/eligibility answers only after you confirmed "remember this?" once — and every reuse prints a visible `[saved] question -> answer` line. OTPs, passwords and captchas are never stored, and neither is anything mentioning the specific company. Fix a wrong entry any time from the user menu → **Saved answers**: every entry with how often it was used, a search box, **Edit** (the same secret check applies) and **Delete** (the agent asks again next time a form wants it).
 
 **Attachments are built when the form asks for them**, never ahead of time — a form that never wants a resume or cover letter costs nothing.
 
@@ -297,6 +359,8 @@ What happens:
 1. A visible Chrome opens on the apply URL, using the persistent profile at `localData/chrome-profile`. Log into the job site once yourself; the session is remembered. On an employer's own site the agent waits and asks you to type `done` when the page is ready, so you can clear a cookie wall or a region picker first.
 2. **On a LinkedIn job it does not ask.** LinkedIn builds the job card after the page reports itself loaded, so the agent watches for whichever of three things arrives first — an apply control, a sign-in wall, or a closed banner — and each one it then handles itself. A posting that stopped accepting applications is recorded as closed and the session ends **without asking you anything**, instead of making you press a key to be told a job is dead. Otherwise it opens the apply flow: **Easy Apply** jobs get the in-page modal; **Apply on company website** jobs open the employer's form in a new tab, which the agent follows (the log shows `Switched to <url>`). If none of the three appears — a consent wall on a fresh profile, or something LinkedIn has changed — it hands back and asks rather than guessing. LinkedIn's button is routinely on screen before it works: in 25 of 26 real openings the first click did nothing, so a click that opens nothing is retried after 1.5 s rather than 4, and an employer's tab is read as soon as it has loaded rather than after a fixed 3 s.
    **An Indeed job does not ask either, and needs no model to start.** Asked instead, "Ready to start?" once sat unanswered for three minutes with the Apply button in plain view, and the model was then paid 9 s to find the button. The agent now presses the job's own button itself, found by the id Indeed gives it — **Apply with Indeed** opens Indeed's form, **Apply on company site** opens the employer's in a new tab — so an Apply belonging to some other job on the page is never the one pressed. If neither button shows within 10 s, the page is read as it stands. On Indeed's **Add a resume** step — two cards, *Build an Indeed Resume* and *Upload a resume*, whose radios and file input are all hidden behind them — the resume you choose goes straight into the hidden upload: no system file dialog, and *Build an Indeed Resume* is never touched. Any page that says "Upload a resume" / "Upload your CV" over a single hidden document input is handled the same way.
+
+   **No other site asks either.** Most Indeed and many LinkedIn jobs link straight to the employer's own system (Workday, Phenom, Greenhouse…), and every one of those used to stop on "Ready to start? Type done" before anything happened. The agent now reads the page as soon as it loads: a page still drawing is waited for, a sign-in wall is named and handed to you, and a page that never shows a form is handed back with the reason.
 3. The resolver fills what it can, the model plans the rest, and the agent stops and asks in the chat pane for anything unknown: OTPs, captchas, consent and legal questions. Answer, or handle it in the browser yourself and type `done`. Type `skip` to leave a field alone, paste a URL to send the agent there, `abort` to stop.
 4. **The agent never clicks submit — you do.** When everything is filled it says so and waits; you review the form, click Submit in the browser yourself, and type `done`. This is enforced in code (a submit click raises), not just prompted.
 
@@ -347,7 +411,7 @@ Two limits: `redo` only reaches boxes still on the step in front of you (once yo
 | `llm: <instruction>` | draft or redraft the answer to the question being asked; at either review prompt ("This step is filled in" or "click Submit yourself"), `llm: <question>` drafts an answer to a question the form asked — into the box when it can be found, otherwise handed back for you to paste |
 | `redo` / `redo <words>` | reopen an answer you already gave, pre-filled, to edit or redraft |
 | `attach resume` / `cover letter` | start either attachment flow by hand (same as the buttons) |
-| `dump` / `dump 10` | save the page as it is (DOM with shadow roots and live values, every frame, the field snapshot, the page's data requests with their status codes, a screenshot) under `outputs/dom/` and keep waiting; `dump 10` waits ten seconds first so you can open a widget. The **Dump** button does the same and copies the folder path to your clipboard |
+| `dump` / `dump 10` | save the page as it is (DOM with shadow roots and live values, every frame, the field snapshot, the page's data requests with their status codes, a screenshot) under `outputs/dom/` and keep waiting; `dump 10` waits ten seconds first so you can open a widget. The **Dump** button does the same and copies the folder path to your clipboard. Both work while the agent is busy too — during a model call the page is saved within a second, as it was when you asked |
 | a URL | open that page when the agent is stuck |
 | `retry` | try the model again after an outage (`try again`) |
 | `closed` | record that the posting no longer accepts applications and stop |
