@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>SuccessFactors application form</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  .topBar { width: 640px; text-align: left; background: #40b4f0; border: 0; padding: 10px; }
+  .addRowButton { display: inline-block; cursor: pointer; padding: 6px; }
+  .fld { margin: 6px 0; } .fld > label { display: inline-block; width: 230px; }
+  .pick { position: relative; display: inline-block; }
+  .pick ul { position: absolute; z-index: 5; background: #fff; border: 1px solid #888; margin: 0; padding: 0;
+             list-style: none; max-height: 220px; overflow: auto; width: 260px; }
+  .pick li { padding: 3px 6px; cursor: pointer; } .pick li:hover { background: #def; }
+</style>
+</head>
+<body>
+<!-- Cargill on SuccessFactors (Oct 2026), from two dumps. What matters:
+  - each section's entries sit in div[role=group][aria-labelledby=<its h2>],
+    MORE than ten levels above every box (the heading walk stops at ten);
+  - an entry starts with Start Date and End Date, then Title;
+  - a date box is SAP UI5's date picker: an input two shadow roots deep that
+    keeps what was typed only when it is MM/DD/YYYY and focus moves on
+    (change); Escape before that puts back what it had;
+  - a "paginated select": input[role=combobox] + an arrow button; a click
+    opens the list; typed keys hide it (the quirk that lost "No");
+  - the sections are folded until "Expand all sections" is clicked;
+  - Country shows a PAGE of its 200 rows on opening, "British Indian Ocean
+    Territory" among them and India not; it filters only on keys. -->
+<h1>Software Engineering (Backend Developer) (321160)</h1>
+<a href="#" role="button" id="expandAll">Expand all sections</a>
+
+<div id="profileInfo"></div>
+<div id="sections" hidden></div>
+<pre id="log"></pre>
+
+<script>
+  // ---- SAP UI5 date picker, reduced ------------------------------------
+  class XDateInner extends HTMLElement {
+    connectedCallback() {
+      if (this.shadowRoot) return;
+      const root = this.attachShadow({mode: 'open'});
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'MM/DD/YYYY';
+      input.setAttribute('aria-label', this.getAttribute('label'));
+      input.setAttribute('aria-haspopup', 'grid');
+      input.setAttribute('autocomplete', 'off');
+      root.appendChild(input);
+      let committed = '';
+      input.addEventListener('change', () => {
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(input.value)) {
+          committed = input.value;
+          document.getElementById('log').textContent += this.getAttribute('label') + '=' + committed + ' | ';
+        } else {
+          input.value = committed;      // what it could not parse is thrown away
+        }
+      });
+      input.addEventListener('keydown', (e) => { if (e.key === 'Escape') input.value = committed; });
+    }
+  }
+  customElements.define('x-date-inner', XDateInner);
+  class XDate extends HTMLElement {
+    connectedCallback() {
+      if (this.shadowRoot) return;
+      const root = this.attachShadow({mode: 'open'});
+      const inner = document.createElement('x-date-inner');
+      inner.setAttribute('label', this.getAttribute('label'));
+      root.appendChild(inner);
+    }
+  }
+  customElements.define('x-date', XDate);
+
+  // ---- builders ------------------------------------------------------------
+  let n = 0;
+  const deep = (html, levels) => { for (let i = 0; i < levels; i++) html = '<div class="lvl">' + html + '</div>'; return html; };
+
+  function textField(label, req) {
+    n += 1;
+    return deep('<div class="fld"><label for="t' + n + '">' + (req ? '* ' : '') + label + '</label>' +
+                '<input id="t' + n + '" type="text"></div>', 6);
+  }
+  function dateField(label, req) {
+    n += 1;
+    return deep('<div class="fld"><label for="d' + n + '_datepicker">' + (req ? '* ' : '') + label + '</label>' +
+                '<div id="d' + n + '_datepicker"><x-date label="' + label + '"></x-date></div></div>', 6);
+  }
+  function pickField(label, options, req) {
+    n += 1;
+    const id = 'p' + n;
+    return deep('<div class="fld"><label for="' + id + '">' + (req ? '* ' : '') + label + '</label>' +
+      '<span class="pick"><input id="' + id + '" role="combobox" aria-owns="' + id + '_list" autocomplete="off" ' +
+      'placeholder="No Selection" aria-label="' + label + '" data-options="' + options.join('|') + '">' +
+      '<button type="button" aria-label="' + label + '" title="' + label + '" class="arrow">&#xE1EF;</button>' +
+      '<ul id="' + id + '_list" role="listbox" hidden></ul></span></div>', 6);
+  }
+
+  const KINDS = {
+    work: () => dateField('Start Date', true) + dateField('End Date', false) + textField('Title', true) +
+                textField('Company', true) + textField('Company Location - City, State', true) +
+                pickField('Country', ['No Selection', 'IND India', 'USA United States'], true),
+    edu: () => textField('School', true) +
+               pickField('Major/Area of Study (broad)', ['No Selection', 'Accounting/Finance', 'Business', 'Computer',
+                                                       'Engineering', 'Law', 'Other'], true) +
+               pickField('Degree', ['No Selection', 'Bachelors (approx 16 yrs)', 'Doctorate (over 19 yrs)',
+                                    'Masters (approx 18 yrs)'], true) +
+               pickField('Year of Degree', ['No Selection', '2017', '2018', '2019', '2020'], true),
+    lang: () => pickField('Language', ['No Selection', 'English', 'Hindi', 'French'], true) +
+                pickField('Read', ['No Selection', 'Advanced', 'Basic', 'Intermediate', 'N/A'], true) +
+                pickField('Speak', ['No Selection', 'Advanced', 'Basic', 'Intermediate', 'N/A'], true),
+  };
+
+  function section(kind, title) {
+    n += 1;
+    const head = 'h' + n;
+    return '<div class="rcmFormSection" data-kind="' + kind + '">' +
+      '<h2 id="' + head + '" class="sectionTitle"><button class="topBar" aria-expanded="true">' + title + '</button></h2>' +
+      '<div role="group" aria-labelledby="' + head + '"><div class="entries">' +
+      '<div class="noItemsInSection">There are no items in this section.</div></div>' +
+      '<div class="addRowButton" role="button" tabindex="0"><span>&#xE1F6;</span> Add</div></div></div>';
+  }
+
+  const COUNTRIES = ['No Selection', 'Afghanistan', 'Aland Islands', 'Albania', 'Bouvet Island', 'Brazil',
+                     'British Indian Ocean Territory', 'Brunei Darussalam', 'India', 'Indonesia'];
+  document.getElementById('profileInfo').innerHTML =
+    pickField('Country:', COUNTRIES, true).replace('role="combobox"', 'role="combobox" data-page="8" data-filter="1"');
+  document.getElementById('expandAll').addEventListener('click', (e) => {
+    e.preventDefault();
+    document.getElementById('sections').hidden = false;
+    document.getElementById('log').textContent += 'expanded | ';
+  });
+
+  const holder = document.getElementById('sections');
+  holder.innerHTML = section('work', 'External Work Experience') + section('edu', 'Education (Optional)') +
+    section('lang', 'Language Skills (Optional)') +
+    '<h2 class="sectionTitle"><button class="topBar" aria-expanded="true">Job-Specific Information</button></h2>' +
+    pickField('Have you previously worked for Cargill?', ['No Selection', 'No', 'Yes'], true);
+
+  // An Add draws its entry a moment later, as the real one does.
+  document.querySelectorAll('.rcmFormSection').forEach(sec => {
+    sec.querySelector('.addRowButton').addEventListener('click', () => {
+      setTimeout(() => {
+        const box = sec.querySelector('.entries');
+        const empty = box.querySelector('.noItemsInSection');
+        if (empty) empty.remove();
+        box.insertAdjacentHTML('beforeend', '<div class="entry">' + KINDS[sec.dataset.kind]() + '</div>');
+        wire(box);
+        document.getElementById('log').textContent += 'add:' + sec.dataset.kind + ' | ';
+      }, 900);
+    });
+  });
+
+  // ---- paginated select ------------------------------------------------------
+  function wire(scope) {
+    scope.querySelectorAll('input[role=combobox]:not([data-wired])').forEach(input => {
+      input.dataset.wired = '1';
+      const list = document.getElementById(input.getAttribute('aria-owns'));
+      const open = (typed) => {
+        let rows = input.dataset.options.split('|');
+        if (typeof typed === 'string') rows = rows.filter(o => o.toLowerCase().includes(typed.toLowerCase()));
+        else if (input.dataset.page) rows = rows.slice(0, +input.dataset.page);
+        list.innerHTML = rows.map(o => '<li role="option">' + o + '</li>').join('');
+        list.hidden = false;
+        for (const li of list.children) li.onmousedown = (e) => {
+          e.preventDefault(); input.value = li.textContent; list.hidden = true;
+          document.getElementById('log').textContent += input.getAttribute('aria-label') + '=' + input.value + ' | ';
+        };
+      };
+      input.addEventListener('click', () => open());
+      input.parentElement.querySelector('.arrow').addEventListener('click', () => open());
+      input.addEventListener('keyup', () => {
+        if (input.dataset.filter) open(input.value);                     // Country filters on keys
+        else list.hidden = true;                                          // typing loses the list
+      });
+    });
+  }
+  wire(document);
+</script>
+</body>
+</html>

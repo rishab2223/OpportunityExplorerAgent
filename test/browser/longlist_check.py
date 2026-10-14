@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 HERE = Path(__file__).resolve().parent
 from playwright.sync_api import sync_playwright  # noqa: E402
 
-from src.apply import browser, worker  # noqa: E402
+from src.apply import worker  # noqa: E402
 
 TMP = tempfile.TemporaryDirectory()
 

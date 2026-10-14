@@ -27,7 +27,7 @@ profile.PROFILE_PATH.write_text(json.dumps({
 }), encoding="utf-8")
 
 FIXTURE = WORK / "fixture_contact.html"
-FIXTURE.write_text(f"""<!doctype html><html><body>
+FIXTURE.write_text("""<!doctype html><html><body>
 <h3>My Information</h3>
 <label for="e">Email address*</label><input id="e" type="text" name="email">
 <label for="p">Phone number*</label><input id="p" type="tel" name="phone">
@@ -37,11 +37,11 @@ FIXTURE.write_text(f"""<!doctype html><html><body>
 <script>
   // the ATS parses the uploaded resume and overwrites what was typed, losing
   // the underscore exactly as Esko did
-  window.parseResume = () => {{
+  window.parseResume = () => {
     const box = document.getElementById('e');
     box.value = box.value.replace('_', '');
     document.getElementById('p').value = '+91 90000 00000';   // reformatted, same number
-  }};
+  };
 </script></body></html>""", encoding="utf-8")
 
 

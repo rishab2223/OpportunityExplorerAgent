@@ -8,7 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from e2e_common import *  # noqa: F401,F403 - the rig
-from e2e_common import E2E, TIMES, answers, run, time, worker
+from e2e_common import E2E, TIMES, run
+
+from src import answers
 
 
 # Pass 1: cold bank. Resume choice + cover letter (one revision) + one plan call.

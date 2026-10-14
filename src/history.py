@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from typing import Any
 
 from src import db
@@ -50,6 +51,42 @@ def fingerprint(company: str, title: str) -> str:
     return "|".join(parts)
 
 
+# How much of a description is kept and compared. The opening is where two
+# different roles differ; the boilerplate is at the end.
+DESCRIPTION_KEEP = 2000
+# How alike two descriptions must be for a company + title match to count as
+# the same posting. A repost, or one role posted in eleven cities, is near
+# 1.0; Recrew AI's two "Backend Engineer" roles for two different clients
+# (Oct 2026) were 0.045.
+SAME_POSTING_RATIO = 0.6
+
+
+def description_key(text: str | None) -> str:
+    """The stored form of a description: lower case, one space, the opening."""
+    return " ".join(str(text or "").lower().split())[:DESCRIPTION_KEEP]
+
+
+def same_posting(entry: dict[str, Any] | None, description: str | None) -> bool:
+    """Whether a company + title match is really this posting.
+
+    A recruiter posts every client's role under its own name, so company and
+    title alone marked a Bangalore job applied because a Gurugram one was.
+    When both sides carry a description, they must be alike. When either
+    does not (a row recorded before descriptions were kept, a posting with
+    none), the match stands, as it always did."""
+    if not entry:
+        return False
+    stored = entry.get("descriptions") or [""]
+    mine = description_key(description)
+    if not mine or any(not s for s in stored):
+        return True
+    for theirs in stored:
+        matcher = SequenceMatcher(None, mine, theirs, autojunk=False)
+        if matcher.quick_ratio() >= SAME_POSTING_RATIO and matcher.ratio() >= SAME_POSTING_RATIO:
+            return True
+    return False
+
+
 def record(
     job: dict[str, Any], status: str, stamp: str = "", note: str = "", contact: str = ""
 ) -> dict[str, Any]:
@@ -72,6 +109,7 @@ def record(
         "note": note,
         "contact": contact,
         "marked_at": datetime.now(timezone.utc).isoformat(),
+        "description": description_key(job.get("description")),
     }
     conn = db.connect()
     try:
@@ -79,9 +117,9 @@ def record(
             conn.execute(
                 "INSERT OR REPLACE INTO job_history"
                 " (job_id, status, company, title, location, source, apply_url,"
-                "  fingerprint, stamp, note, contact, marked_at)"
+                "  fingerprint, stamp, note, contact, marked_at, description)"
                 " VALUES (:job_id, :status, :company, :title, :location, :source,"
-                "  :apply_url, :fingerprint, :stamp, :note, :contact, :marked_at)",
+                "  :apply_url, :fingerprint, :stamp, :note, :contact, :marked_at, :description)",
                 entry,
             )
     finally:
@@ -145,7 +183,7 @@ def snapshot(
     filter and the UI table both fetch this once and then check each job
     against the in-memory dicts - no per-job queries.
     """
-    sql = "SELECT job_id, fingerprint, status, contact, marked_at FROM job_history"
+    sql = "SELECT job_id, fingerprint, status, contact, marked_at, description FROM job_history"
     params: tuple[str, ...] = ()
     if statuses is not None:
         if not statuses:
@@ -170,5 +208,42 @@ def snapshot(
         for row in rows
     ]
     by_id = {job_id: entry for job_id, _, entry in entries}
-    by_fingerprint = {fp: entry for _, fp, entry in entries if fp}
+    # Several rows can share a fingerprint (a recruiter's same-titled roles);
+    # the entry carries every one's description, for same_posting().
+    by_fingerprint: dict[str, dict[str, Any]] = {}
+    for row, (_, fp, entry) in zip(rows, entries):
+        if not fp:
+            continue
+        held = by_fingerprint.get(fp)
+        texts = (held["descriptions"] if held else []) + [row["description"] or ""]
+        by_fingerprint[fp] = {**entry, "descriptions": texts}
     return by_id, by_fingerprint
+
+
+def backfill_descriptions(find) -> int:
+    """Fill in descriptions for rows recorded before they were kept.
+
+    `find(stamp)` returns {job_id: description} for that run's jobs, or {}.
+    Each run is read once. Returns how many rows gained one."""
+    conn = db.connect()
+    try:
+        missing = conn.execute(
+            "SELECT job_id, stamp FROM job_history"
+            " WHERE (description IS NULL OR description = '') AND stamp != ''"
+        ).fetchall()
+        by_stamp: dict[str, list[str]] = {}
+        for row in missing:
+            by_stamp.setdefault(row["stamp"], []).append(row["job_id"])
+        filled = 0
+        with conn:
+            for stamp, ids in by_stamp.items():
+                texts = find(stamp) or {}
+                for job_id in ids:
+                    text = description_key(texts.get(job_id))
+                    if text:
+                        conn.execute("UPDATE job_history SET description = ? WHERE job_id = ?",
+                                     (text, job_id))
+                        filled += 1
+        return filled
+    finally:
+        conn.close()

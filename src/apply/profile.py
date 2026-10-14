@@ -454,5 +454,10 @@ def as_prompt_text(profile: dict[str, Any] | None = None) -> str:
         if key == "jobs" and isinstance(value, list):
             lines.extend(_job_lines(value))
             continue
+        if key == "date_of_birth":
+            # Said outright: given "03/10/1997", the model asked whether that
+            # was March or October (Adani, Oct 2026).
+            lines.append(f"{key}: {value} (DD/MM/YYYY, day first)")
+            continue
         lines.append(f"{key}: {value}")
     return "\n".join(lines) or "(profile is empty)"

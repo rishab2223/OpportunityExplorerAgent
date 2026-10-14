@@ -15,7 +15,7 @@ from src.config import AppConfig, EnvSettings
 
 T = TypeVar("T", bound=BaseModel)
 Invoker = Callable[[str, str, type[T]], T]
-Purpose = Literal["enrich", "apply"]
+Purpose = Literal["enrich", "apply", "pick"]
 
 
 def _settings(cfg: AppConfig, purpose: Purpose) -> tuple[str, str, str, float]:
@@ -27,6 +27,8 @@ def _settings(cfg: AppConfig, purpose: Purpose) -> tuple[str, str, str, float]:
         return provider, cfg.openai.enrich_model, "", 0.2
     provider = cfg.apply_provider
     if provider == "claude":
+        if purpose == "pick":
+            return provider, cfg.claude.pick_model, cfg.claude.pick_effort, 0.0
         return provider, cfg.claude.apply_model, cfg.claude.apply_effort, 0.0
     return provider, cfg.openai.apply_model, "", 0.0
 
@@ -38,11 +40,31 @@ def describe_provider(cfg: AppConfig, purpose: Purpose) -> str:
     return f"openai model={model}"
 
 
-def make_invoker(cfg: AppConfig, env: EnvSettings, purpose: Purpose) -> Invoker:
+def open_claude_session(cfg: AppConfig, log: Callable[[str], None] | None = None):
+    """Kept Claude Code processes for one apply session (llm_claude.
+    ClaudeSession), or None when apply does not run on the agent SDK."""
+    if cfg.apply_provider != "claude" or cfg.claude.backend != "agent-sdk":
+        return None
+    from src.llm_claude import ClaudeSession
+
+    return ClaudeSession(log)
+
+
+def make_invoker(cfg: AppConfig, env: EnvSettings, purpose: Purpose, claude_session=None) -> Invoker:
+    """`claude_session`: calls go to its kept processes; the invoker then
+    also has warm(system, schema), which starts the process for those calls
+    in the background."""
     provider, model, effort, temperature = _settings(cfg, purpose)
 
     if provider == "claude":
         from src.llm_claude import structured_call
+
+        if claude_session is not None and cfg.claude.backend == "agent-sdk":
+            def invoke_kept(system: str, user: str, schema: type[T]) -> T:
+                return claude_session.call(system, user, schema, model, effort)
+
+            invoke_kept.warm = lambda system, schema: claude_session.warm(system, schema, model, effort)
+            return invoke_kept
 
         def invoke_claude(system: str, user: str, schema: type[T]) -> T:
             return structured_call(

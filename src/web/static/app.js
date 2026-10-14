@@ -377,8 +377,12 @@ function actionsCell(job) {
   return cell;
 }
 
+// A referral row carries the run it was found in (job.stamp); the history
+// write goes to that run, as it does for a held-back row.
 function referralActionsCell(job) {
   const cell = document.createElement("td");
+  const stamp = job.stamp || currentStamp;
+  const setHistory = (jobId, status, contact) => setHistoryIn(stamp, jobId, status, contact);
   if (job.history_status === "referral_pending") {
     cellButton(cell, "Referral sent", "Your application went in via this referral", () =>
       setHistory(job.job_id, "referral_sent", job.history_contact || "")
@@ -640,7 +644,7 @@ document.addEventListener("click", (event) => {
     event.stopPropagation();
     const col = button.dataset.filter;
     if (openFilterMenu && openFilterMenu.col === col) closeFilterMenu();
-    else openFilterMenu_(button, lastJobs.filter((j) => !REFERRAL_STATES.includes(j.history_status)));
+    else openFilterMenu_(button, shortlistJobs(lastJobs));
     return;
   }
   if (!event.target.closest(".colmenu")) closeFilterMenu();
@@ -661,12 +665,19 @@ function isHeld(job) {
   return !!job.held_back && !job.history_status && !job.decision;
 }
 
+// The rows the shortlist shows - referrals and held-back jobs have tabs of
+// their own. The filter menus count from this same set: counting from all
+// jobs, "pending 10" was offered over a table that then showed none, the ten
+// being held back (Oct 2026).
+function shortlistJobs(jobs) {
+  return jobs.filter((j) => !REFERRAL_STATES.includes(j.history_status) && !isHeld(j));
+}
+
 function renderJobs(jobs) {
   lastJobs = jobs;
   jobsById = {};
   jobs.forEach((job) => (jobsById[job.job_id] = job));
-  renderShortlist(jobs.filter((j) => !REFERRAL_STATES.includes(j.history_status) && !isHeld(j)));
-  renderReferrals(jobs.filter((j) => REFERRAL_STATES.includes(j.history_status)));
+  renderShortlist(shortlistJobs(jobs));
   if (currentJobId && jobsById[currentJobId]) selectJob(currentJobId);
   refreshQueueButton();
 }
@@ -728,22 +739,61 @@ function renderShortlist(allJobs) {
   });
 }
 
-function renderReferrals(jobs) {
+// Referrals span every run, like Held back: a contact asked on Monday is
+// still being waited on when Wednesday's run is on screen. Each row carries
+// the run that found it (job.stamp), and its actions go to that run.
+let referralsById = {};
+let lastReferrals = [];
+let referralStamp = "";          // "" = every run; else one run's referrals
+
+async function loadReferrals() {
+  try {
+    renderReferrals((await getJSON("/api/referrals")).jobs || []);
+  } catch (err) {
+    $("referralinfo").textContent = `Could not load: ${err.message}`;
+  }
+}
+
+// The Run dropdown above the table: "All runs", then each run that has a
+// referral, newest first, with how many. Rebuilt on every load (a cleared
+// referral may empty a run); the pick survives unless its run emptied.
+function fillReferralRuns(jobs) {
+  const select = $("refstamp");
+  const counts = {};
+  jobs.forEach((job) => (counts[job.stamp] = (counts[job.stamp] || 0) + 1));
+  const stamps = Object.keys(counts).sort().reverse();
+  if (!stamps.includes(referralStamp)) referralStamp = "";
+  select.replaceChildren(el("option", { value: "", text: `All runs (${jobs.length})` }));
+  stamps.forEach((stamp) => select.appendChild(el("option", {
+    value: stamp, title: stamp,
+    text: `${runLabel(stamp)} · ${counts[stamp]} referral${counts[stamp] === 1 ? "" : "s"}`,
+  })));
+  select.value = referralStamp;
+}
+
+function renderReferrals(all) {
+  lastReferrals = all;
+  referralsById = {};
+  all.forEach((job) => (referralsById[job.job_id] = job));
+  fillReferralRuns(all);
+  const jobs = referralStamp ? all.filter((job) => job.stamp === referralStamp) : all;
   const body = document.querySelector("#referrals tbody");
   body.replaceChildren();
   const pending = jobs.filter((j) => j.history_status === "referral_pending").length;
+  const runCount = new Set(jobs.map((job) => job.stamp)).size;
   $("referralinfo").textContent = jobs.length
-    ? `Run ${currentStamp}: ${pending} pending, ${jobs.length - pending} sent`
+    ? `${pending} pending, ${jobs.length - pending} sent` +
+      (referralStamp ? "" : `, from ${runCount} run${runCount === 1 ? "" : "s"}`)
     : "";
-  $("nav-referrals").textContent = jobs.length ? `Referrals (${jobs.length})` : "Referrals";
+  $("nav-referrals").textContent = all.length ? `Referrals (${all.length})` : "Referrals";
   const pages = Math.max(1, Math.ceil(jobs.length / PAGE_SIZE));
   referralPage = Math.min(Math.max(referralPage, 0), pages - 1);
   renderPager($("referralspager"), referralPage, pages, jobs.length, "referral(s)", (p) => {
     referralPage = p;
-    renderJobs(lastJobs);
+    renderReferrals(lastReferrals);
   });
   if (!jobs.length) {
-    emptyRow(body, 7, "No referrals yet - use Referral on a shortlist row.");
+    emptyRow(body, 8, "No referrals yet - use Referral on a shortlist row.");
     return;
   }
   const start = referralPage * PAGE_SIZE;
@@ -754,6 +804,8 @@ function renderReferrals(jobs) {
 
     add(job.company);
     add(job.title);
+    const found = add(runLabel(job.stamp), "heldfound");
+    found.title = `Found by the run ${job.stamp}` + (job.posted_at ? `; posted ${job.posted_at}` : "");
     add(job.history_contact || "-");
     const asked = add(
       job.history_marked_at ? new Date(job.history_marked_at).toLocaleDateString() : "-"
@@ -873,7 +925,7 @@ async function focusJob(stamp, jobId) {
 }
 
 function selectJob(jobId) {
-  const job = jobsById[jobId] || heldById[jobId];
+  const job = jobsById[jobId] || heldById[jobId] || referralsById[jobId];
   if (!job) return;
   currentJobId = jobId;
   // Name the collapsed panel; open/closed state is the user's, changed only
@@ -904,7 +956,7 @@ function selectJob(jobId) {
 
 async function writeInterviewPrep() {
   const jobId = currentJobId;
-  const job = jobsById[jobId] || heldById[jobId];
+  const job = jobsById[jobId] || heldById[jobId] || referralsById[jobId];
   if (!job) return;
   $("writeprep").disabled = true;
   $("prepnote").textContent = "Writing interview prep… (about a minute)";
@@ -934,7 +986,8 @@ async function loadPreview(job) {
     return;
   }
   note.textContent = "Loading preview...";
-  const url = `/api/runs/${currentStamp}/jobs/${encodeURIComponent(job.job_id)}/resume.pdf`;
+  // A Held back or Referrals row may come from another run than the one on screen.
+  const url = `/api/runs/${job.stamp || currentStamp}/jobs/${encodeURIComponent(job.job_id)}/resume.pdf`;
   try {
     const res = await fetch(url);
     if (!res.ok) {
@@ -999,8 +1052,8 @@ async function loadJobs(stamp) {
   } catch (err) {
     $("runinfo").textContent = `Could not load run: ${err.message}`;
   }
-  // Every action reloads the run; Held back spans all runs and follows.
-  await loadHeld();
+  // Every action reloads the run; Held back and Referrals span all runs and follow.
+  await Promise.all([loadHeld(), loadReferrals()]);
 }
 
 async function loadStamps(preferred) {
@@ -1025,7 +1078,7 @@ async function loadStamps(preferred) {
     select.value = chosen;
     await loadJobs(chosen);
   } else {
-    await loadHeld();
+    await Promise.all([loadHeld(), loadReferrals()]);
     $("runinfo").textContent = "No runs yet. Start one above.";
   }
 }
@@ -1699,6 +1752,11 @@ $("start").addEventListener("click", () => openRunSettings());
 $("writeprep").addEventListener("click", writeInterviewPrep);
 $("stamp").addEventListener("change", (ev) => loadJobs(ev.target.value));
 $("refresh").addEventListener("click", () => loadStamps(currentStamp));
+$("refstamp").addEventListener("change", () => {
+  referralStamp = $("refstamp").value;
+  referralPage = 0;
+  renderReferrals(lastReferrals);
+});
 $("send").addEventListener("click", sendChat);
 $("abort").addEventListener("click", abortApply);
 $("tickall").addEventListener("change", (event) => {

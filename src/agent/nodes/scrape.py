@@ -45,6 +45,8 @@ def _drop_seen(jobs: list[JobPosting], cfg: AppConfig) -> list[JobPosting]:
         how = "id" if status else ""
         if not status and cfg.history.match_similar:
             entry = by_fingerprint.get(history.fingerprint(job.company, job.title))
+            if not history.same_posting(entry, job.description):
+                entry = None          # same company and title, another role
             status = entry["status"] if entry else ""
             how = "similar" if status else ""
         if status:
@@ -88,24 +90,33 @@ def _drop_over_experienced(jobs: list[JobPosting], cfg: AppConfig) -> list[JobPo
                      "empty in your profile - not filtering")
         return jobs
     limit = have + rule.tolerance_years
+    # The same slack the other way: a posting whose range tops out well
+    # below the candidate's years is a junior role. TravClan's SDE-1 asked
+    # for 1-4 years and reached a six-year candidate's shortlist (Oct 2026).
+    floor = have - rule.tolerance_years
     kept: list[JobPosting] = []
     over = 0
     for job in jobs:
-        wanted = experience.required_years(job.description or "")
-        if wanted is None or wanted <= limit:
+        description = job.description or ""
+        wanted = experience.required_years(description)
+        top = experience.ceiling_years(description)
+        if wanted is not None and wanted > limit:
+            reason = f"asks for {wanted:g}+ years; your limit is {limit:g}"
+        elif top is not None and top < floor:
+            reason = f"asks for up to {top:g} years; you have {have:g}"
+        else:
             kept.append(job)
             continue
         over += 1
-        reason = f"asks for {wanted:g}+ years; your limit is {limit:g}"
         if rule.mode == "review":
             kept.append(job.model_copy(update={"held_back": reason}))
             continue
         progress.log(f"[scrape] Skipping '{job.company} {job.title}': {reason}")
     if over and rule.mode == "review":
-        progress.log(f"[scrape] {over} job(s) over the experience limit: scored anyway, and "
+        progress.log(f"[scrape] {over} job(s) outside your experience range: scored anyway, and "
                      f"shown in Held back if they score {rule.review_min_score} or more")
     elif over:
-        progress.log(f"[scrape] Skipped {over} job(s) over the experience limit")
+        progress.log(f"[scrape] Skipped {over} job(s) outside your experience range")
     return kept
 
 

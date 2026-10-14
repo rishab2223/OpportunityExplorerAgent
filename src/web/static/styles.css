@@ -25,6 +25,11 @@
 
 * { box-sizing: border-box; }
 
+/* The hidden attribute always wins. A class setting display:flex or grid
+   beats the browser's own [hidden] rule, which is how the "Moved…" notice
+   showed as an empty green strip on the Held back tab (Oct 2026). */
+[hidden] { display: none !important; }
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
   line-height: 1.5;
@@ -894,6 +899,78 @@ code {
 }
 .rs-head h3 { margin: 0; font-size: 17px; }
 .rs-sub { margin: 2px 0 0; font-size: 12.5px; }
+/* What a run does, in three steps, matching the three numbered sections. */
+.rs-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: rs-step;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.rs-steps li { counter-increment: rs-step; }
+.rs-steps li::before {
+  content: counter(rs-step);
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  border-radius: 50%;
+  font-size: 10.5px;
+  font-weight: 650;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.rs-steps b { color: var(--text); font-weight: 600; }
+.rs-num-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  vertical-align: 1px;
+}
+.rs-section h4 { display: flex; align-items: center; }
+.rs-help {
+  margin: -2px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.rs-field { display: grid; gap: 4px; min-width: 0; }
+.rs-row:has(> .rs-field) { align-items: start; }
+.rs-row:has(> .rs-field) > .rs-label { padding-top: 6px; }
+.rs-field .rs-help { margin: 0; }
+.rs-span { grid-column: 1 / -1; margin: 0; }
+.rs-groupname { margin: 4px 0 -2px; }
+.rs-under-switch { margin: -6px 0 0 46px; }
+.rs-advanced > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rs-advanced > summary::-webkit-details-marker { display: none; }
+.rs-advanced > summary h4::before {
+  content: "▸";
+  display: inline-block;
+  width: 14px;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+.rs-advanced[open] > summary h4::before { transform: rotate(90deg); }
+.rs-advanced > summary .muted { font-size: 12px; }
+.rs-advanced:not([open]) { gap: 0; }
 .rs-saved {
   margin: 6px 0 0;
   font-size: 12.5px;
@@ -1480,6 +1557,8 @@ td.heldreason {
 }
 
 .movednotice button { padding: 3px 10px; }
+/* display:flex beats the hidden attribute: it showed as an empty green strip. */
+.movednotice[hidden] { display: none; }
 
 td.heldfound { white-space: nowrap; color: var(--muted); }
 

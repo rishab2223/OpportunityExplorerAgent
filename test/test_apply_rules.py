@@ -242,6 +242,32 @@ class AffirmativeTests(unittest.TestCase):
         self.assertFalse(_is_affirmative("may"))
 
 
+class SubmittedWordingTests(unittest.TestCase):
+    def test_registration_is_how_some_sites_say_applied(self) -> None:
+        from src.apply.worker import SUBMITTED_PAGE_RE
+
+        # MyCareernet (Oct 2026), after the form was sent.
+        for text in ("Registration Successful!", "Your registration process is complete.",
+                     "Application successful", "You have successfully registered"):
+            self.assertTrue(SUBMITTED_PAGE_RE.search(text), text)
+        for text in ("Register to apply", "Registration closes on Friday", "Complete your registration"):
+            self.assertFalse(SUBMITTED_PAGE_RE.search(text), text)
+
+
+class DeclarationBoxTests(unittest.TestCase):
+    def test_a_required_i_confirm_box_is_asked_about_not_abandoned(self) -> None:
+        from src.apply.worker import _is_declaration_box
+
+        box = {"tag": "input", "type": "checkbox", "required": True,
+               "label": "By checking this box, I confirm my understanding of the following:"}
+        self.assertTrue(_is_declaration_box(box))
+        self.assertFalse(_is_declaration_box(dict(box, required=False)))
+        self.assertFalse(_is_declaration_box({"tag": "input", "type": "checkbox", "required": True,
+                                              "label": "Send me job alerts"}))
+        self.assertTrue(_is_declaration_box({"tag": "input", "type": "checkbox", "required": True,
+                                             "label": "I agree to the terms"}))
+
+
 class StepOnlyTests(unittest.TestCase):
     def test_a_next_is_a_step_and_review_and_submit_is_the_end(self) -> None:
         from src.apply.worker import _is_step_only
@@ -1105,6 +1131,114 @@ class RefillTests(TempDbTestCase):
         self.assertEqual(calls, [])
 
 
+class RefusalMemoryTests(TempDbTestCase):
+    """A value a box has refused is not sent to it again, by the sweep or by
+    the model; the model is told what was refused and what the box offered.
+    BitGo (Oct 2026): the school and a location question were each tried
+    three times with the same value."""
+
+    FIELD = {"id": 1, "tag": "input", "type": "text", "role": "combobox", "label": "School*",
+             "value": "", "group": "", "name": ""}
+
+    class Sess:
+        def __init__(self):
+            self.lines = []
+            self.refused = {}
+
+        def log(self, t):
+            self.lines.append(t)
+
+    def test_the_sweep_does_not_send_a_refused_value_twice(self) -> None:
+        from unittest import mock
+
+        calls = []
+
+        def refuse(page, f, value, pdf_path, sess, source=""):
+            calls.append(value)
+            raise ValueError("'Example' matches none of the dropdown's options; pick one of: A, B")
+
+        sess = self.Sess()
+        handled, attempts = set(), {}
+        key = worker._field_key(self.FIELD, "School*")
+        with mock.patch.object(worker, "_apply_value", side_effect=refuse), \
+                mock.patch("src.apply.resolver.resolve", return_value=("Example", "profile")):
+            worker._sweep(None, [dict(self.FIELD)], handled, attempts, {}, "", sess)
+            worker._sweep(None, [dict(self.FIELD)], handled, attempts, {}, "", sess)
+            worker._sweep(None, [dict(self.FIELD)], handled, attempts, {}, "", sess)
+        self.assertEqual(calls, ["Example"])
+        self.assertEqual(sess.refused[key][0], "Example")
+        self.assertIn("pick one of: A, B", sess.refused[key][1])
+        # Still the model's to answer, with the refusal in hand.
+        self.assertNotIn(key, handled)
+        # A box that was merely unreachable is not a refusal of the value.
+        sess2 = self.Sess()
+        with mock.patch.object(worker, "_apply_value", side_effect=worker.browser.Unreachable("gone")), \
+                mock.patch("src.apply.resolver.resolve", return_value=("Example", "profile")):
+            worker._sweep(None, [dict(self.FIELD)], set(), {}, {}, "", sess2)
+        self.assertEqual(sess2.refused, {})
+
+    def test_the_model_may_not_repeat_a_refused_value(self) -> None:
+        from unittest import mock
+
+        from src.apply.worker import _run_action
+
+        sess = self.Sess()
+        key = worker._field_key(self.FIELD, "School*")
+        sess.refused[key] = ("Example University", "pick one of: A, B, Other")
+        notes = []
+        fields = [dict(self.FIELD)]
+        same = ApplyAction(action="fill", field_id=1, value="example university", confidence=0.99)
+        result = _run_action(None, same, fields, {}, "", sess, [], notes, set(), {}, {}, set())
+        self.assertEqual(result, "refused")
+        self.assertIn("pick one of: A, B, Other", notes[-1])
+        self.assertTrue(any("Not trying" in line for line in sess.lines), sess.lines)
+        # A different value goes through as usual.
+        other = ApplyAction(action="fill", field_id=1, value="Other", confidence=0.99)
+        with mock.patch.object(worker, "_guarded_execute", return_value="executed") as run:
+            result = _run_action(None, other, fields, {}, "", sess, [], notes, set(), {}, {}, set())
+        self.assertEqual(result, "executed")
+        self.assertEqual(run.call_count, 1)
+
+    def test_a_failed_model_fill_is_remembered_too(self) -> None:
+        from src.apply.worker import _guarded_execute
+
+        sess = self.Sess()
+        with unittest.mock.patch.object(worker, "_execute", side_effect=ValueError("no such option")):
+            result = _guarded_execute(None, ApplyAction(action="select", field_id=1, value="Gurugram",
+                                                        confidence=0.99),
+                                      dict(self.FIELD), "", sess, [], [])
+        self.assertEqual(result, "error")
+        self.assertEqual(sess.refused[worker._field_key(self.FIELD, "School*")],
+                         ("Gurugram", "no such option"))
+
+    def test_the_prompt_names_what_was_refused(self) -> None:
+        page = type("P", (), {"url": "https://x/apply"})()
+        key = worker._field_key(self.FIELD, "School*")
+        with unittest.mock.patch.object(worker.browser, "page_text", lambda *a, **k: "page"):
+            prompt = worker._build_prompt({"title": "SWE", "company": "X"}, "resume",
+                                          [dict(self.FIELD)], page, [], [], set(),
+                                          refused={key: ("Example", "pick one of: A, B")})
+            quiet = worker._build_prompt({"title": "SWE", "company": "X"}, "resume",
+                                         [dict(self.FIELD)], page, [], [], set(), refused={})
+        self.assertIn("TRIED AND REFUSED", prompt)
+        self.assertIn("'School*' refused 'Example': pick one of: A, B", prompt)
+        self.assertNotIn("TRIED AND REFUSED", quiet)
+
+    def test_a_short_list_of_set_answers_is_a_fixed_choice(self) -> None:
+        self.assertTrue(worker._fixed_choice(["In Bangalore", "Can relocate", "Cannot relocate"]))
+        self.assertFalse(worker._fixed_choice([]))
+        self.assertFalse(worker._fixed_choice(["No options"]))
+        self.assertFalse(worker._fixed_choice(["Only one"]))
+        self.assertFalse(worker._fixed_choice([f"Country {n}" for n in range(40)]))
+        # The first page of a long alphabetical list is not a set of answers.
+        self.assertFalse(worker._fixed_choice([
+            "+247 AC - Ascension Island", "+376 AD - Andorra", "+971 AE - United Arab Emirates",
+            "+93 AF - Afghanistan", "+1 AG - Antigua and Barbuda", "+1 AI - Anguilla", "+355 AL - Albania"]))
+        # Four sorted rows are still a set; so are five that are not sorted.
+        self.assertTrue(worker._fixed_choice(["30 days", "60 days", "90 days", "Immediate"]))
+        self.assertTrue(worker._fixed_choice(["Yes", "No", "Maybe", "Later", "Never"]))
+
+
 class SuggestionRowTests(unittest.TestCase):
     def test_placeholder_rows_are_not_suggestions(self) -> None:
         from src.apply.worker import _real_suggestions
@@ -1394,6 +1528,7 @@ class OpeningTests(TempDbTestCase):
         context = type("C", (), {"pages": [page], "close": lambda self: None})()
         with unittest.mock.patch.object(worker.browser, "launch", return_value=(None, context, page)), \
              unittest.mock.patch.object(worker, "make_invoker", return_value=None), \
+             unittest.mock.patch.object(worker, "open_claude_session", return_value=None), \
              unittest.mock.patch.object(worker.indeed, "start", indeed_start):
             worker.run_session(sess, {"apply_url": url}, "", worker.AppConfig(), None)
         return seen
@@ -1425,6 +1560,7 @@ class OpeningTests(TempDbTestCase):
         context = type("C", (), {"pages": [page], "close": lambda self: None})()
         with unittest.mock.patch.object(worker.browser, "launch", return_value=(None, context, page)), \
              unittest.mock.patch.object(worker, "make_invoker", return_value=None), \
+             unittest.mock.patch.object(worker, "open_claude_session", return_value=None), \
              unittest.mock.patch.object(worker.browser, "current_page", lambda c, p: p), \
              unittest.mock.patch.object(worker.browser, "page_blocked", reached_loop):
             worker.run_session(sess, {"apply_url": url}, "", worker.AppConfig(), None)
@@ -1452,6 +1588,7 @@ class OpeningTests(TempDbTestCase):
         context = type("C", (), {"pages": [page], "close": lambda self: None})()
         with unittest.mock.patch.object(worker.browser, "launch", return_value=(None, context, page)), \
              unittest.mock.patch.object(worker, "make_invoker", return_value=None), \
+             unittest.mock.patch.object(worker, "open_claude_session", return_value=None), \
              unittest.mock.patch.object(worker.indeed, "start", lambda page, sess: "closed"):
             worker.run_session(sess, {"apply_url": url}, "", worker.AppConfig(), None)
         self.assertEqual(asked, [])
@@ -1808,8 +1945,12 @@ class DateBoxTests(TempDbTestCase):
         # Names that merely contain the letters: a "candidate" box is not a date.
         for name in ("candidate", "candidateName", "update", "validate_email"):
             self.assertFalse(worker._is_date_box({"tag": "input", "type": "text", "label": "Name", "elid": name}), name)
-        for name in ("start_date", "startDate", "date", "dob", "experienceData[1].fromTo.endDate"):
+        for name in ("start_date", "startDate", "date", "dob", "experienceData[1].fromTo.endDate",
+                     "dateOfBirth", "date_of_birth", "DOB"):
             self.assertTrue(worker._is_date_box({"tag": "input", "type": "text", "label": "", "elid": name}), name)
+        # MyCareernet (Oct 2026): the required-star and the page's own word for it.
+        self.assertTrue(worker._is_date_box({"tag": "input", "type": "", "label": "*Date Of Birth"}))
+        self.assertTrue(worker._is_date_box({"tag": "input", "type": "", "label": "Joined", "datepicker": True}))
 
     def test_parsing_what_the_model_writes(self) -> None:
         from src.apply import worker
@@ -1819,8 +1960,20 @@ class DateBoxTests(TempDbTestCase):
         self.assertEqual(worker._parse_date("07/2020"), (7, None, 2020))
         self.assertEqual(worker._parse_date("2020-07"), (7, None, 2020))
         self.assertEqual(worker._parse_date("15 March 2019"), (3, 15, 2019))
-        self.assertEqual(worker._parse_date("03/15/2019"), (3, 15, 2019))
+        self.assertEqual(worker._parse_date("03/15/2019"), (3, 15, 2019))    # can only be month first
         self.assertEqual(worker._parse_date("no date here"), (None, None, None))
+
+    def test_two_numbers_and_a_year_are_day_first_as_the_profile_writes_them(self) -> None:
+        from src.apply import worker
+
+        # 3 October 1997 - read month first it was 10 March (MyCareernet, Oct 2026).
+        self.assertEqual(worker._parse_date("03/10/1997"), (10, 3, 1997))
+        self.assertEqual(worker._parse_date("22/07/2019"), (7, 22, 2019))
+        self.assertEqual(worker._parse_date("1997-10-03"), (10, 3, 1997))
+        self.assertEqual(worker._parse_date("2020-07-05"), (7, 5, 2020))
+        # Into a month-first box, it goes in month first.
+        month, day, year = worker._parse_date("03/10/1997")
+        self.assertEqual(worker._format_date(month, day, year, "MM/DD/YYYY"), "10/03/1997")
 
     def test_the_box_keeps_its_own_format(self) -> None:
         from src.apply import worker
@@ -2570,6 +2723,27 @@ class SubmittedBaselineTests(unittest.TestCase):
         done = self._page_at("https://acme.test/apply/thanks", self.CONFIRMED)
         worker._take_submitted_baseline(done, self.BUTTONS_ONLY, holder)
         self.assertIn("application was sent to acme", worker._newly_submitted(done, holder))
+
+    def test_a_confirmation_on_a_new_page_with_a_box_still_counts_once_typed(self) -> None:
+        # LinkedIn's redesigned Easy Apply (Oct 2026): the form lives at its
+        # own address; the submit lands back on the job page, whose "Your
+        # application was sent" card still carries a box. Read as a new
+        # document, the sentence went into the baseline and was never new.
+        holder = {}
+        worker._take_submitted_baseline(
+            self._page_at("https://li.test/jobs/1/apply", self.DESCRIPTION), self.FORM, holder)
+        done = self._page_at("https://li.test/jobs/1", self.CONFIRMED)
+        worker._take_submitted_baseline(done, self.FORM, holder, touched=True)
+        self.assertIn("application was sent to acme", worker._newly_submitted(done, holder))
+        # Untouched, a new form page is still its own document - that is how
+        # a "Thank you for applying" intro stops counting.
+        holder = {}
+        worker._take_submitted_baseline(
+            self._page_at("https://acme.test/jobs/1", self.DESCRIPTION), self.FORM, holder)
+        form = self._page_at("https://acme.test/jobs/1/apply",
+                             "Thank you for applying to Acme! Please complete the form below.")
+        worker._take_submitted_baseline(form, self.FORM, holder, touched=True)
+        self.assertEqual(worker._newly_submitted(form, holder), "")
 
     def test_a_query_string_is_not_a_new_page(self) -> None:
         holder = {}
@@ -3438,3 +3612,204 @@ class NoFieldsReasonTests(unittest.TestCase):
         self.assertIn("2 of its data requests failed", got)
         self.assertIn("401 api.example.test/getJobDesc", got)
         self.assertIn("sign out and back in", got)
+
+
+class CargillCountryTests(unittest.TestCase):
+    """SuccessFactors' Country showed a 200-country list a page at a time,
+    and 'India' took 'British Indian Ocean Territory' (Oct 2026)."""
+
+    PAGE = ["No Selection", "Afghanistan", "Aland Islands", "Albania", "Bouvet Island",
+            "Brazil", "British Indian Ocean Territory", "Brunei Darussalam"]
+
+    def test_india_never_takes_a_longer_word(self):
+        self.assertEqual(worker._choose_option(self.PAGE, "India"), -1)
+
+    def test_an_inflection_still_counts(self):
+        options = ["Available immediately to join", "30 days", "60 days"]
+        self.assertEqual(worker._choose_option(options, "Immediate Joiner"), 0)
+
+    def test_a_page_of_a_long_list_is_partial(self):
+        self.assertTrue(worker._partial_list(self.PAGE))
+        self.assertFalse(worker._partial_list(["No Selection", "Yes", "No"]))
+
+    def test_strict_choice_takes_only_the_value_itself(self):
+        self.assertEqual(worker._choose_strict(self.PAGE, "India"), -1)
+        self.assertEqual(worker._choose_strict(self.PAGE + ["India"], "India"), len(self.PAGE))
+        self.assertEqual(worker._choose_strict(["Indiana", "India (+91)"], "India"), 1)
+
+
+class SalaryExpectationsTests(TempDbTestCase):
+    def test_salary_expectations_box_gets_the_estimate(self):
+        field = {"tag": "input", "type": "currency", "label": "Salary expectations:",
+                 "name": "cust_salaryExpect", "value": ""}
+        self.assertTrue(worker._wants_salary_estimate(field))
+
+
+class _MovedPage:
+    def __init__(self, url, marked):
+        self.url = url
+        self.frames = [types.SimpleNamespace(
+            locator=lambda _sel: types.SimpleNamespace(count=lambda: marked))]
+
+
+class PageMovedOnTests(unittest.TestCase):
+    def test_new_address_means_moved_on(self):
+        self.assertTrue(worker._page_moved_on(_MovedPage("https://b.test/form", 5), "https://a.test/job"))
+
+    def test_no_marked_boxes_left_means_moved_on(self):
+        self.assertTrue(worker._page_moved_on(_MovedPage("https://a.test/job", 0), "https://a.test/job"))
+
+    def test_same_page_with_its_boxes_has_not(self):
+        self.assertFalse(worker._page_moved_on(_MovedPage("https://a.test/job", 3), "https://a.test/job"))
+
+    def test_only_a_gone_box_counts(self):
+        self.assertTrue(worker._gone_error(browser.Unreachable(browser.PROBLEMS["gone"])))
+        self.assertTrue(worker._gone_error(worker.StaleField("First Name")))
+        self.assertFalse(worker._gone_error(browser.Unreachable(browser.PROBLEMS["disabled"])))
+        self.assertFalse(worker._gone_error(TimeoutError("Locator.fill: Timeout")))
+
+
+class ExpandAllTests(unittest.TestCase):
+    def test_expand_all_is_clicked_once_without_the_model(self):
+        logs = []
+        sess = types.SimpleNamespace(log=logs.append)
+        fields = [{"id": 2, "tag": "a", "role": "button", "label": "Expand all sections"}]
+        handled: set[str] = set()
+        with unittest.mock.patch.object(worker.browser, "page_shape", return_value=None), \
+                unittest.mock.patch.object(worker.browser, "locate", return_value=object()), \
+                unittest.mock.patch.object(worker.browser, "click") as click, \
+                unittest.mock.patch.object(worker.browser, "settle"):
+            self.assertTrue(worker._expand_all_sections(None, fields, handled, sess))
+            self.assertFalse(worker._expand_all_sections(None, fields, handled, sess))
+        self.assertEqual(click.call_count, 1)
+        self.assertEqual(logs, ["Clicked Expand all sections"])
+
+
+class TickBoxChoiceTests(unittest.TestCase):
+    """Greenhouse asked "How many years of experience do you have in Java?"
+    as three tick boxes; the reply "0-3" unticked "0-3 years" (Modulr, Oct
+    2026)."""
+
+    QUESTION = "How many years of experience do you have in Java? *"
+
+    def boxes(self):
+        return [{"id": 24 + i, "tag": "input", "type": "checkbox", "label": label,
+                 "name": "question_31519037002[]", "group": self.QUESTION, "section": ""}
+                for i, label in enumerate(("0-3 years", "3-6 years", "6+ years"))]
+
+    def test_the_reply_names_its_box(self):
+        a, b, c = self.boxes()
+        other = {"id": 20, "tag": "input", "type": "checkbox", "label": "0-4 years",
+                 "name": "question_31519036002[]", "group": "Total experience *", "section": ""}
+        fields = [other, a, b, c]
+        self.assertIs(worker._group_choice(fields, a, "0-3"), a)
+        self.assertIs(worker._group_choice(fields, a, "3-6"), b)
+        self.assertIs(worker._group_choice(fields, a, "6+"), c)
+        self.assertIs(worker._group_choice(fields, a, "6+ years"), c)
+        self.assertIsNone(worker._group_choice(fields, a, "I have never used it"))
+
+    def test_a_lone_box_is_not_a_choice(self):
+        agree = {"id": 1, "tag": "input", "type": "checkbox", "label": "I agree", "group": "Terms"}
+        self.assertIsNone(worker._group_choice([agree], agree, "yes"))
+
+    def test_digits_name_an_option(self):
+        a, _, _ = self.boxes()
+        self.assertTrue(worker._names_option(a, "0-3"))
+        self.assertFalse(worker._names_option(a, "3-6"))
+
+
+class SavedBandAnswerTests(unittest.TestCase):
+    def test_a_saved_band_ticks_only_its_own_box(self):
+        labels = ("0-3 years", "3-6 years", "6+ years")
+        for answer, want in (("0-3", ["0-3 years"]), ("3-6", ["3-6 years"]), ("6+", ["6+ years"])):
+            got = [l for l in labels if worker._option_agrees({"type": "checkbox", "label": l}, answer)]
+            self.assertEqual(got, want, answer)
+
+    def test_a_sentence_still_agrees_with_its_yes_or_no(self):
+        no = {"type": "radio", "label": "No"}
+        self.assertTrue(worker._option_agrees(no, "No, I don't"))
+
+
+class NationalityOptionTests(unittest.TestCase):
+    def test_indian_is_india_not_british_indian_ocean_territory(self):
+        countries = ["Afghanistan", "British Indian Ocean Territory", "India", "Indonesia"]
+        self.assertEqual(worker._choose_option(countries, "Indian"), 2)
+        self.assertEqual(worker._choose_option(["British Indian Ocean Territory", "IND India"], "Indian"), 1)
+        self.assertEqual(worker._choose_option(["Indian Citizen", "OCI holder"], "Indian"), 0)
+
+
+class LearnFromPageTests(TempDbTestCase):
+    """The candidate picked the answer in the browser while the agent asked."""
+
+    ABOUT = {"id": 9, "tag": "button", "type": "button", "haspopup": "listbox",
+             "label": "Select One Required", "text": "Select One",
+             "group": "Does the Legal Name you provided match your legal ID exactly?*",
+             "elid": "primaryQuestionnaire--7d92"}
+
+    def learn(self, about, now):
+        lines = []
+        sess = types.SimpleNamespace(log=lines.append)
+        with unittest.mock.patch.object(worker.browser, "snapshot", return_value=[now]):
+            got = worker._learn_from_page(None, sess, about)
+        return got, lines
+
+    def test_the_picked_option_is_saved_for_next_time(self):
+        now = dict(self.ABOUT, id=12, label="Yes Required", text="Yes")
+        got, lines = self.learn(self.ABOUT, now)
+        self.assertEqual(got, "Yes")
+        self.assertEqual(answers.recall(self.ABOUT["label"], self.ABOUT["group"])["answer"], "Yes")
+        self.assertIn("Saved your choice 'Yes'", lines[0])
+
+    def test_nothing_is_saved_without_a_question_or_an_answer(self):
+        no_group = dict(self.ABOUT, group="")
+        self.assertEqual(self.learn(no_group, dict(no_group, text="Yes"))[0], "")
+        self.assertEqual(self.learn(self.ABOUT, dict(self.ABOUT))[0], "")
+
+    def test_a_sensitive_topic_is_not_saved_silently(self):
+        about = dict(self.ABOUT, group="Please state your gender*")
+        self.assertEqual(self.learn(about, dict(about, text="Male"))[0], "")
+
+
+class SavedApplyPathTests(TempDbTestCase):
+    def test_a_named_path_is_kept_per_system_and_reused(self):
+        choices = [{"id": i, "tag": "a", "role": "button", "label": text}
+                   for i, text in enumerate(("Autofill with Resume", "Apply Manually",
+                                             "Use My Last Application"))]
+        clicked = []
+        sess = types.SimpleNamespace(log=lambda line: None, ask=lambda q, suggestion="": "apply manually")
+        with unittest.mock.patch.object(worker, "_guarded_execute",
+                                        lambda page, action, field, *a, **k: clicked.append(field["label"])):
+            worker._ask_apply_choice(None, choices, "", sess, [], [], set(), None, site="workday")
+            sess.ask = lambda q, suggestion="": self.fail("asked again")
+            worker._ask_apply_choice(None, choices, "", sess, [], [], set(), None, site="workday")
+        self.assertEqual(clicked, ["Apply Manually", "Apply Manually"])
+
+
+class AppliedOnTodayTests(unittest.TestCase):
+    """Oracle Recruiting lands on "My Applications": the job, its status and
+    "Applied on 10/13/2026" - and no "application submitted" (Adani, Oct 2026)."""
+
+    def test_todays_date_beside_applied_confirms(self):
+        from datetime import date, timedelta
+        today = date.today()
+        for shown in (today.strftime("%m/%d/%Y"), today.strftime("%d/%m/%Y"), today.strftime("%b %d, %Y"),
+                      today.strftime("%d %B %Y"), today.isoformat()):
+            self.assertTrue(worker._submitted_marks(f"Status: Screening\nApplied on {shown}"), shown)
+        old = (today - timedelta(days=40)).strftime("%m/%d/%Y")
+        self.assertFalse(worker._submitted_marks(f"Applied on {old}"))
+        self.assertFalse(worker._submitted_marks("Applied on behalf of a client"))
+
+
+class TickBoxNeedsYesOrNoTests(unittest.TestCase):
+    def test_a_reply_that_is_neither_is_refused_not_unticked(self):
+        box = {"id": 36, "tag": "input", "type": "checkbox", "label": "termsCondition2",
+               "group": "I have read and understood TurboHire's Privacy Policy"}
+        sess = types.SimpleNamespace(log=lambda line: None)
+        with unittest.mock.patch.object(worker.browser, "locate", lambda *a: None), \
+                unittest.mock.patch.object(worker.browser, "await_usable", lambda *a, **k: ("", "")), \
+                unittest.mock.patch.object(worker, "_set_checked") as ticked:
+            with self.assertRaises(ValueError):
+                worker._apply_value(None, box, "2013", "", sess)
+            worker._apply_value(None, box, "no", "", sess)
+            worker._apply_value(None, box, "yes", "", sess)
+        self.assertEqual([c.args[3] for c in ticked.call_args_list], [False, True])

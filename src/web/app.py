@@ -29,13 +29,25 @@ _STOP = object()
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
+class _FreshStaticFiles(StaticFiles):
+    """Static files the browser checks with the server on every load. Left to
+    its own caching, a browser kept running an old app.js after a fix, and the
+    dashboard went on showing the bug (Oct 2026). The check is cheap: an
+    unchanged file answers 304 from its ETag."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 app = FastAPI(title="Opportunity Explorer")
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/static", _FreshStaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/runs")
@@ -48,6 +60,12 @@ def api_runs() -> dict:
 def api_held() -> dict:
     """The Held back tab: waiting jobs from every run, not just the one on screen."""
     return {"jobs": runs.load_held_waiting()}
+
+
+@app.get("/api/referrals")
+def api_referrals() -> dict:
+    """The Referrals tab: pending and sent referrals from every run."""
+    return {"jobs": runs.load_referrals()}
 
 
 @app.post("/api/runs", status_code=202)

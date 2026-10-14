@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Apply to Scitara</title></head>
+<body>
+<!-- LinkedIn Easy Apply with everything already filled in (Scitara, Oct
+     2026): the agent types nothing. The candidate presses Submit (a timer
+     stands in) and lands on the job page, which has a search box of its own
+     and the "Your application was sent" card. -->
+<form onsubmit="return false">
+  <label for="name">Full name *</label>
+  <input id="name" name="name" autocomplete="name" required value="Test User">
+  <label for="email">Email *</label>
+  <input id="email" name="email" type="email" autocomplete="email" required value="test@example.invalid">
+  <button type="submit">Submit application</button>
+</form>
+<script>
+  setTimeout(function () { location.href = 'fixture_prefilled_sent_job.html'; }, 3000);
+</script>
+</body>
+</html>

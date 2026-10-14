@@ -95,6 +95,41 @@
     <label for="q5" class="label">First Name<span aria-hidden="true">*</span></label>
     <input id="q5" type="text" autocomplete="given-name" aria-required="true" value="">
   </div>
+
+  <!-- BitGo (Oct 2026): a question with three set answers, labelled
+       "Location." so the profile's city rule claims it, on a widget that does
+       NOT filter on what is typed. -->
+  <div class="field-wrapper">
+    <label id="q6-label" for="q6" class="label select__label">Location.<span aria-hidden="true">*</span></label>
+    <div class="select-shell remix-css-b62m3t-container">
+      <div class="select__control">
+        <div class="select__value-container">
+          <div class="select__placeholder remix-css-1jqq78o-placeholder">Select...</div>
+          <div class="select__input-container">
+            <input id="q6" class="select__input" role="combobox" aria-haspopup="true"
+                   aria-required="true" autocomplete="off" value="">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Greenhouse's school list: searched as you type, with "Other" for a
+       school it does not have. -->
+  <div class="field-wrapper">
+    <label id="q7-label" for="q7" class="label select__label">School<span aria-hidden="true">*</span></label>
+    <div class="select-shell remix-css-b62m3t-container">
+      <div class="select__control">
+        <div class="select__value-container">
+          <div class="select__placeholder remix-css-1jqq78o-placeholder">Select...</div>
+          <div class="select__input-container">
+            <input id="q7" class="select__input" role="combobox" aria-haspopup="true"
+                   aria-required="true" autocomplete="off" value="">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </form>
 
 <script>
@@ -106,8 +141,13 @@
   // into the singleValue div while the search box goes back to empty.
   var OPTIONS = {
     q2: ["Immediate / Available to join", "30 days", "60 days", "90 days"],
-    q4: ["LinkedIn", "Job board", "Referral", "Other"]
+    q4: ["LinkedIn", "Job board", "Referral", "Other"],
+    q6: ["In Bangalore", "Can relocate to Bangalore", "Cannot relocate to Bangalore"],
+    q7: ["Aalborg University", "Aalto University", "Aarhus University", "Abertay University",
+         "Other University of Somewhere", "Other"]
   };
+  // Widgets that show their whole list whatever is typed (BitGo's Location.).
+  var NOFILTER = { q6: true };
   var MOUNT_DELAY = 250;
 
   function shellOf(input) { return input.closest(".select-shell"); }
@@ -122,9 +162,11 @@
   function openMenu(input) {
     var id = input.id;
     if (!OPTIONS[id] || shellOf(input).querySelector(".select__menu")) return;
+    if (input.getAttribute("aria-expanded") === "true") return;   // already mounting
     input.setAttribute("aria-expanded", "true");
     setTimeout(function () {
       if (input.getAttribute("aria-expanded") !== "true") return;
+      if (shellOf(input).querySelector(".select__menu")) return;   // one menu, as react-select
       var menu = document.createElement("div");
       menu.className = "select__menu remix-css-1oc7h4y-menu";
       var list = document.createElement("div");
@@ -135,7 +177,7 @@
       // this fixture left out, and why it passed while the real form failed:
       // "Immediate Joiner" typed at "Immediate / Available to join" matches
       // nothing, so the list empties and there is nothing left to pick.
-      var typed = (input.value || "").toLowerCase();
+      var typed = NOFILTER[id] ? "" : (input.value || "").toLowerCase();
       var showing = OPTIONS[id].filter(function (t) {
         return !typed || t.toLowerCase().indexOf(typed) >= 0;
       });

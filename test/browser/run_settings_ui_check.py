@@ -144,7 +144,20 @@ with sync_playwright() as pw:
 
     page.fill("#rsminscore", "8")
     page.dispatch_event("#rsminscore", "input")
-    check("the score pill follows the slider", page.text_content("output.rs-out") == "8")
+    check("the score pill follows the slider", page.text_content("output.rs-out") == "8+")
+    check("and the plain-words line says what it means",
+          "scoring 8 or more" in (page.text_content("#rsminhint") or ""))
+    check("the experience line names the candidate's own years",
+          "from your Profile" in (page.text_content("#rsexphint") or ""))
+    check("the technical settings start folded away",
+          not page.locator("input[data-field='openai.score_concurrency']").is_visible())
+    page.eval_on_selector("input[data-field='openai.score_concurrency']",
+                          "el => { el.value = '99'; el.dispatchEvent(new Event('input', {bubbles: true})); }")
+    page.click("#rsstart", force=True)
+    check("a problem inside Advanced opens it",
+          page.locator("input[data-field='openai.score_concurrency']").is_visible()
+          and "Jobs scored at once" in (page.text_content("#rserror") or ""))
+    page.fill("input[data-field='openai.score_concurrency']", "16")
     check("OpenAI model is hidden while Claude tailors",
           not page.locator("select[data-field='openai.enrich_model']").is_visible()
           and page.locator("select[data-field='claude.enrich_model']").is_visible())

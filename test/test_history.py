@@ -216,6 +216,43 @@ class DropSeenTests(HistoryTestCase):
             [j.job_id for j in kept], ["indeed:new999", "indeed:skip1", "indeed:fresh"]
         )
 
+    def test_a_recruiters_other_role_with_the_same_title_is_kept(self) -> None:
+        # Recrew AI (Oct 2026) posts every client's role under its own name:
+        # two "Backend Engineer" jobs, two different companies behind them.
+        from src.agent.nodes.scrape import _drop_seen
+        from src.config import AppConfig
+        from src.models import JobPosting
+
+        travel = ("Role: Backend Engineer (Full-Stack). An early-stage consumer technology company "
+                  "building an AI-led travel rewards platform with a fintech layer. " * 4)
+        agent = ("Role: Software Engineer, Backend and Multi-Agent Systems. A seed-stage company "
+                 "building an AI personal agent that turns group chats into workflows. " * 4)
+        applied = JobPosting(source="linkedin", job_id="linkedin:gurugram", company="Recrew AI",
+                             title="Backend Engineer", description=travel)
+        other = JobPosting(source="linkedin", job_id="linkedin:bangalore", company="Recrew AI",
+                           title="Backend Engineer", description=agent)
+        repost = JobPosting(source="linkedin", job_id="linkedin:repost", company="Recrew AI",
+                            title="Backend Engineer", description=travel.replace("Gurgaon", "Gurugram"))
+        history.record(applied.model_dump(), "applied")
+        kept = _drop_seen([other, repost], AppConfig())
+        self.assertEqual([j.job_id for j in kept], ["linkedin:bangalore"])
+
+    def test_a_row_without_a_description_still_matches_as_before(self) -> None:
+        stored = {"status": "applied", "descriptions": [""]}
+        self.assertTrue(history.same_posting(stored, "anything at all"))
+        self.assertTrue(history.same_posting({"status": "applied", "descriptions": ["abc"]}, ""))
+        self.assertFalse(history.same_posting(None, "x"))
+
+    def test_backfill_fills_old_rows_from_their_run(self) -> None:
+        history.record({**JOB, "description": ""}, "applied", stamp="20261006T103501")
+        filled = history.backfill_descriptions(
+            lambda stamp: {JOB["job_id"]: "Build APIs.  For Acme."} if stamp == "20261006T103501" else {})
+        self.assertEqual(filled, 1)
+        _, by_fp = history.snapshot()
+        self.assertEqual(by_fp[history.fingerprint(JOB["company"], JOB["title"])]["descriptions"],
+                         ["build apis. for acme."])
+        self.assertEqual(history.backfill_descriptions(lambda stamp: {}), 0)
+
     def test_drop_seen_blocks_closed(self) -> None:
         from src.agent.nodes.scrape import _drop_seen
         from src.config import AppConfig

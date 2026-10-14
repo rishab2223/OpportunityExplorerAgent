@@ -54,6 +54,11 @@ class ClaudeConfig(BaseModel):
     # Assisted apply: one structured decision per form step, so latency matters.
     apply_model: str = "claude-opus-5"
     apply_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    # Picking the nearest option when a dropdown does not list the answer word
+    # for word: one call per page. "sonnet" is Claude Code's alias for the
+    # current Sonnet.
+    pick_model: str = "sonnet"
+    pick_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
 
 
 class HistoryConfig(BaseModel):

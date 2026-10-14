@@ -1,9 +1,7 @@
 """The answer box in the dashboard: a drafted paragraph must be readable and
 editable without dragging a cursor along a one-line input."""
-import re
 import sys
 import threading
-import time
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")

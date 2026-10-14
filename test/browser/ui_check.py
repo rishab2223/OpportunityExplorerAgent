@@ -90,9 +90,60 @@ with sync_playwright() as pw:
     check("the shortlist card went with it",
           page.locator('[data-act="startqueue"]').first.is_hidden())
     page.screenshot(path=str(SHOTS / "referrals.png"), full_page=True)
+    check("the referrals table says which run a row came from",
+          page.locator("#referrals thead th", has_text="Found").count() == 1)
     page.click('#nav button[data-view="jobs"]')
     page.wait_for_timeout(300)
     check("jobs view back", page.locator("#view-jobs").is_visible())
+
+    # --- referrals span every run ------------------------------------
+    # A referral asked on an OLDER run must still be listed while the newest
+    # run is on screen (scratch history DB; the run files are only read).
+    from src import history  # noqa: E402
+    from src.web import runs as web_runs  # noqa: E402
+    stamps = web_runs.list_stamps()
+    older = next((s for s in stamps[1:] if web_runs.load_jobs(s)), "")
+    if older:
+        print("\n== referrals from an older run ==")
+        asked = web_runs.load_jobs(older)[0]
+        history.record(asked, "referral_pending", contact="Test contact")
+        page.reload(wait_until="networkidle")
+        page.wait_for_timeout(1200)
+        check("the newest run is still the one on screen",
+              page.locator("#stamp").input_value() == stamps[0], page.locator("#stamp").input_value())
+        page.click('#nav button[data-view="referrals"]')
+        page.wait_for_timeout(300)
+        row = page.locator(f'#referrals tbody tr[data-job-id="{asked["job_id"]}"]')
+        check("the older run's referral is listed", row.count() == 1)
+        check("with the run it came from",
+              row.locator("td.heldfound").count() == 1 and row.locator("td.heldfound").inner_text() != "")
+        check("and the contact", "Test contact" in row.inner_text())
+        check("the tab counts it", "Referrals (" in page.locator("#nav-referrals").inner_text())
+        # The Run dropdown: All runs by default, one entry per run with referrals.
+        picker = page.locator("#refstamp")
+        check("the Run dropdown starts on All runs", picker.input_value() == "")
+        check("it lists the older run with its count",
+              picker.locator(f'option[value="{older}"]').count() == 1
+              and "1 referral" in picker.locator(f'option[value="{older}"]').inner_text(),
+              picker.inner_text())
+        check("and no run without referrals", picker.locator("option").count() == 2,
+              str(picker.locator("option").count()))
+        picker.select_option(older)
+        page.wait_for_timeout(300)
+        check("picking the older run keeps its row", row.count() == 1)
+        check("the info line drops the run count",
+              "from" not in page.locator("#referralinfo").inner_text(),
+              page.locator("#referralinfo").inner_text())
+        picker.select_option("")
+        page.wait_for_timeout(300)
+        row.locator("button", has_text="Referral failed").click()
+        page.wait_for_timeout(800)
+        check("Referral failed clears it from the tab", row.count() == 0)
+        check("and from history", history.lookup(asked["job_id"]) is None)
+        page.click('#nav button[data-view="jobs"]')
+        page.wait_for_timeout(300)
+    else:
+        print("  (fewer than two runs in outputs/ - skipping the cross-run referral check)")
 
     print("\n== rows, ticks and the Job info button ==")
     rows = page.locator("#jobs tbody tr")
@@ -175,6 +226,7 @@ with sync_playwright() as pw:
     top = page.locator('#jobs .colfilter[data-filter="status"]')
     check("the Status header carries a filter", top.count() == 1)
     rows_before = rows.count()
+    shown_before = page.locator("#jobs tbody tr").count() if not re.search(r"(\d+) job", page.locator("#jobspager").inner_text()) else int(re.search(r"(\d+) job", page.locator("#jobspager").inner_text()).group(1))
     top.click()
     page.wait_for_timeout(300)
     items = page.locator(".colmenu .colmenu-item")
@@ -197,6 +249,10 @@ with sync_playwright() as pw:
     check("All comes first", labels and labels[0] == "All", str(labels))
     check("the counts add up to the whole run",
           sum(option_count(i) for i in range(1, items.count())) == option_count(0))
+    # Held-back jobs have their own tab: counted here, "pending 10" was
+    # offered over a table that then showed none (Oct 2026).
+    check("All counts exactly the rows the table shows", option_count(0) == shown_before,
+          f"All = {option_count(0)}, table shows {shown_before}")
     # Pick the first real value and check the table narrows to it.
     wanted = labels[1]
     items.nth(1).click()

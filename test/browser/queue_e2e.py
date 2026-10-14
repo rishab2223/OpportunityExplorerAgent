@@ -2,9 +2,9 @@
 
 The unit tests prove the queue's bookkeeping with a fake starter. This proves
 the thing they cannot: that job two's Chrome actually launches after job one's
-has closed. Chrome allows one instance per user-data-dir, and a submitted
-application keeps the window up for CLOSE_GRACE_SECONDS, so advancing at the
-wrong moment fails with "already in use". That is the bug this catches.
+has closed. Chrome allows one instance per user-data-dir, so advancing
+before the window has gone fails with "already in use". That is the bug this
+catches.
 
 Everything isolated: scratch Chrome profile, scratch profile JSON, scratch
 history DB. Nothing real is opened, filled, stored or submitted.
@@ -49,6 +49,7 @@ def _no_model(system, user, schema):
 
 
 worker.make_invoker = lambda cfg, env, purpose: _no_model
+worker.open_claude_session = lambda cfg, log=None: None   # no real Claude process
 
 # start_apply does not take headless; force it for the test's browsers.
 _real_run_session = worker.run_session

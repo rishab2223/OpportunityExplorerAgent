@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>LinkedIn Easy Apply, redesigned radios</title>
+<style>
+  /* The dj9... classes of LinkedIn's redesigned Easy Apply (Oct 2026), as
+     far as they matter: the native radio is painted out and a circle is
+     drawn by its (empty) label; the option's word is a <p> beside them. */
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  input.hidden-radio { position: absolute; width: 0; height: 0; opacity: 0; margin: 0; }
+  label.circle { display: inline-block; width: 20px; height: 20px; border: 2px solid #666;
+                 border-radius: 50%; vertical-align: middle; box-sizing: border-box; }
+  input.hidden-radio:checked + label.circle { background: #0a66c2; border-color: #0a66c2; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .row p { margin: 0; }
+</style>
+</head>
+<body>
+<p>Additional Questions</p>
+
+<div class="block">
+  <p>Are you comfortable commuting to this job's location?*</p>
+  <fieldset role="radiogroup" aria-describedby="error-message-_r_r_" style="border:0;padding:0;margin:0">
+    <div class="row">
+      <div><input id="_r_s_" class="hidden-radio" aria-label="Are you comfortable commuting to this job's location?"
+                  tabindex="0" type="radio" name="radio-group-_r_r_"><label class="circle" for="_r_s_"></label></div>
+      <div><p>Yes</p></div>
+    </div>
+    <div class="row">
+      <div><input id="_r_t_" class="hidden-radio" aria-label="Are you comfortable commuting to this job's location?"
+                  tabindex="0" type="radio" name="radio-group-_r_r_"><label class="circle" for="_r_t_"></label></div>
+      <div><p>No</p></div>
+    </div>
+  </fieldset>
+</div>
+
+<div class="block">
+  <p>Are you comfortable working in Startup?*</p>
+  <fieldset role="radiogroup" style="border:0;padding:0;margin:0">
+    <div class="row">
+      <div><input id="_r_16_" class="hidden-radio" aria-label="Are you comfortable working in Startup?"
+                  tabindex="0" type="radio" name="radio-group-_r_15_"><label class="circle" for="_r_16_"></label></div>
+      <div><p>Yes</p></div>
+    </div>
+    <div class="row">
+      <div><input id="_r_17_" class="hidden-radio" aria-label="Are you comfortable working in Startup?"
+                  tabindex="0" type="radio" name="radio-group-_r_15_"><label class="circle" for="_r_17_"></label></div>
+      <div><p>No</p></div>
+    </div>
+  </fieldset>
+</div>
+
+<div class="block">
+  <p>How many years of work experience do you have with Redis?*</p>
+  <input id="_r_12_" type="text" aria-label="How many years of work experience do you have with Redis?">
+</div>
+
+<pre id="log"></pre>
+<script>
+  // A controlled framework: the page only believes a tick that came with a
+  // real activation. A synthetic el.click() is undone on the next frame,
+  // which is what LinkedIn's page did to the agent's first rung.
+  document.querySelectorAll('input[type=radio]').forEach(function (input) {
+    var trusted = false;
+    ['pointerdown', 'mousedown', 'keydown'].forEach(function (e) {
+      input.addEventListener(e, function (ev) { if (ev.isTrusted) trusted = true; });
+    });
+    document.querySelectorAll('label[for="' + input.id + '"]').forEach(function (l) {
+      l.addEventListener('mousedown', function (ev) { if (ev.isTrusted) trusted = true; });
+    });
+    input.addEventListener('click', function (ev) {
+      if (!ev.isTrusted && !trusted) {
+        setTimeout(function () { input.checked = false; }, 0);
+        return;
+      }
+      trusted = false;
+      document.getElementById('log').textContent += input.id + '=' + input.checked + ' | ';
+    });
+  });
+</script>
+</body>
+</html>

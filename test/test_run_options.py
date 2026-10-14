@@ -261,6 +261,7 @@ class ParallelPdfTests(unittest.TestCase):
 
     def test_one_broken_resume_does_not_stop_the_others(self) -> None:
         from src.models import MatchRecord
+        from src.resume.one_page import TrimResult as FitResult
 
         def fake_fit(path, steps=None):
             if "b" in Path(path).stem:

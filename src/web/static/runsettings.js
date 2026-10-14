@@ -10,9 +10,10 @@
 
 const RS_LABELS = {
   "scrape.posted_within": { "24h": "24 hours", "3d": "3 days", "7d": "7 days" },
-  "experience.mode": { review: "Hold back for review", drop: "Drop them" },
+  "experience.mode": { review: "Keep aside for me to look at", drop: "Leave them out" },
   enrich_provider: { claude: "Claude", openai: "OpenAI" },
-  interview_prep: { on_demand: "On demand (faster)", run: "During the run" },
+  "claude.effort": { low: "Low", medium: "Medium", high: "High", xhigh: "Very high", max: "Max" },
+  interview_prep: { on_demand: "When I open a job (faster)", run: "For every job, during the run" },
 };
 
 let rsOptions = null;   // the last /api/run-options answer
@@ -153,35 +154,36 @@ function rsRead() {
   return values;
 }
 
-// What is wrong with the form, in words, or "" when it can start. Only the
-// visible controls count; the server has the last word on all of them.
+// What is wrong with the form, in words, and the field it is about - or
+// ["", ""] when it can start. Only the visible controls count; the server
+// has the last word on all of them.
 function rsProblem(values) {
   const c = rsOptions.choices;
   const within = (n, [lo, hi]) => Number.isFinite(n) && (lo == null || n >= lo) && (hi == null || n <= hi);
-  const range = ([lo, hi]) => `${lo ?? ""}–${hi ?? ""}`;
-  if (!values.scrape.sources.length) return "Turn on at least one job source.";
+  const range = ([lo, hi]) => `${lo ?? ""} to ${hi ?? ""}`;
+  if (!values.scrape.sources.length) return ["Turn on at least one job source.", ""];
   for (const id of values.scrape.sources) {
     const n = values.scrape.max_jobs[id];
     if (!Number.isInteger(n) || n < c.jobs_min || n > c.jobs_max) {
       const label = c.sources.find((s) => s.id === id)?.label || id;
-      return `${label}: jobs to fetch must be ${c.jobs_min}–${c.jobs_max}.`;
+      return [`${label}: the number of jobs must be ${c.jobs_min}–${c.jobs_max}.`, ""];
     }
   }
-  const checks = [["openai.score_concurrency", "Scoring calls at once", c.score_concurrency],
-                  ["openai.enrich_concurrency", "Tailoring calls at once", c.enrich_concurrency]];
-  if (values.compile_pdf) checks.push(["pdf_concurrency", "PDFs compiled at once", c.pdf_concurrency]);
+  const checks = [["openai.score_concurrency", "Jobs scored at once", c.score_concurrency],
+                  ["openai.enrich_concurrency", "Resumes tailored at once", c.enrich_concurrency]];
+  if (values.compile_pdf) checks.push(["pdf_concurrency", "PDFs made at once", c.pdf_concurrency]);
   if (values.experience.enabled) {
-    checks.push(["experience.tolerance_years", "Years over yours", c.tolerance_years]);
+    checks.push(["experience.tolerance_years", "Years either side of yours", c.tolerance_years]);
     if (values.experience.mode === "review") {
-      checks.push(["experience.review_min_score", "Held-back score", c.review_min_score],
-                  ["experience.review_max", "Held-back jobs per run", c.review_max]);
+      checks.push(["experience.review_min_score", "The score to show a kept-aside job", c.review_min_score],
+                  ["experience.review_max", "Kept-aside jobs per run", c.review_max]);
     }
   }
   for (const [path, name, bounds] of checks) {
-    if (!within(rsGet(values, path), bounds)) return `${name} must be ${range(bounds)}.`;
+    if (!within(rsGet(values, path), bounds)) return [`${name} must be ${range(bounds)}.`, path];
   }
-  if (!values.resume.local_path) return "Name the base resume file.";
-  return "";
+  if (!values.resume.local_path) return ["Name your resume file (under Advanced).", "resume.local_path"];
+  return ["", ""];
 }
 
 function rsMinutes(seconds) {
@@ -203,10 +205,8 @@ function rsRefresh() {
     card.classList.toggle("off", !on);
     card.querySelectorAll("[data-cap]").forEach((i) => { i.disabled = !on; });
   });
-  rsForm().querySelector("output.rs-out").textContent = values.min_score;
-  $("rsminhint").textContent =
-    `Jobs scoring ${values.min_score} or more out of 10 get a tailored resume.` +
-    (values.min_score <= 6 ? " A low bar tailors many more jobs, and tailoring is the slow step." : "");
+  rsForm().querySelector("output.rs-out").textContent = `${values.min_score}+`;
+  rsExplain(values);
 
   const total = values.scrape.sources.reduce((n, id) => n + (values.scrape.max_jobs[id] || 0), 0);
   const last = rsOptions.last_run || {};
@@ -227,13 +227,54 @@ function rsRefresh() {
       el("span", {}, "Up to ", el("b", { text: String(total) }), " jobs fetched and scored"),
       lastLine ? el("span", { class: "muted", text: lastLine }) : null);
   }
-  rsShowProblem(rsProblem(values));
+  rsShowProblem(...rsProblem(values));
 }
 
-function rsShowProblem(problem) {
+// The plain-words line under each choice, rewritten as the choice changes,
+// so a first-time user can read what a setting will actually do.
+function rsExplain(values) {
+  const score = values.min_score;
+  let min = `The AI gives every job a score from 1 to 10 for how well it fits your resume. ` +
+    `Jobs scoring ${score} or more get a tailored resume and appear in your shortlist.`;
+  if (score <= 6) min += " A low bar means many more jobs and a much longer run.";
+  else if (score >= 9) min += " A high bar keeps only near-perfect fits; you may get very few.";
+  else min += " 7 is a good place to start.";
+  $("rsminhint").textContent = min;
+
+  const years = rsOptions.your_years;
+  const e = values.experience;
+  let exp = "Some postings ask for far more, or far fewer, years than you have.";
+  if (years == null) {
+    exp += " Add your total years of experience in Profile (top right) for this to work.";
+  } else if (e.enabled) {
+    const slack = Number.isFinite(e.tolerance_years) ? e.tolerance_years : 0;
+    exp += ` You have ${years} years (from your Profile), so jobs asking for more than ${years + slack} ` +
+      `years, or for a range that tops out below ${years - slack}, count as outside your range. ` +
+      "Postings that do not say are always kept.";
+  } else {
+    exp += ` Turned off: every job is scored whatever it asks for (you have ${years} years, from your Profile).`;
+  }
+  $("rsexphint").textContent = exp;
+  $("rsmodehint").textContent = e.mode === "drop"
+    ? "Left out: they are never scored and you never see them."
+    : "Kept aside: they are scored, and the strongest show in the Held back tab instead of your shortlist.";
+
+  $("rsprephint").textContent = values.interview_prep === "run"
+    ? "Likely interview questions and talking points are written for every job that gets a " +
+      "tailored resume. This makes the run much slower."
+    : "Likely interview questions and talking points are written only for the jobs you want them " +
+      "for, which keeps the run fast. After the run, click a job's row in the Shortlist, press " +
+      "Job info (right end of the bar above the table), then Write interview prep.";
+}
+
+function rsShowProblem(problem, field = "") {
   $("rserror").textContent = problem;
   $("rserror").hidden = !problem;
   $("rsstart").disabled = Boolean(problem);
+  // A problem inside the closed Advanced part opens it, so it can be fixed.
+  const where = field && rsForm().querySelector(`[data-field="${field}"]`);
+  const fold = where && where.closest("details");
+  if (problem && fold) fold.open = true;
 }
 
 function rsShowSaved() {
@@ -269,9 +310,9 @@ function closeRunSettings() {
 async function submitRunSettings(ev) {
   ev.preventDefault();
   const values = rsRead();
-  const problem = rsProblem(values);
+  const [problem, field] = rsProblem(values);
   if (problem) {
-    rsShowProblem(problem);
+    rsShowProblem(problem, field);
     return;
   }
   $("rsstart").disabled = true;

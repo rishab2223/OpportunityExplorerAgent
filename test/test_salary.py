@@ -51,6 +51,20 @@ class UnitTests(unittest.TestCase):
         self.assertEqual(salary.unit_of(field("Annual salary (INR)")), "annual")
         self.assertEqual(salary.unit_of(field("Current CTC")), "")
 
+    def test_the_unit_beside_the_box_and_the_box_itself_count(self) -> None:
+        # Hunting Cube (Oct 2026): label "Your Current CTC?", "LPA" drawn
+        # after the box, maxlength 3, placeholder "e.g. 15". Read as unitless
+        # it took rupees, and 2500000 cut to three characters became 250.
+        self.assertEqual(salary.unit_of(field("Your Current CTC?", beside="LPA")), "lpa")
+        self.assertEqual(salary.unit_of(field("Your Current CTC?", maxlength=3)), "lpa")
+        self.assertEqual(salary.unit_of(field("Your Current CTC?", placeholder="e.g. 15")), "lpa")
+        box = field("Your Current CTC?", beside="LPA", maxlength=3, placeholder="e.g. 15")
+        self.assertEqual(salary.for_field("25 LPA", box), "25")
+        self.assertEqual(salary.for_field("2500000", box), "25")
+        # A roomy box with a big example is still rupees.
+        self.assertEqual(salary.unit_of(field("Current CTC", placeholder="e.g. 1500000")), "")
+        self.assertEqual(salary.unit_of(field("Current CTC", maxlength=12)), "")
+
     def test_topic(self) -> None:
         self.assertEqual(salary.topic_of(field("What is your current CTC? (in LPA)*")), "current_ctc")
         self.assertEqual(salary.topic_of(field("Expected salary")), "expected_ctc")

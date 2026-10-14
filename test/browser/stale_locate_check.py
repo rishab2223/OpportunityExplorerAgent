@@ -84,6 +84,37 @@ with sync_playwright() as pw:
     check("without a popup, the id still finds the replacement",
           browser.locate(page, city["id"], city.get("elid") or "").input_value() == "y")
 
+    print("\n== a second read does not move the numbers under a plan ==")
+    # MyCareernet (Oct 2026): the model planned from one read; a "dump" read
+    # the page again while it thought, and the numbers it had moved: the date
+    # of birth went into Last Name and "Male" ticked "Others".
+    page.set_content("""
+      <label for="firstName">First Name</label><input id="firstName" value="Test">
+      <label for="lastName">Last Name</label><input id="lastName" value="Arora">
+      <div id="extra"></div>
+      <label for="dateOfBirth">*Date Of Birth</label><input id="dateOfBirth" bsdatepicker placeholder="Please Select your DOB">
+      <label><input type="radio" name="gender" id="male"> Male</label>
+      <label><input type="radio" name="gender" id="female"> Female</label>
+      <label><input type="radio" name="gender" id="others"> Others</label>""")
+    planned = {str(f.get("label")).strip(): f for f in browser.snapshot(page)}
+    dob, male = planned["*Date Of Birth"], planned["Male"]
+    check("the date-picker box is flagged as one", dob.get("datepicker") is True)
+    # The page grows above them (a box appears), and something reads it again.
+    page.evaluate("""() => { const e = document.getElementById('extra');
+      e.innerHTML = '<label for=mobile>Mobile</label><input id=mobile value=99>'; }""")
+    browser.snapshot(page)
+    browser.snapshot(page)
+    target = browser.locate(page, dob["id"])          # no elid help: the number alone
+    check("the plan's number still finds the date of birth", target.get_attribute("id") == "dateOfBirth",
+          str(target.get_attribute("id")))
+    check("and its number for Male still finds Male",
+          browser.locate(page, male["id"]).get_attribute("id") == "male")
+    # A site that clones a numbered node must not leave two with one number.
+    page.evaluate("""() => { const m = document.getElementById('mobile');
+      const c = m.cloneNode(); c.id = 'mobile2'; m.after(c); }""")
+    numbers = [f["id"] for f in browser.snapshot(page)]
+    check("a cloned node gets a number of its own", len(numbers) == len(set(numbers)), str(numbers))
+
     print("\n== a dropdown is never reported as answered by something else ==")
     for shown, wanted, same in (("6 years", "6", True), ("Use this ZIP Code: \"560001\"", "560001", True),
                                 ("Available now", "Immediate Joiner", True), ("Node.js", "Node.js", True),

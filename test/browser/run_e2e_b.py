@@ -8,7 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from e2e_common import *  # noqa: F401,F403 - the rig
-from e2e_common import E2E, TIMES, answers, run, time, worker
+from e2e_common import E2E, TIMES, run, worker
+
+from src import answers
 
 # Workday "My Experience": Add reveals a job entry the model fills from the
 # resume. The profile's location goes to the Contact section only - never
@@ -31,11 +33,11 @@ assert "Clicked Add (Websites: entry 1 of 2)" in logs13 and "Clicked Add Another
 assert "[profile] Filled URL* = https://linkedin.com/in/test" in logs13 and "[profile] Filled URL* = https://github.com/test" in logs13, logs13
 assert "Submit application" in s13.asked[-1], s13.asked
 
-# Several ways to apply on offer: the model wants "Apply Manually"; the
-# candidate is asked and picks Autofill; the resume then goes straight into
-# the hidden input on the next step.
+# Several ways to apply on offer and nothing else to fill: the candidate is
+# asked straight away, with no model call to get there, and picks Autofill;
+# the resume then goes straight into the hidden input on the next step.
 choice_url = (E2E / "fixture_applychoice.html").as_uri()
-s14 = run("apply-choice", choice_url, ["Autofill with Resume", "tailored", "done"], expect_calls=1)
+s14 = run("apply-choice", choice_url, ["Autofill with Resume", "tailored", "done"], expect_calls=0)
 logs14 = "\n".join(s14.logs)
 assert any("more than one way to apply" in q and "Apply Manually" in q for q in s14.asked), s14.asked
 assert "Clicked Autofill with Resume" in logs14, logs14

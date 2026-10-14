@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>SuccessFactors application sections</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  .sectionTitle { margin: 16px 0 4px; }
+  .topBar { width: 600px; text-align: left; background: #40b4f0; border: 0; padding: 12px; }
+  .addRowButton { display: inline-block; cursor: pointer; padding: 6px; }
+  .row { margin: 6px 0; } label { display: inline-block; width: 160px; }
+</style>
+</head>
+<body>
+<!-- Cargill on SuccessFactors (Oct 2026), from the dump: each section title
+     is an <h2> holding one collapse toggle (a <button aria-expanded>), and
+     each Add is a div[role=button] whose text starts with an SAP icon-font
+     glyph (U+E1F6). Add inserts one entry under its section. -->
+<h1>Software Engineering (Backend Developer MyCargill) (321160)</h1>
+<div class="row"><label for="fn">* First Name:</label><input id="fn" type="text"></div>
+
+<div class="rcmFormSection" data-kind="work">
+  <h2 class="sectionTitle"><button class="topBar" aria-expanded="true">External Work Experience</button></h2>
+  <div class="entries"><div class="noItemsInSection">There are no items in this section.</div></div>
+  <div class="addRowButton" role="button" tabindex="0" title="Add new row"><span class="sapIcon">&#xE1F6;</span> Add</div>
+</div>
+
+<div class="rcmFormSection" data-kind="edu">
+  <h2 class="sectionTitle"><button class="topBar" aria-expanded="true">Education (Optional)</button></h2>
+  <div class="entries"><div class="noItemsInSection">There are no items in this section.</div></div>
+  <div class="addRowButton" role="button" tabindex="0" title="Add new row"><span class="sapIcon">&#xE1F6;</span> Add</div>
+</div>
+
+<div class="rcmFormSection" data-kind="cert">
+  <h2 class="sectionTitle"><button class="topBar" aria-expanded="true">Certifications/Licenses (Optional)</button></h2>
+  <div class="entries"><div class="noItemsInSection">There are no items in this section.</div></div>
+  <div class="addRowButton" role="button" tabindex="0" title="Add new row"><span class="sapIcon">&#xE1F6;</span> Add</div>
+</div>
+
+<div class="rcmFormSection" data-kind="lang">
+  <h2 class="sectionTitle"><button class="topBar" aria-expanded="true">Language Skills (Optional)</button></h2>
+  <div class="entries"><div class="noItemsInSection">There are no items in this section.</div></div>
+  <div class="addRowButton" role="button" tabindex="0" title="Add new row"><span class="sapIcon">&#xE1F6;</span> Add</div>
+</div>
+
+<h2 class="sectionTitle"><button class="topBar" aria-expanded="true">Job-Specific Information</button></h2>
+<div class="row"><label for="pl">Preferred Language</label>
+  <select id="pl"><option value="">No Selection</option><option>Chinese</option><option>English</option><option>French</option></select></div>
+
+<pre id="log"></pre>
+<script>
+  const ROWS = {
+    work: ['Job Title', 'Company', 'From Date', 'To Date'],
+    edu: ['School', 'Degree', 'Field of Study'],
+    cert: ['Certification'],
+    lang: ['Language', 'Proficiency'],
+  };
+  let n = 0;
+  document.querySelectorAll('.rcmFormSection').forEach(sec => {
+    sec.querySelector('.addRowButton').addEventListener('click', () => {
+      const box = sec.querySelector('.entries');
+      const empty = box.querySelector('.noItemsInSection');
+      if (empty) empty.remove();
+      const entry = document.createElement('div');
+      entry.className = 'entry';
+      for (const name of ROWS[sec.dataset.kind]) {
+        n += 1;
+        entry.insertAdjacentHTML('beforeend',
+          '<div class="row"><label for="f' + n + '">' + name + '</label><input id="f' + n + '" type="text"></div>');
+      }
+      box.appendChild(entry);
+      document.getElementById('log').textContent += sec.dataset.kind + ' | ';
+    });
+  });
+</script>
+</body>
+</html>

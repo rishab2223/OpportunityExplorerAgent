@@ -48,6 +48,7 @@ def fake_invoke(system, user, schema):
 
 
 worker.make_invoker = lambda cfg, env, purpose: fake_invoke
+worker.open_claude_session = lambda cfg, log=None: None   # no real Claude process
 
 
 class ScriptedSession(apply_session.ApplySession):

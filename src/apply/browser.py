@@ -10,7 +10,7 @@ from src.config import ROOT
 
 CHROME_PROFILE_DIR = ROOT / "localData" / "chrome-profile"
 # How long a launch waits for the previous session's window to let go of the
-# profile. Longer than worker.CLOSE_GRACE_SECONDS, which is the usual reason.
+# profile: Chrome can take a moment to let go after its window closes.
 PROFILE_BUSY_WAIT_S = 12
 # A guard against a pathological page, not a budget. It used to be 60, which
 # was really the MODEL's budget applied at the wrong place: everything past it
@@ -92,11 +92,19 @@ SNAPSHOT_JS = """
     }
     return best;
   };
-  // Clear ids from earlier snapshots first: a hidden wizard step keeps its old
-  // attributes, and a stale [data-oea-id] match would act on the wrong element.
+  // An element keeps its number for as long as it is on the page, and a
+  // number is never given to a second element. Renumbering on every read
+  // made any read between a plan and its actions (a "dump", a page check
+  // during a question, a re-render) shift the numbers under the plan:
+  // MyCareernet (Oct 2026) had the date of birth typed into Last Name and
+  // "Male" ticked as "Others". A hidden wizard step keeps its numbers too,
+  // which is harmless now: no other element can ever carry them.
+  let nextId = window.__oeaNextId || 0;
   for (const el of deepAll(document, '[data-oea-id]')) {
-    el.removeAttribute('data-oea-id');
+    const n = parseInt(el.getAttribute('data-oea-id'), 10);
+    if (n > nextId) nextId = n;
   }
+  const takenIds = new Set();
   for (const el of deepAll(document, '[data-oea-root]')) {
     el.removeAttribute('data-oea-root');
   }
@@ -105,8 +113,12 @@ SNAPSHOT_JS = """
   // Period) was invisible to the scan, so those boxes were never filled.
   // Not [role=listbox] itself: that is the option container (and Workday's
   // list of chosen chips), which read as a phantom dropdown field.
+  // PrimeNG's multiselect keeps its combobox input at 1x1 behind a clipped
+  // wrapper and puts no role on the widget itself, so the widget was never
+  // read at all: MyCareernet's Primary Skills, Preferred Location and
+  // Preferred Job Role (Oct 2026) were invisible to the agent.
   const selector = 'input, textarea, select, button, [role=button], [role=checkbox],' +
-    ' [role=radio], a[href], [role=combobox], [aria-haspopup=listbox]';
+    ' [role=radio], a[href], [role=combobox], [aria-haspopup=listbox], .p-multiselect';
   const actionable =/apply|easy apply|continue|next|start|submit|review|sign in|log in|upload|attach|resume|\\bcv\\b|cover letter/i;
   // An open modal (LinkedIn Easy Apply, ATS popups) owns the page: scope the
   // scan to it. Without this the background page's dozens of buttons filled
@@ -208,14 +220,29 @@ SNAPSHOT_JS = """
     // called "Immediate 15 Days 1 Month" and the real button went unread.
     if (el.getAttribute('aria-hidden') === 'true' &&
         el.getAttribute('tabindex') === '-1') continue;
-    if (style.visibility === 'hidden' || style.display === 'none') continue;
+    // ...unless a label stands in for it: Hunting Cube's resume input (Oct
+    // 2026) carries the `hidden` attribute inside the "Drag Resume File here
+    // or Upload" label, and the required upload was not seen at all.
+    if ((style.visibility === 'hidden' || style.display === 'none') && !frontedBy) continue;
     if (rect.width === 0 || rect.height === 0) continue;
+    // A 1x1 control behind a clipped screen-reader wrapper: its widget
+    // stands in for it (PrimeNG), so it is not a second field.
+    if (!frontedBy && el.closest('.p-hidden-accessible, [data-p-hidden-accessible]')) continue;
     // A box no person can see or reach: pushed off the page, or inside a
     // block hidden from assistive technology and out of the tab order. That
     // is a honeypot - CryptoMize's "company" sat at left:-9999px inside an
     // aria-hidden 1px box, tabindex -1 (Oct 2 2026) - and filling it marks
     // the application as a bot's. The agent fills what the candidate could.
-    if (rect.right + window.scrollX <= 0 || rect.bottom + window.scrollY <= 0) continue;
+    // In DOCUMENT coordinates, counting every scrolled ancestor: a modal
+    // that scrolls inside itself (MyCareernet's "Complete Your Profile",
+    // Oct 2026) had its first twenty boxes above the viewport once the
+    // candidate scrolled down, and they were dropped as off-page.
+    let scrolledX = window.scrollX, scrolledY = window.scrollY;
+    for (let a = el.parentElement; a; a = a.parentElement) {
+      scrolledX += a.scrollLeft || 0;
+      scrolledY += a.scrollTop || 0;
+    }
+    if (rect.right + scrolledX <= 0 || rect.bottom + scrolledY <= 0) continue;
     if (el.getAttribute('tabindex') === '-1' && el.closest('[aria-hidden="true"]')) continue;
     // A custom dropdown that WRAPS a real control is not the field; the
     // control inside it is (react-select puts role=combobox on its input).
@@ -224,12 +251,15 @@ SNAPSHOT_JS = """
     // size inside a styled [role=radio]: the input is skipped as invisible and
     // the wrapper was skipped for containing one, so "Which college tier does
     // your institute fall under?" - required - appeared nowhere at all.
-    const standsIn = ['radio', 'checkbox'].includes(
+    const primeMulti = el.matches('.p-multiselect');
+    const standsIn = primeMulti || ['radio', 'checkbox'].includes(
       (el.getAttribute('role') || '').toLowerCase());
     const inner = el.querySelector(
       'input:not([type=hidden]):not(.cdk-visually-hidden), textarea, select');
-    const innerShows = inner && inner.getBoundingClientRect().width > 0 &&
-      inner.getBoundingClientRect().height > 0;
+    // A 1x1 input inside a clipped screen-reader wrapper is not on show.
+    const innerShows = inner && inner.getBoundingClientRect().width > 1 &&
+      inner.getBoundingClientRect().height > 1 &&
+      !inner.closest('.p-hidden-accessible, [data-p-hidden-accessible]');
     if (!FORM_TAGS.includes(el.tagName) && el.tagName !== 'BUTTON' && el.tagName !== 'A' &&
         inner && !(standsIn && !innerShows)) continue;
     if (el.tagName === 'A') {
@@ -239,8 +269,16 @@ SNAPSHOT_JS = """
         /\\bbtn|button\\b/i.test(el.className || '');
       if (!looksButton && !actionable.test(el.innerText || '')) continue;
     }
-    i += 1;
-    el.setAttribute('data-oea-id', String(i));
+    // Its old number if it has one; a fresh one if it is new, or if a site
+    // cloned a numbered node and two now share one.
+    i = parseInt(el.getAttribute('data-oea-id'), 10);
+    if (!i || takenIds.has(i)) {
+      nextId += 1;
+      i = nextId;
+      el.setAttribute('data-oea-id', String(i));
+    }
+    takenIds.add(i);
+    window.__oeaNextId = nextId;
     let label = '';
     // Same trap as the wrapper below: the <label> around a Rippling upload
     // says "Drop or select (.doc / .docx / .pdf)" and points elsewhere for
@@ -300,8 +338,30 @@ SNAPSHOT_JS = """
       // and sixty characters of noise in every prompt. A select's text is
       // ALWAYS its options; no label at all is the honest answer, and the
       // options are captured in item.options either way.
-      const lastResort = el.tagName === 'SELECT' ? '' : (el.innerText || '');
-      label = el.getAttribute('placeholder') || ownText ||
+      // A multiselect's text is its placeholder or its choices, never its
+      // question: that is the <label> above it, which the walk below finds.
+      const lastResort = (el.tagName === 'SELECT' || primeMulti) ? '' : (el.innerText || '');
+      // A placeholder is an EXAMPLE, and a <label> sitting right before the
+      // box (tied to it by nothing) is its name. Hunting Cube (Oct 2026):
+      // <label>Your Current CTC?</label> then a box with placeholder
+      // "e.g. 15" - the field was listed as "e.g. 15", no rule could claim
+      // it, and the candidate was asked what a box called "e.g. 15" was.
+      const bareLabelBefore = (start) => {
+        let node = start;
+        for (let d = 0; node && d < 3; d++, node = node.parentElement) {
+          const prev = node.previousElementSibling;
+          if (!prev) continue;                     // first in its wrapper: look above it
+          if (prev.tagName !== 'LABEL') return '';  // something else sits between
+          const owns = prev.getAttribute('for');
+          if (owns && owns !== start.id && document.getElementById(owns)) return '';
+          if (prev.querySelector('input, select, textarea, button')) return '';
+          const t = (prev.innerText || '').trim();
+          return t.length >= 2 && t.length <= 120 ? t : '';
+        }
+        return '';
+      };
+      const placeholder = el.getAttribute('placeholder') || '';
+      label = (placeholder && bareLabelBefore(el)) || placeholder || ownText ||
         el.getAttribute('name') || lastResort;
     }
     // A label that names the WIDGET instead of the question, or an id a
@@ -327,8 +387,13 @@ SNAPSHOT_JS = """
       }
       return flips >= 4;
     };
+    // A form's own field name standing in for a label: "phone_number_field_
+    // number" (Recrew, Oct 2026), while "Phone Number *" sat right above the
+    // box in a <label> pointing at a wrapper. Only a name: a real label in
+    // snake case would be odd, and the walk below keeps it if nothing else.
+    const machineName = s => s === (el.getAttribute('name') || '') && /^[a-z0-9]+(_[a-z0-9]+){2,}$/.test(s);
     const weakLabel = !!label &&
-      (JUNK_LABEL.test(label.trim()) || generatedId(label.trim()));
+      (JUNK_LABEL.test(label.trim()) || generatedId(label.trim()) || machineName(label.trim()));
     const lastResort = weakLabel ? label : '';
     if (weakLabel) label = '';
     const typeable = el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' ||
@@ -337,7 +402,7 @@ SNAPSHOT_JS = """
     // above it names it the same way. Without this the twelve Rippling
     // dropdowns stayed "Select" and the transcript could not say which
     // question had just been answered Yes.
-    const asksSomething = typeable || el.getAttribute('role') === 'combobox' ||
+    const asksSomething = typeable || primeMulti || el.getAttribute('role') === 'combobox' ||
       el.getAttribute('aria-haspopup') === 'listbox';
     if (!label && asksSomething) {
       // Workday questionnaires: the question is a plain text block above
@@ -364,8 +429,11 @@ SNAPSHOT_JS = """
           // BEFORE it, and a wrong name is worse than none: a rule can match
           // it and fill the wrong box, silently and plausibly.
           if (h.tagName === 'LABEL') {
+            // ...when the thing it names exists. MyCareernet's <label
+            // for="cities"> names its multiselect by a name no element
+            // carries as an id, and that label is the widget's only caption.
             const owns = h.getAttribute('for');
-            if (owns && owns !== el.id) continue;
+            if (owns && owns !== el.id && document.getElementById(owns)) continue;
           }
           // Text INSIDE another control is that control's value, not a label
           // for this one: the span in a Radix dropdown button reads "Remote",
@@ -409,6 +477,7 @@ SNAPSHOT_JS = """
     // keeps its choice as pills beside an EMPTY search box: the pills are
     // the value, or every pass would fill the box again.
     let value = (el.value || '').toString();
+    if (!value && primeMulti && inner) value = (inner.value || '').toString();   // what it holds
     if (!value && el.tagName === 'INPUT') {
       let n = el.parentElement;
       for (let d = 0; n && d < 5; d++, n = n.parentElement) {
@@ -501,6 +570,20 @@ SNAPSHOT_JS = """
         const block = el.closest('fieldset, div, li, p, tr, section');
         if (block) group = (block.innerText || '').split(String.fromCharCode(10))[0];
       }
+      // An option labelled with its GROUP'S question says nothing about which
+      // option it is. LinkedIn's redesigned Easy Apply (Oct 2026) puts
+      // aria-label="<the question>" on every radio, leaves the <label for>
+      // empty, and prints Yes / No in a <p> beside the input's wrapper - so
+      // both options read as the question, and the model could not tell
+      // them apart. The nearest short text around the input is the option.
+      const plainText = s => (s || '').replace(/\\*/g, '').replace(/\\W+/g, ' ').trim().toLowerCase();
+      if (group && (!label || plainText(label) === plainText(group))) {
+        let holder = el.parentElement;
+        for (let d = 0; holder && d < 3 && holder !== rg && holder !== fs; d++, holder = holder.parentElement) {
+          const t = (holder.innerText || '').trim();
+          if (t && t.length <= 60 && plainText(t) !== plainText(group)) { label = t; break; }
+        }
+      }
     }
     // Tile buttons ("Attach", "Upload") and file inputs labelled only
     // "Attach" say nothing about WHAT they attach; the nearest heading above
@@ -525,6 +608,26 @@ SNAPSHOT_JS = """
     // Experience", "Education") - a repeating entry the model fills from the
     // resume, and where the profile's location/company must NOT be applied.
     let section = '';
+    // A region that names itself after its heading says so outright:
+    // SuccessFactors wraps each section's entries in role=group
+    // aria-labelledby="<the h2>" (Cargill, Oct 2026), eleven levels above
+    // the boxes - past the walk below, so a job's Title, Start Date and
+    // Company had no section and the entries could not be told apart.
+    // Only when the name is a HEADING: a radio group named by its question
+    // is a group, not a section.
+    // Up through shadow roots too: SAP's date box sits two shadow roots
+    // inside the group that names its section.
+    const up = n => n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
+    for (let g = up(el); g && !section; g = up(g)) {
+      if (!g.matches('[role=group][aria-labelledby], [role=region][aria-labelledby], section[aria-labelledby]')) continue;
+      const named = (g.getAttribute('aria-labelledby') || '').split(/\\s+/)
+        .map(id => (g.getRootNode().getElementById ? g.getRootNode() : document).getElementById(id))
+        .find(n => n && n.matches('h1, h2, h3, h4, h5, h6, [role=heading]'));
+      if (named) {
+        const t = (named.innerText || '').replace(/[\\uE000-\\uF8FF]/g, '').trim();
+        if (t && t.length < 80) section = t;
+      }
+    }
     {
       let box = el.parentElement;
       for (let depth = 0; box && depth < 10 && !section; depth++, box = box.parentElement) {
@@ -533,9 +636,16 @@ SNAPSHOT_JS = """
             '[class*="heading" i], [class*="sectiontitle" i], [class*="section-title" i], ' +
             '[data-automation-id*="title" i], [data-automation-id*="heading" i]')) {
           if (h === el || h.contains(el)) continue;
-          if (h.querySelector('input, select, textarea, button')) continue;  // a wrapper, not a title
+          if (h.querySelector('input, select, textarea')) continue;  // a wrapper, not a title
+          // A heading that is one collapse toggle IS the title: SuccessFactors
+          // draws "External Work Experience" as <h2><button aria-expanded>
+          // (Cargill, Oct 2026). Skipped as a wrapper, every box on the page
+          // was in the page title's section, and the profile never opened
+          // Work Experience, Education or Languages.
+          const toggles = h.querySelectorAll('button');
+          if (toggles.length > 1 || (toggles.length === 1 && !toggles[0].hasAttribute('aria-expanded'))) continue;
           if (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) {
-            const t = (h.innerText || '').trim();
+            const t = (h.innerText || '').replace(/[\\uE000-\\uF8FF]/g, '').trim();
             if (t && t.length < 80) section = t;
           }
         }
@@ -569,14 +679,25 @@ SNAPSHOT_JS = """
       id: i,
       tag: el.tagName.toLowerCase(),
       type: type,
-      role: el.getAttribute('role') || '',
-      haspopup: el.getAttribute('aria-haspopup') || '',
+      // A widget standing in for a hidden control answers as that control.
+      role: el.getAttribute('role') || (standsIn && inner ? inner.getAttribute('role') : '') || '',
+      haspopup: el.getAttribute('aria-haspopup') ||
+        (standsIn && inner ? inner.getAttribute('aria-haspopup') : '') || '',
+      // Several choices at once: PrimeNG's multiselect, or any listbox
+      // widget that says so.
+      multi: primeMulti || el.getAttribute('aria-multiselectable') === 'true',
       autocomplete: el.getAttribute('autocomplete') || '',
       path: path,
       section: section.slice(0, 80),
       ordinal: ordinal,
-      group: (group || '').trim().slice(0, 160),
-      label: (label || '').trim().slice(0, 200),
+      // Icon-font glyphs (Unicode private use) are drawings, not words:
+      // SuccessFactors' Add button reads "\\ue1f6 Add" (Cargill, Oct 2026), and
+      // the glyph kept it from being recognised as an Add at all.
+      group: (group || '').replace(/[\\uE000-\\uF8FF]/g, '').trim().slice(0, 160),
+      // One line: Recrew's labels (Oct 2026) carry the required star on a
+      // line of its own, so log lines broke mid-sentence - the reason a
+      // Current CTC fill failed was cut off after the label.
+      label: (label || '').replace(/[\\uE000-\\uF8FF]/g, '').replace(/\\s+/g, ' ').trim().slice(0, 200),
       // The stand-in has no name; the control it hides has the one that ties
       // the options of a group together.
       name: el.getAttribute('name') ||
@@ -591,9 +712,34 @@ SNAPSHOT_JS = """
       elid: el.id || '',  // Greenhouse names its file inputs by id ("resume", "cover_letter")
       required: el.required === true || el.getAttribute('aria-required') === 'true',
       value: value.slice(0, 200),
-      text: (el.innerText || '').trim().slice(0, 80),
+      text: (el.innerText || '').replace(/[\\uE000-\\uF8FF]/g, '').trim().slice(0, 80),
       maxlength: el.maxLength > 0 ? el.maxLength : 0,
+      placeholder: (el.getAttribute('placeholder') || '').slice(0, 80),
+      // The unit drawn beside the box, inside its own wrapper: Hunting
+      // Cube's "LPA" after the CTC box (Oct 2026). Without it the box read
+      // as unitless, took rupees, and 2500000 cut to three characters was
+      // typed in as 250.
+      beside: (() => {
+        const wrap = el.parentElement;
+        if (!wrap || wrap.querySelectorAll('input, select, textarea, button').length !== 1) return '';
+        const words = [];
+        for (const n of wrap.children) {
+          if (n === el || n.contains(el)) continue;
+          const t = (n.innerText || '').trim();
+          if (t && t.length <= 12) words.push(t);
+        }
+        return words.join(' ').slice(0, 40);
+      })(),
     };
+    // A box a date picker is wired to, whatever its label says: ngx-bootstrap
+    // marks it bsdatepicker (MyCareernet, Oct 2026), Angular Material
+    // matdatepicker, others by class or data-provide.
+    if (el.tagName === 'INPUT' && (
+        Array.from(el.attributes).some(a => /datepicker|daterangepicker/i.test(a.name)) ||
+        /datepicker/i.test(el.className || '') ||
+        /datepicker/i.test(el.getAttribute('data-provide') || ''))) {
+      item.datepicker = true;
+    }
     if (el.tagName.toLowerCase() === 'select') {
       item.options = Array.from(el.options).map(o => o.label || o.value).slice(0, 40);
       item.multiple = el.multiple === true;
@@ -609,6 +755,17 @@ SNAPSHOT_JS = """
     if (el.tagName !== 'INPUT' && (buttonRole === 'checkbox' || buttonRole === 'radio')) {
       item.type = buttonRole;
       item.checked = el.getAttribute('aria-checked') === 'true';
+    }
+    // Pills: toggle buttons, one pressed, in a list named by the question -
+    // Oracle Recruiting's "Yes" / "No" (Adani, Oct 2026). Read as plain
+    // buttons they had no state, so a question nobody had answered looked
+    // like nothing to fill, and "No" typed in the chat was never clicked.
+    if (el.tagName === 'BUTTON' && !buttonRole && el.hasAttribute('aria-pressed')) {
+      const holder = el.closest('ul, ol, [role=list], [role=group], [role=radiogroup]');
+      if (holder && holder.querySelectorAll('button[aria-pressed]').length >= 2) {
+        item.type = 'radio';
+        item.checked = el.getAttribute('aria-pressed') === 'true';
+      }
     }
     out.push(item);
   }
@@ -1791,9 +1948,28 @@ def locate(page, field_id: int, elid: str = ""):
     match taken in page order, the page BEHIND the application popup came
     first: "Selected 'India: Chennai' for Total Professional Experience"
     (Oct 2026) was its location box, picked and reported as the answer."""
-    selector = f'[data-oea-id="{field_id}"]'
-    if elid:
-        quoted = elid.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34))
-        selector += (f', [data-oea-root] [id="{quoted}"]'
-                     f', body:not(:has([data-oea-root])) [id="{quoted}"]')
-    return target(page).locator(selector).first
+    marker = target(page).locator(f'[data-oea-id="{field_id}"]')
+    if not elid:
+        return marker.first
+    # The marker first, the id only when the marker is gone. Taken together
+    # in page order, the id won whenever an earlier element carried it too:
+    # Recrew (Oct 2026) renders its form twice, a hidden phone layout above
+    # the visible one, under the same ids. Every box the snapshot read on
+    # screen was then located as its 0x0 twin - "it is hidden right now",
+    # eleven times, and the session ended on five failures in a row.
+    try:
+        if marker.count():
+            return marker.first
+    except Exception:
+        pass
+    quoted = elid.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34))
+    by_id = (f'[data-oea-root] [id="{quoted}"]'
+             f', body:not(:has([data-oea-root])) [id="{quoted}"]')
+    # And of several elements sharing the id, one a person can see.
+    found = target(page).locator(by_id)
+    try:
+        if found.count() > 1:
+            return target(page).locator(f"{by_id} >> visible=true").first
+    except Exception:
+        pass
+    return found.first

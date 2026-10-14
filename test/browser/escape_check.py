@@ -108,6 +108,23 @@ with sync_playwright() as pw:
     check("no Escape was pressed", page.evaluate("window.escapes") == 0)
     check("and its list is closed again", page.locator("#list").is_hidden())
 
+    print("\n== a popup with no role at all is still a popup ==")
+    # MyCareernet's second step (Oct 2026): a Bootstrap .modal, no role, no
+    # aria-modal, closed by the Escape meant for a list.
+    page.set_content("""<div class="modal show" style="position:fixed; top:0; left:0; width:60%; height:70%;
+        background:#fff"><label for="q2">Question</label><input id="q2"><button>Save</button></div>
+      <script>window.escapes = 0; document.addEventListener('keydown', e => { if (e.key === 'Escape') {
+        window.escapes += 1; document.querySelector('.modal').remove(); } });</script>""")
+    worker._dismiss(page, browser.target(page).locator("#q2"))
+    check("no Escape for a box inside a .modal", page.evaluate("window.escapes") == 0)
+    worker._dismiss(page)
+    check("nor with no box in hand while it is up", page.evaluate("window.escapes") == 0)
+    check("the popup is still there", page.locator(".modal").count() == 1)
+    page.set_content("""<div style="position:fixed; inset:10% 20%; background:#fff"><input id="q3"><button>Go</button></div>
+      <script>window.escapes = 0; document.addEventListener('keydown', e => { if (e.key === 'Escape') window.escapes += 1; });</script>""")
+    worker._dismiss(page, browser.target(page).locator("#q3"))
+    check("nor inside a fixed layer covering most of the window", page.evaluate("window.escapes") == 0)
+
     print("\n== outside any popup, Escape is still how a list is closed ==")
     page.set_content("<input id='q'><script>window.escapes = 0; document.addEventListener("
                      "'keydown', e => { if (e.key === 'Escape') window.escapes += 1; });</script>")

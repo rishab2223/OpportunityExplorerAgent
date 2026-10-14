@@ -33,7 +33,7 @@ _NUM = r"(\d{1,2}(?:\.\d)?|" + "|".join(_WORDS) + r")"
 # dash, en and em dash.
 _YEARS_RE = re.compile(
     r"\b" + _NUM + r"\s*(?:\+|plus|or more)?\s*"
-    r"(?:(?:[-‐-―~]|to)\s*\d{1,2}\s*\+?\s*)?(?:years?|yrs?)(?:\(s\))?(?!\w)",
+    r"(?:(?:[-‐-―~]|to)\s*(?P<hi>\d{1,2})\s*\+?\s*)?(?:years?|yrs?)(?:\(s\))?(?!\w)",
     re.IGNORECASE,
 )
 _EXPERIENCE_RE = re.compile(r"\bexp(?:erience|\.)?\b", re.IGNORECASE)
@@ -100,23 +100,38 @@ def candidate_years(value: object) -> float | None:
     return float(years.group(1)) + (int(months.group(1)) / 12 if months else 0)
 
 
-def required_years(description: str) -> float | None:
-    """The largest GENERAL minimum the description states, or None."""
+def _general_ranges(description: str) -> list[tuple[float, float | None]]:
+    """Every GENERAL requirement stated, as (low, high): "8+ years" is (8,
+    None), "1-4 years" is (1, 4). A fresher range ("0-3 years") sets no bar
+    below but does set a top."""
     text = description or ""
-    found: list[float] = []
+    found: list[tuple[float, float | None]] = []
     for match in _YEARS_RE.finditer(text):
         years = _number(match.group(1))
-        if not 1 <= years <= 25:
-            continue                      # "over 50 years of history", "0-3 years"
+        high = float(match.group("hi")) if match.group("hi") else None
+        if not 0 <= years <= 25 or (high is not None and high > 25):
+            continue                      # "over 50 years of history"
         if _HISTORY_HEAD_RE.search(text[max(0, match.start() - 12):match.start()]):
             continue
         tail = text[match.end():match.end() + 160]
         end = _CLAUSE_END_RE.search(tail)
         clause = tail[:end.start()] if end else tail
-        if _is_general(clause):
-            found.append(years)
-            continue
         # "Experience: 8-10 years", "Years of Experience 8-12 years of ..."
-        if _EXPERIENCE_RE.search(text[max(0, match.start() - 30):match.start()]):
-            found.append(years)
-    return max(found) if found else None
+        if _is_general(clause) or _EXPERIENCE_RE.search(text[max(0, match.start() - 30):match.start()]):
+            found.append((years, high))
+    return found
+
+
+def required_years(description: str) -> float | None:
+    """The largest GENERAL minimum the description states, or None."""
+    lows = [low for low, _ in _general_ranges(description) if low >= 1]
+    return max(lows) if lows else None
+
+
+def ceiling_years(description: str) -> float | None:
+    """The top of the experience range the description states ("1-4 years"
+    -> 4), or None when it names no top: "8+ years" has none. TravClan's
+    SDE-1 (Oct 2026) asked for 1-4 years and reached the shortlist of a
+    candidate with six, because only the lower end was ever read."""
+    highs = [high for _, high in _general_ranges(description) if high is not None]
+    return max(highs) if highs else None

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Hunting Cube apply card</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  .apply-card { width: 420px; border: 1px solid #ccc; padding: 16px; }
+  .apply-card__label { display: block; margin: 12px 0 4px; font-weight: 600; }
+  .ui-input { width: 100%; padding: 8px; box-sizing: border-box; }
+  .apply-upload { display: block; border: 1px dashed #999; padding: 24px; text-align: center; cursor: pointer; }
+  .ui-adorn { display: flex; align-items: center; }
+  .ui-adorn__suffix { margin-left: 8px; }
+  .hc-check { display: block; margin: 12px 0; }
+</style>
+</head>
+<body>
+<!-- huntingcube.ai, Oct 2026 (Sumtracker, Senior Backend Engineer), from
+     the dump. Every <label> is bare: no for, not wrapping. The resume input
+     carries the hidden attribute inside the label the candidate clicks. -->
+<div class="apply-card">
+  <h3>Apply For This Job</h3>
+  <p>Answer a few questions to Apply</p>
+  <form>
+    <label class="apply-card__label">Email*</label>
+    <input class="ui-input" required placeholder="you@email.com" type="email" value="">
+    <label class="apply-card__label">Resume*</label>
+    <label class="apply-upload"><span>Drag Resume File here or <em>Upload</em></span>
+      <input hidden accept=".pdf,.doc,.docx" type="file"></label>
+    <p class="apply-card__hint">PDF, DOC, DOCX / Maximum file size is 10MB</p>
+    <label class="apply-card__label">Your Notice Period?</label>
+    <span class="ui-select"><select class="ui-input ui-select__control">
+      <option value="Immediately">Immediately</option><option value="15 Days">15 Days</option>
+      <option value="30 Days">30 Days</option><option value="60 Days">60 Days</option>
+      <option value="90 Days">90 Days</option></select></span>
+    <label class="apply-card__label">Your Current CTC?</label>
+    <span class="ui-adorn ui-adorn--has-suffix"><input class="ui-input" inputmode="numeric"
+      placeholder="e.g. 15" maxlength="3" value=""><span class="ui-adorn__suffix">LPA</span></span>
+    <label class="hc-check"><input type="checkbox"><span class="hc-check__box"></span>
+      <span class="hc-check__label">Save this response &amp; Unlock 1-Click Apply</span></label>
+    <button class="hc-btn" type="submit"><span>Apply</span></button>
+  </form>
+</div>
+<!-- A placeholder with no label anywhere near it keeps being the name. -->
+<div style="margin-top: 40px">
+  <input id="bare" type="text" placeholder="Search jobs">
+</div>
+</body>
+</html>

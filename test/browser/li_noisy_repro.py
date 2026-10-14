@@ -45,6 +45,7 @@ def _no_model(system, user, schema):
 
 
 worker.make_invoker = lambda cfg, env, purpose: _no_model
+worker.open_claude_session = lambda cfg, log=None: None   # no real Claude process
 worker.sites.detect = lambda url: "linkedin"
 
 

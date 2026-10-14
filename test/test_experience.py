@@ -60,6 +60,17 @@ class RequiredYearsTests(unittest.TestCase):
     def test_a_fresher_range_sets_no_bar(self) -> None:
         self.assertIsNone(required_years("*Experience:* 0–3 years *Job Type:* Full-time"))
 
+    def test_the_top_of_a_range_is_read_too(self) -> None:
+        from src.experience import ceiling_years
+
+        # TravClan's SDE-1 (Oct 2026): "1 - 4 Years" on the page, six on the profile.
+        self.assertEqual(ceiling_years("Required Experience: 1 - 4 Years of backend development"), 4)
+        self.assertEqual(ceiling_years("Years of Experience 8–12 years of professional software development"), 12)
+        self.assertEqual(ceiling_years("*Experience:* 0–3 years *Job Type:* Full-time"), 3)
+        self.assertIsNone(ceiling_years("8+ years of software engineering experience"))
+        self.assertIsNone(ceiling_years("3-5 years of experience with React"))    # a skill line
+        self.assertIsNone(ceiling_years(""))
+
     def test_no_description(self) -> None:
         self.assertIsNone(required_years(""))
 
@@ -89,6 +100,7 @@ class ExperienceFilterTests(unittest.TestCase):
         _job("eight", "8+ years of professional software engineering experience"),
         _job("unstated", "Strong Node.js skills."),
     ]
+    JUNIOR = _job("junior", "Required Experience: 1 - 4 years of backend development experience")
 
     def _run(self, years: str = "6.5", **experience) -> list[JobPosting]:
         # A stand-in profile: never the candidate's real file.
@@ -122,6 +134,22 @@ class ExperienceFilterTests(unittest.TestCase):
         self.assertNotIn("candidate_years", AppConfig().experience.model_dump())
         self.assertEqual(self._kept(years="8", enabled=True, mode="drop"),
                          ["seven", "eight", "unstated"])
+
+    def test_a_junior_range_is_outside_the_limit_too(self) -> None:
+        cfg = AppConfig.model_validate({"experience": {"enabled": True, "mode": "review",
+                                                       "review_min_score": 9, "tolerance_years": 1}})
+        with unittest.mock.patch.object(scrape.profile, "load_profile",
+                                        return_value={"total_experience_years": "6"}):
+            jobs = scrape._drop_over_experienced(self.JOBS + [self.JUNIOR], cfg)
+            held = {j.job_id: j.held_back for j in jobs}
+            self.assertEqual(held["junior"], "asks for up to 4 years; you have 6")
+            self.assertEqual(held["seven"], "")
+            # With more slack, 1-4 at six years is close enough to keep.
+            cfg.experience.tolerance_years = 2
+            jobs = scrape._drop_over_experienced([self.JUNIOR], cfg)
+            self.assertEqual(jobs[0].held_back, "")
+            # A range with no top ("7+") is never read as junior.
+            self.assertEqual(scrape._drop_over_experienced([self.JOBS[0]], cfg)[0].held_back, "")
 
     def test_review_keeps_every_job_and_marks_the_ones_over(self) -> None:
         jobs = self._run(enabled=True, mode="review", review_min_score=9, tolerance_years=1)
@@ -229,7 +257,8 @@ class HeldBackFilesTests(unittest.TestCase):
         # Every endpoint finds a held job the way it finds any other.
         self.assertEqual(runs.find_job(stamp, "held")["company"], "Co held")
 
-    def _write_run(self, stamp: str, held: list[dict], decisions: dict | None = None) -> None:
+    def _write_run(self, stamp: str, held: list[dict], decisions: dict | None = None,
+                   shortlisted: list[dict] | None = None) -> None:
         import json
 
         from src.web import runs
@@ -239,6 +268,8 @@ class HeldBackFilesTests(unittest.TestCase):
         (directory / "run.json").write_text(json.dumps(
             {"status": "ok", "match_count": 4, "held_back_count": len(held)}), encoding="utf-8")
         (directory / "held_back.json").write_text(json.dumps(held), encoding="utf-8")
+        if shortlisted:
+            (directory / "shortlisted.json").write_text(json.dumps(shortlisted), encoding="utf-8")
         if decisions:
             (directory / "applications.json").write_text(json.dumps(
                 {job_id: {"decision": d} for job_id, d in decisions.items()}), encoding="utf-8")
@@ -269,6 +300,27 @@ class HeldBackFilesTests(unittest.TestCase):
         self._write_run("20261001T100000", [_scored("same", 9, "x")])
         self._write_run("20261002T100000", [_scored("same", 9, "x")])
         self.assertEqual([r["stamp"] for r in runs.load_held_waiting()], ["20261002T100000"])
+
+    def test_referrals_are_listed_across_runs(self) -> None:
+        from src import history
+        from src.web import runs
+
+        monday, wednesday = _scored("mon", 8), _scored("wed", 8)
+        self._write_run("20261001T100000", [], shortlisted=[monday, _scored("plain", 8)])
+        self._write_run("20261002T100000", [], shortlisted=[wednesday])
+        history.record(monday, "referral_pending", contact="Asha")
+        history.record(wednesday, "referral_sent", contact="Ravi")
+        rows = runs.load_referrals()
+        # Newest ask first; each row names the run it came from and keeps the contact.
+        self.assertEqual([(r["job_id"], r["stamp"], r["history_contact"]) for r in rows],
+                         [("wed", "20261002T100000", "Ravi"), ("mon", "20261001T100000", "Asha")])
+        # A referral found again by a later run shows once, from that run.
+        self._write_run("20261003T100000", [], shortlisted=[monday])
+        self.assertEqual([(r["job_id"], r["stamp"]) for r in runs.load_referrals()
+                          if r["job_id"] == "mon"], [("mon", "20261003T100000")])
+        # Cleared, it is gone from the tab.
+        history.forget("mon")
+        self.assertEqual([r["job_id"] for r in runs.load_referrals()], ["wed"])
 
     def test_runs_are_listed_with_their_counts(self) -> None:
         from src.web import runs

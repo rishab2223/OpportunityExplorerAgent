@@ -87,7 +87,7 @@ with sync_playwright() as pw:
             check(f"{what} was refused", False, f"returned {out!r}")
         except Exception as exc:
             check(f"{what} was refused", True, type(exc).__name__)
-            check(f"  and says why, in words the candidate can act on",
+            check("  and says why, in words the candidate can act on",
                   "overlay" in str(exc).lower(), str(exc)[:90])
         check(f"  and {what} never fired", log_of(page) == before,
               f"{before!r} -> {log_of(page)!r}")

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Oracle Recruiting application</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  .cx { position: relative; display: inline-block; margin: 4px 12px 4px 0; }
+  .cx [role=grid] { position: absolute; z-index: 5; background: #fff; border: 1px solid #888;
+                    max-height: 180px; overflow: auto; width: 200px; }
+  .cx [role=row] { padding: 3px 6px; cursor: pointer; }
+  .pills { list-style: none; display: flex; gap: 8px; padding: 0; }
+  .pill[aria-pressed=true] { border-color: purple; color: purple; }
+</style>
+</head>
+<body>
+<!-- Oracle Recruiting Cloud (Adani, Oct 2026), from its dump: a date of
+  birth in three "cx-select" boxes (input role=combobox, aria-haspopup=grid,
+  aria-controls naming a grid of rows), a Domicile State box of the same
+  kind, and Yes / No questions drawn as pill buttons with aria-pressed. -->
+<h2>Contact Information</h2>
+<label for="lastName-12">Last Name</label> <input id="lastName-12" type="text">
+<label for="firstName-13">First Name</label> <input id="firstName-13" type="text">
+
+<div id="dob"></div>
+
+<h2>Application Questions</h2>
+<div id="questions"></div>
+
+<h2>Domicile - State</h2>
+<div id="domicile"></div>
+
+<pre id="log"></pre>
+<script>
+  const MONTHS = ['January','February','March','April','May','June','July','August','September',
+                  'October','November','December'];
+  const DAYS = Array.from({length: 31}, (_, i) => String(i + 1));
+  const YEARS = Array.from({length: 60}, (_, i) => String(2008 - i));
+  const STATES = ['Andhra Pradesh', 'Assam', 'Bihar', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh',
+                  'Karnataka', 'Kerala', 'Maharashtra', 'Punjab', 'Rajasthan', 'Tamil Nadu'];
+
+  function cxSelect(id, label, options) {
+    return '<span class="cx"><span id="lbl-' + id + '">' + label + '</span> ' +
+      '<input id="' + id + '" type="text" role="combobox" aria-autocomplete="list" aria-haspopup="grid" ' +
+      'aria-controls="' + id + '-listbox" aria-expanded="false" aria-label="' + label + '" ' +
+      'data-options="' + options.join('|') + '" autocomplete="none">' +
+      '<button type="button" id="' + id + '-toggle-button" tabindex="-1" ' +
+      'aria-label="Open the drop-down list for ' + label + '."></button>' +
+      '<div role="grid" id="' + id + '-listbox" hidden></div></span>';
+  }
+  document.getElementById('dob').innerHTML =
+    '<span id="labelText-dateOfBirth">Date of Birth</span> ' +
+    cxSelect('month-dateOfBirth-11', 'Date of Birth Month', MONTHS) +
+    cxSelect('day-dateOfBirth-11', 'Date of Birth Day', DAYS) +
+    cxSelect('year-dateOfBirth-11', 'Date of Birth Year', YEARS);
+  document.getElementById('domicile').innerHTML = cxSelect('domicileState-18', 'Domicile State', STATES);
+
+  function pills(question) {
+    return '<div class="q"><label>' + question + ' *</label>' +
+      '<ul role="list" aria-label="' + question + '" class="pills">' +
+      ['Yes', 'No'].map(o => '<li role="listitem"><button type="button" class="pill" aria-pressed="false">' +
+                             '<span> ' + o + '</span></button></li>').join('') + '</ul></div>';
+  }
+  document.getElementById('questions').innerHTML =
+    pills('Have you been interviewed by us or any of our group companies in the past?') +
+    pills('Have you worked with Example Before ?') +
+    pills('Are you related to any employee of Example Group?');
+  document.querySelectorAll('.pills').forEach(list => {
+    list.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+      list.querySelectorAll('button').forEach(o => o.setAttribute('aria-pressed', o === b ? 'true' : 'false'));
+      document.getElementById('log').textContent += list.getAttribute('aria-label') + '=' + b.textContent.trim() + ' | ';
+    }));
+  });
+
+  // The cx-select: a click opens the grid; typed keys filter it; a row
+  // click puts its text in the box.
+  document.querySelectorAll('input[role=combobox]').forEach(input => {
+    const grid = document.getElementById(input.getAttribute('aria-controls'));
+    const show = (filter) => {
+      const rows = input.dataset.options.split('|')
+        .filter(o => !filter || o.toLowerCase().startsWith(filter.toLowerCase()));
+      grid.innerHTML = rows.map(o => '<div role="row"><div role="gridcell">' + o + '</div></div>').join('');
+      grid.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+      grid.querySelectorAll('[role=row]').forEach(r => r.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        input.value = r.textContent; grid.hidden = true; input.setAttribute('aria-expanded', 'false');
+        document.getElementById('log').textContent += input.getAttribute('aria-label') + '=' + input.value + ' | ';
+      }));
+    };
+    input.addEventListener('click', () => show(''));
+    input.nextElementSibling.addEventListener('click', () => show(''));
+    input.addEventListener('input', () => show(input.value));
+  });
+</script>
+</body>
+</html>

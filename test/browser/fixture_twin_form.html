@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Recrew apply form</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  .mobile-only { display: none; }
+  .form-field { margin: 12px 0; }
+  label { display: block; }
+  input[type=text], input[type=email], input[type=number] { width: 300px; padding: 6px; }
+</style>
+</head>
+<body>
+<!-- talent.recrew.ai, Oct 2026: the page renders the same form twice, a
+     phone layout (hidden here) ABOVE the desktop one, with the same ids in
+     both. The snapshot reads the visible copy; locating by id in page order
+     found the hidden one first. -->
+<div class="mobile-only">
+  <form id="dynamic-form-m">
+    <div class="form-field"><label for="name_field">Name *</label>
+      <input id="name_field" name="name_field" type="text" required></div>
+    <div class="form-field"><label for="email_field">Email *</label>
+      <input id="email_field" name="email_field" type="email" required></div>
+    <div class="form-field"><label for="current_ctc_field">Current CTC in LPA(lakhs per annum) *</label>
+      <input id="current_ctc_field" name="current_ctc_field" type="number" required></div>
+    <div class="form-field"><span>Are you currently on notice period? *</span>
+      <label><input id="notice_yes" name="is_on_notice" type="radio"> Yes</label>
+      <label><input id="notice_no" name="is_on_notice" type="radio"> No</label></div>
+  </form>
+</div>
+<div class="desktop">
+  <form id="dynamic-form">
+    <div class="form-field"><label for="name_field">Name *</label>
+      <input id="name_field" name="name_field" type="text" required></div>
+    <div class="form-field"><label for="email_field">Email *</label>
+      <input id="email_field" name="email_field" type="email" required></div>
+    <div class="form-field"><label for="current_ctc_field">Current CTC in LPA(lakhs per annum) *</label>
+      <input id="current_ctc_field" name="current_ctc_field" type="number" required></div>
+    <div class="form-field"><span>Are you currently on notice period? *</span>
+      <label><input id="notice_yes" name="is_on_notice" type="radio"> Yes</label>
+      <label><input id="notice_no" name="is_on_notice" type="radio"> No</label></div>
+    <button type="submit">Submit Application</button>
+  </form>
+</div>
+</body>
+</html>

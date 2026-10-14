@@ -94,6 +94,10 @@ def connect() -> sqlite3.Connection:
                     cols = {row[1] for row in conn.execute("PRAGMA table_info(job_history)")}
                     if "contact" not in cols:
                         conn.execute("ALTER TABLE job_history ADD COLUMN contact TEXT")
+                    # The posting's text, so a company + title match can be
+                    # checked against it (history.same_posting).
+                    if "description" not in cols:
+                        conn.execute("ALTER TABLE job_history ADD COLUMN description TEXT")
                     # When the candidate pressed Use on this letter; a later
                     # session attaches it without asking again.
                     cols = {row[1] for row in conn.execute("PRAGMA table_info(cover_letters)")}

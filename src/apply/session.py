@@ -122,6 +122,17 @@ class ApplySession:
         # wait here, like park, and the worker takes them at its next pause:
         # the prompt wait below, or the poll around a model call.
         self._dumps: Queue = Queue()
+        # Values a box refused this session, by field key: (value, why). The
+        # sweep does not send the same value again, and the model is told
+        # what was tried and what the box offered instead. On a Greenhouse
+        # form (BitGo, Oct 2026) the school and a location question were each
+        # tried three times with the same value, forty seconds of typing at
+        # lists that had already said no.
+        self.refused: dict[str, tuple[str, str]] = {}
+        # What each refusing dropdown offered instead, and which of them the
+        # nearest-option call has already been asked about (worker._pick_refused).
+        self.refused_options: dict[str, list[str]] = {}
+        self.picks_asked: set[str] = set()
 
     def emit(self, event_type: str, text: str, **extra: Any) -> None:
         # extra may itself carry a "kind" key (choice events), so the event

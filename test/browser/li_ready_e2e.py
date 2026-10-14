@@ -26,7 +26,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 SCRATCH = Path(tempfile.mkdtemp(prefix="oea_li_"))
 
 from src import history  # noqa: E402
-from src.apply import browser, profile, session as apply_session, sites, worker  # noqa: E402
+from src.apply import browser, profile, session as apply_session, worker  # noqa: E402
 from src.config import AppConfig, load_env  # noqa: E402
 
 history.DB_PATH = SCRATCH / "history.db"
@@ -43,6 +43,7 @@ def _no_model(system, user, schema):
 
 
 worker.make_invoker = lambda cfg, env, purpose: _no_model
+worker.open_claude_session = lambda cfg, log=None: None   # no real Claude process
 # Force the LinkedIn branch for a file:// fixture.
 worker.sites.detect = lambda url: "linkedin"
 

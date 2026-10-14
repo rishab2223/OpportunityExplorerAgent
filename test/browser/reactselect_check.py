@@ -20,6 +20,7 @@ Scratch profile, temp DB. Nothing real is read or written.
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -243,6 +244,58 @@ with sync_playwright() as pw:
     except Exception as exc:
         said = str(exc)
     check("the refusal lists the options it read", "30 days" in said and "could not read" not in said, said)
+
+    print("\nand a question with set answers is refused at once, not typed at")
+    # BitGo (Oct 2026): "Location." offered In Bangalore / Can relocate /
+    # Cannot relocate, and did not filter on what was typed. The profile's
+    # "Gurgaon, India" was typed, then "India" and "Gurgaon" as keystrokes,
+    # twenty seconds a pass, three passes. The list had answered already.
+    page.goto((HERE / "fixture_reactselect.html").as_uri())
+    page.wait_for_timeout(200)
+    fixed_box = {str(f.get("label") or "").split("*")[0].strip(): f
+                 for f in browser.snapshot(page)}["Location."]
+    sess6 = Sess()
+    started = time.monotonic()
+    try:
+        worker._commit_combobox(page, browser.locate(page, fixed_box["id"], str(fixed_box.get("elid") or "")),
+                                "Gurgaon, India", "Location.*", "[profile] ", sess6, [])
+        said6 = "took something"
+    except Exception as exc:
+        said6 = str(exc)
+    took6 = time.monotonic() - started
+    check("the refusal names the three answers",
+          "Can relocate to Bangalore" in said6 and "Cannot relocate" in said6, said6)
+    check("no word of the value was typed at it on its own",
+          not any("searched" in line or "did not move on 'India'" in line or
+                  "did not move on 'Gurgaon'" in line for line in sess6.lines), str(sess6.lines)[:300])
+    check("and it says why it stopped",
+          any("set options" in line for line in sess6.lines), str(sess6.lines)[:300])
+    check("it took seconds, not twenty", took6 < 10, f"{took6:.1f}s")
+    check("and nothing was chosen", "Bangalore" not in page.locator("#log").inner_text(),
+          repr(page.locator("#log").inner_text()))
+
+    print("\nand a school the list does not have takes 'Other'")
+    # Greenhouse's school list (BitGo, Oct 2026): "Example University" is not
+    # in it, and the candidate chose "Other" by hand. The exact entry, never
+    # a row that merely contains the word.
+    page.goto((HERE / "fixture_reactselect.html").as_uri())
+    page.wait_for_timeout(200)
+    school_box = {str(f.get("label") or "").split("*")[0].strip(): f
+                  for f in browser.snapshot(page)}["School"]
+    sess7 = Sess()
+    try:
+        worker._commit_combobox(page, browser.locate(page, school_box["id"], str(school_box.get("elid") or "")),
+                                "Example University", "School*", "[profile] ", sess7, [])
+        took7 = True
+    except Exception as exc:
+        took7 = False
+        sess7.log(f"refused: {exc}")
+    got7 = page.locator("#log").inner_text()
+    check("'Other' is chosen", took7 and got7.strip() == "Other |", repr(got7) + " " + str(sess7.lines)[:200])
+    check("and the log says so",
+          any("taking 'Other'" in line for line in sess7.lines), str(sess7.lines)[:200])
+    check("a school that IS listed is still taken by name",
+          worker._choose_option(["Aalborg University", "Other"], "Aalborg University") == 0)
 
     print("\nand a dropdown that took nothing is never reported as filled")
     # Found by disabling the control-open above and watching what was left:

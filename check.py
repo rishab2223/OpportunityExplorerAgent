@@ -57,6 +57,9 @@ GROUPS: dict[str, list[str]] = {
         "longradio_check.py", "page_signals_check.py", "failfast_check.py",
         "late_continue_check.py", "two_forms_check.py", "stale_locate_check.py",
         "year_box_check.py", "escape_check.py", "sf_filter_check.py",
+        "primeng_check.py", "li_radio_check.py", "huntingcube_check.py",
+        "twin_form_check.py", "sf_sections_check.py", "sf_form_check.py",
+        "embedded_confirm_check.py", "redraw_on_blur_check.py", "oracle_cx_check.py",
     ],
     "attach": ["chooser_check.py", "jobvite_upload_check.py", "taleo_check.py",
                "photo_picker_check.py"],
@@ -64,7 +67,7 @@ GROUPS: dict[str, list[str]] = {
                  "li_unwired_check.py"],
     "indeed": ["indeed_check.py"],
     "submit": [                       # "was it sent?", every shape of it
-        "sent_no_model_repro.py", "sent_dialog_repro.py",
+        "sent_no_model_repro.py", "sent_dialog_repro.py", "prefilled_sent_repro.py",
         "submitted_at_any_prompt.py", "submitted_tail_check.py",
         "boilerplate_repro.py", "llm_at_submit_repro.py",
     ],

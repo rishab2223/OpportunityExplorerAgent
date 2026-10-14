@@ -63,7 +63,9 @@ def outcomes() -> list[dict[str, Any]]:
             if keys & seen:
                 continue
             seen |= keys
-            entry = by_id.get(job_id) or by_fp.get(fp)
+            entry = by_id.get(job_id)
+            if entry is None and history.same_posting(by_fp.get(fp), row.get("description")):
+                entry = by_fp.get(fp)
             outcome = _outcome((decisions.get(job_id) or {}).get("decision", ""),
                                entry["status"] if entry else "")
             asked = _REASON_RE.search(row.get("held_back") or "")

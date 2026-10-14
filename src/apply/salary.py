@@ -96,9 +96,15 @@ def parse_annual_inr(text: str, unit_hint: str = "") -> int | None:
 
 
 def unit_of(field: dict[str, Any]) -> str:
-    """The unit the field asks for: 'lpa', 'monthly', 'annual' or ''."""
+    """The unit the field asks for: 'lpa', 'monthly', 'annual' or ''.
+
+    The words beside the box count as much as its label: Hunting Cube (Oct
+    2026) draws "LPA" after a CTC box whose label says nothing about units.
+    And a box that cannot hold rupees cannot want them: three characters, or
+    a placeholder like "e.g. 15", is lakhs - 2500000 cut to 250 was typed
+    into exactly such a box."""
     text = " ".join(
-        str(field.get(k) or "") for k in ("label", "group", "name", "placeholder", "text")
+        str(field.get(k) or "") for k in ("label", "group", "name", "placeholder", "text", "beside")
     )
     if _LPA_FIELD_RE.search(text):
         return "lpa"
@@ -106,6 +112,13 @@ def unit_of(field: dict[str, Any]) -> str:
         return "monthly"
     if _ANNUAL_FIELD_RE.search(text):
         return "annual"
+    limit = int(field.get("maxlength") or 0)
+    if 0 < limit <= 4:
+        return "lpa"
+    example = re.search(r"\b(?:e\.?g\.?|ex\.?|example)\s*:?\s*(\d+(?:\.\d+)?)\s*$",
+                        str(field.get("placeholder") or ""), re.IGNORECASE)
+    if example and float(example.group(1)) < 500:
+        return "lpa"
     return ""
 
 

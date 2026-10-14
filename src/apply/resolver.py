@@ -75,7 +75,9 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
                 r"|^(retype|re ?type|re ?enter|confirm|repeat|verify)( your)? e ?mail( address)?$")),
     ("phone", ("tel", "tel-national"),
      re.compile(r"^(phone|mobile|phone[_ ]?number|mobile[_ ]?number|contact[_ ]?number)$"),
-     re.compile(r"^(mobile|phone|mobile phone)( number)?$|^contact number$")),
+     # "WhatsApp Number" (Recrew, Oct 2026): the candidate's own phone. The
+     # model was called for that box alone, and ticked "Same as phone number".
+     re.compile(r"^(mobile|phone|mobile phone|whatsapp)( number)?$|^contact number$")),
     # Derived from the location's last part in resolve(). Typing "India" also
     # resolves phone-code widgets ("India (+91)") - the one rule covers both.
     # Before country: "Country Phone Code" (Workday) wants "+91", not "India".
@@ -91,7 +93,11 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      # empty, and the State list below it - which follows the country - then
      # offered the whole world.
      re.compile(r"^country( ?/? ?region)?( of residence)?$|^country ?/ ?region( code)?$"
-                r"|^(current )?country of (residence|domicile)$")),
+                r"|^(current )?country of (residence|domicile)$"
+                # Cargill's talent form (Oct 2026). A list of regions rather
+                # than countries refuses "India" by name, and the model
+                # picks from the options it names.
+                r"|^region of residence$")),
     # An explicit city wins over the one split out of "location".
     ("city", ("address-level2",),
      re.compile(r"^(city|town|current[_ ]?city)$"),
@@ -143,16 +149,24 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
     ("salary_currency", (),
      re.compile(r"^(currency|currencycode\d*|(current|expected)[_ ]?salary[_ ]?currency)$"),
      re.compile(r"\b(salary )?currency\b")),
+    # Not "per annum" when the box names an amount: Recrew's "Current CTC in
+    # LPA (lakhs per annum)" (Oct 2026) read as a salary-period box and got
+    # the word "Annual" in place of 25.
     ("salary_period", (),
      re.compile(r"^((current|expected)[_ ]?salary[_ ]?period|salary[_ ]?period|pay[_ ]?period)$"),
-     re.compile(r"\b(salary|pay) period\b|\bper (annum|month)\b")),
+     re.compile(r"\b(salary|pay) period\b"
+                r"|^(?!.*\b(ctc|salary|compensation|remuneration|lpa|lakhs?|amount)\b).*\bper (annum|month)\b")),
     # "Current Annual Compensation" (EPAM): a word may sit between.
     ("current_ctc", (),
      re.compile(r"^(current[_ ]?(ctc|salary|compensation))$"),
      re.compile(r"\b(current|present)( annual| yearly| total| fixed| base)? (ctc|salary|compensation|pay)\b")),
+    # "Salary expectations:" (Cargill on SuccessFactors, Oct 2026, a box
+    # named cust_salaryExpect) was left empty: the words come the other way
+    # round.
     ("expected_ctc", (),
-     re.compile(r"^(expected[_ ]?(ctc|salary|compensation))$"),
-     re.compile(r"\b(expected|desired)( annual| yearly| total| fixed| base)? (ctc|salary|compensation|pay)\b")),
+     re.compile(r"^(expected[_ ]?(ctc|salary|compensation)|(cust[_ ]?)?salary[_ ]?expect(ation)?s?)$"),
+     re.compile(r"\b(expected|desired)( annual| yearly| total| fixed| base)? (ctc|salary|compensation|pay)\b"
+                r"|\b(salary|ctc|compensation|pay) expectations?\b")),
     ("willing_to_relocate", (),
      re.compile(r"^(relocate|willing[_ ]?to[_ ]?relocate)$"),
      re.compile(r"\bwilling to relocate\b")),
@@ -187,6 +201,12 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
     ("pronouns", (),
      re.compile(r"^(preferred[_ ]?)?pronouns?$"),
      re.compile(r"^(your |preferred )?pronouns?$")),
+    # "Preferred Language" (Cargill on SuccessFactors, Oct 2026): the first
+    # language in the profile, worked out in resolve(). It went to the chat,
+    # and "English US" typed there matched none of "English, French...".
+    ("preferred_language", (),
+     re.compile(r"^(preferred|primary)[_ ]?(communication[_ ]?)?language$"),
+     re.compile(r"^(your )?(preferred|primary)( communication)? language$")),
     # Relevant experience must be read BEFORE total experience, or "years of
     # relevant experience" resolves to the whole career.
     ("relevant_experience_years", (),
@@ -235,9 +255,14 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      # "Field *" and a "Field * (required)" are the same label here.
      re.compile(r"\bfield of study\b|\bmajor\b|\bspeciali[sz]ation\b|\bdiscipline\b"
                 r"|^field( required)?$")),
+    # The degree's year - not school's, nor a postgraduate one the candidate
+    # may not have: TravClan (Oct 2026) got 2019 in "12th year of passing"
+    # and "Post Graduation Year of Passing" alike.
     ("graduation_year", (),
      re.compile(r"^(graduation[_ ]?year|year[_ ]?of[_ ]?passing|passing[_ ]?year)$"),
-     re.compile(r"\b(graduation|passing|completion) year\b|\byear of (graduation|passing)\b")),
+     re.compile(r"^(?!.*\b(10th|12th|tenth|twelfth|class|x|xii|ssc|hsc|secondary|school|matric\w*"
+                r"|post ?graduat\w*|pg|masters?|mba|m ?tech|diploma)\b)"
+                r".*(\b(graduation|passing|completion) year\b|\byear of (graduation|passing)\b)")),
 ]
 
 
@@ -285,7 +310,18 @@ WEBSITES_SECTION_RE = re.compile(
     r"|\bportfolio\b|\bweb ?links?\b",   # Workday: "Portfolio (Optional) - Add any relevant websites"
     re.IGNORECASE,
 )
-_LEVEL_LABEL_RE = re.compile(r"\b(overall|proficiency|level|fluency|reading|writing|speaking)\b", re.IGNORECASE)
+# "Read" / "Write" / "Speak" too: SuccessFactors asks each skill on its own
+# (Cargill, Oct 2026), and they went to the model.
+# Workday adds "Translation*" to Reading/Speaking/Writing (Walmart, Oct 2026):
+# the candidate was asked it for each language.
+_LEVEL_LABEL_RE = re.compile(
+    r"\b(overall|proficiency|level|fluency|reading|writing|speaking|read|write|speak|spoken|written"
+    r"|translation|translating|listening|comprehension|understanding)\b",
+    re.IGNORECASE)
+# Workday's "I am fluent in this language." tick box in each entry.
+_FLUENT_BOX_RE = re.compile(r"\b(fluent|native|mother tongue|first language)\b", re.IGNORECASE)
+_FLUENT_LEVEL_RE = re.compile(r"\b(fluent|native|bilingual|mother tongue|expert|full professional)\b",
+                              re.IGNORECASE)
 _URL_LABEL_RE = re.compile(r"\b(url|website|link|address)\b", re.IGNORECASE)
 _NAMED_SITE_RE = re.compile(r"\b(linkedin|github|twitter|x\.com|facebook|instagram|stack ?overflow)\b", re.IGNORECASE)
 
@@ -296,7 +332,9 @@ def plain_label(label: str) -> str:
     word character, so neither "language" nor "proficiency" was a word in it:
     the row went unfilled and its Add was clicked again for an entry that was
     already there."""
-    return re.sub(r"[_\[\]]+", " ", label or "").strip()
+    # And without the required star or a trailing colon: "* Language"
+    # (SuccessFactors) is a language box like any other.
+    return re.sub(r"[_\[\]]+", " ", label or "").strip().strip("*:").strip()
 
 
 def is_language_name_label(label: str) -> bool:
@@ -311,12 +349,32 @@ def named_link_field(field: dict[str, Any]) -> bool:
     return bool(_URL_LABEL_RE.search(label) and _NAMED_SITE_RE.search(label))
 
 
+# Greenhouse's education entry has no Education heading the snapshot can read
+# (its boxes sat under "Phone" on BitGo's form, Oct 2026), but its ids name
+# the entry and the part: school--0, degree--0, discipline--0, start-year--0,
+# end-year--0 (and start-month/end-month on forms that ask them). Without
+# this, "Start date year*" read as an earliest-start-date box and a whole
+# date was sent to a number input, and the school went to the model.
+_GH_EDU_ID_RE = re.compile(
+    r"^(school|degree|discipline|start-month|start-year|end-month|end-year)--(\d+)$")
+_GH_EDU_PARTS = {"school": "school", "degree": "degree", "discipline": "field",
+                 "start-year": "start", "end-year": "end"}
+
+
+def _greenhouse_education(field: dict[str, Any]) -> tuple[str, int] | None:
+    """(part, entry index) for a Greenhouse education box, else None."""
+    found = _GH_EDU_ID_RE.match(str(field.get("elid") or ""))
+    return (found.group(1), int(found.group(2))) if found else None
+
+
 def in_repeating_section(field: dict[str, Any]) -> bool:
     if named_link_field(field):
         return False
     # A work entry's date boxes carry no work section of their own; the
     # page-order pass is what says which entry they belong to.
     if field.get("work_entry") is not None:
+        return True
+    if _greenhouse_education(field):
         return True
     return bool(REPEATING_SECTION_RE.search(str(field.get("section") or "")))
 
@@ -342,6 +400,11 @@ _STUDY_LABEL_RE = re.compile(
     r"\b(field of study|major|discipline|stream|branch|speciali[sz]ation|course)\b", re.IGNORECASE)
 _FROM_LABEL_RE = re.compile(r"\b(from|start|joined)\b", re.IGNORECASE)
 _TO_LABEL_RE = re.compile(r"\b(to|end|graduat\w*|completion)\b", re.IGNORECASE)
+
+
+def is_school_label(label: str) -> bool:
+    """The box that names an education entry's school."""
+    return bool(_SCHOOL_LABEL_RE.search(label or ""))
 
 
 def profile_education(data: dict[str, Any]) -> list[dict[str, str]]:
@@ -385,19 +448,12 @@ DATE_GROUP_RE = re.compile(
     r"^\s*(from|to|start|end|start date|end date|date from|date to)\s*\*?\s*:?\s*$",
     re.IGNORECASE)
 _JOB_TITLE_RE = re.compile(r"\b(job )?title\b|\bposition\b|\brole\b|\bdesignation\b", re.IGNORECASE)
-# What starts a NEW entry on an unnumbered list. Deliberately tighter than
-# _JOB_TITLE_RE, which matches the word "role": Esko labels its description
-# box "Role description", and treating that as a title split every entry in
-# two and left the second job with nothing to fill it from.
 # A control that names one numbered entry of the list: "Delete Work
 # Experience 3", "Remove Employment 2". Anchored to a delete/remove verb, so
 # a heading that merely ends in a digit ("Employment history 2020") cannot
 # renumber the walk.
 _ENTRY_LABEL_RE = re.compile(
     r"\b(delete|remove)\b.*\b(work|employment|experience|position|job)\b.*\d\s*$",
-    re.IGNORECASE)
-_ENTRY_START_RE = re.compile(
-    r"\b(job ?title|position title|designation)\b|^\s*(job )?title\s*\*?\s*$",
     re.IGNORECASE)
 _JOB_EMPLOYER_RE = re.compile(r"\b(company|employer|organi[sz]ation)\b", re.IGNORECASE)
 _JOB_LOCATION_RE = re.compile(r"^\s*(job\s+)?location\b|\b(city|town)\b", re.IGNORECASE)
@@ -494,6 +550,27 @@ def _date_side(*scopes: str) -> str:
     return ""
 
 
+# Workday names a date box's side in its id: workExperience-289--startDate-
+# dateSectionMonth-input, education-325--firstYearAttended-dateSectionYear-
+# input. Its From*/To* heading sits on the Calendar button AFTER the boxes,
+# so the boxes themselves said nothing about which date they were: Walmart's
+# (Oct 2026) work dates went to the model and both education years got 2019.
+_ID_START_RE = re.compile(r"start[-_]?date|(?<![a-z])from[-_]?date|first[-_]?year[-_]?attended"
+                          r"|date[-_]?from(?![a-z])", re.IGNORECASE)
+_ID_END_RE = re.compile(r"end[-_]?date|(?<![a-z])to[-_]?date|last[-_]?year[-_]?attended"
+                        r"|date[-_]?to(?![a-z])", re.IGNORECASE)
+
+
+def id_date_side(field: dict[str, Any]) -> str:
+    """"start" or "end" when the box's own id says which date it is."""
+    elid = str(field.get("elid") or "")
+    if _ID_START_RE.search(elid):
+        return "start"
+    if _ID_END_RE.search(elid):
+        return "end"
+    return ""
+
+
 def work_slot(field: dict[str, Any]) -> str:
     """Which part of a job this box wants - title, start_month and so on - or
     an empty string.
@@ -513,7 +590,7 @@ def work_slot(field: dict[str, Any]) -> str:
     part = re.match(r"^\s*(month|mm|year|yyyy|day|dd)\s*\*?\s*$", label, re.IGNORECASE)
     if part:
         side = str(field.get("work_dates") or "") or _date_side(
-            field.get("group"), field.get("section"))
+            field.get("group"), field.get("section")) or id_date_side(field)
         if not side:
             return ""
         piece = part.group(1).lower()
@@ -527,12 +604,14 @@ def work_slot(field: dict[str, Any]) -> str:
         return whole
     if _JOB_DESCRIPTION_RE.search(label):
         return "description"
+    # Location before company: "Company Location - City, State" (Cargill,
+    # Oct 2026) names a place, and got "Cadence Design" cut to 20 letters.
+    if _JOB_LOCATION_RE.search(label) or re.search(r"\blocation\b", label, re.IGNORECASE):
+        return "location"
     if _JOB_EMPLOYER_RE.search(label):
         return "company"
     if _JOB_TITLE_RE.search(label):
         return "title"
-    if _JOB_LOCATION_RE.search(label):
-        return "location"
     return ""
 
 
@@ -575,6 +654,9 @@ def tag_work_entries(fields: list[dict[str, Any]], jobs: list[dict[str, str]]) -
     """
     inside = False
     pos = -1
+    # The boxes the current unnumbered entry has had so far, by label and
+    # group. A box that comes round again is the next entry's.
+    seen_here: set[tuple[str, str]] = set()
     entries: dict[int, list[dict[str, Any]]] = {}
     for field in fields:
         section = str(field.get("section") or "")
@@ -592,19 +674,34 @@ def tag_work_entries(fields: list[dict[str, Any]], jobs: list[dict[str, str]]) -
             # "Software Engineer at Acme" rows on a submitted application.
             if not numbered and _ENTRY_LABEL_RE.search(label):
                 numbered = re.search(r"(\d+)\s*$", label)
+            # Boxes only: a button (Add, Delete, the section's own toggle)
+            # repeats under every entry without starting one.
+            box = (field.get("tag") in ("input", "select", "textarea")
+                   or field.get("role") in ("combobox", "listbox"))
+            slot = (plain(label), plain(group))
             if numbered:
                 pos = max(0, int(numbered.group(1)) - 1)
+                seen_here = set()
             elif not inside:
                 pos = 0
-            elif _ENTRY_START_RE.search(label):
-                pos += 1        # an unnumbered list starts an entry per title
+                seen_here = {slot} if box else set()
+            elif box and slot in seen_here:
+                # The same box again is the next entry. Not "a Title starts
+                # an entry": SuccessFactors puts Start Date and End Date
+                # BEFORE the Title (Cargill, Oct 2026), so its first entry's
+                # dates were counted as nobody's and its second entry's dates
+                # as the first's - and two entries were written with one job.
+                pos += 1
+                seen_here = {slot}
+            elif box:
+                seen_here.add(slot)
             inside = True
         elif inside and (not section or DATE_GROUP_RE.match(section)):
             pass                # a stray box still belongs to the entry above
         else:
             inside = False
             continue
-        side = _date_side(group, section)
+        side = _date_side(group, section) or id_date_side(field)
         if side:
             field["work_dates"] = side
         field["work_pos"] = pos
@@ -627,6 +724,13 @@ _IMMEDIATE_RE = re.compile(
 _NOTICE_UNIT_RE = re.compile(r"\bin\s+(days?|weeks?|months?)\b|\(\s*(days?|weeks?|months?)\s*\)",
                              re.IGNORECASE)
 _NOTICE_SPAN_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(day|week|month|year)s?", re.IGNORECASE)
+_IMMEDIATE_HINT_RE = re.compile(
+    r"immediate[^()]*?\b(?:mention|enter|put|write|type|use|fill(?: in)?|say)\s*(\d+)", re.IGNORECASE)
+# "How many years of work experience do you have with Redis?" asks about one
+# skill, not the career: the profile's total would be a claim about Redis.
+# The model answers those from the resume. "in software development" stays
+# the career's.
+_SKILL_YEARS_RE = re.compile(r"\bexperience\b.*\b(with|using)\s+\w")
 _PER_DAY = {"day": 1.0, "week": 7.0, "month": 30.0, "year": 365.0}
 
 
@@ -684,6 +788,13 @@ def notice_for_field(value: str, field: dict[str, Any]) -> str:
     per = _PER_DAY["day" if unit.startswith("day") else
                    "week" if unit.startswith("week") else "month"]
     count = days / per
+    if count == 0:
+        # "Please mention your notice period in Days (If immediate joiner
+        # mention 1)" - LinkedIn Easy Apply, Oct 2026. The form says what
+        # number stands for immediate; 0 was what it got.
+        told = _IMMEDIATE_HINT_RE.search(label)
+        if told:
+            return told.group(1)
     return str(int(count)) if count == int(count) else f"{count:.1f}"
 
 
@@ -698,11 +809,27 @@ def entry_value(field: dict[str, Any], data: dict[str, Any]) -> str | None:
     section = str(field.get("section") or "")
     label = str(field.get("label") or "")
     ordinal = int(field.get("ordinal") or 0)
+    greenhouse = _greenhouse_education(field)
+    if greenhouse:
+        # The id says which entry and which part; a month box gets nothing,
+        # since the profile's education line holds years only.
+        part, index = greenhouse
+        entries = profile_education(data)
+        slot = _GH_EDU_PARTS.get(part)
+        if not slot or index >= len(entries):
+            return None
+        return entries[index].get(slot) or None
     if LANGUAGES_SECTION_RE.search(section):
         langs = profile_languages(data)
         if ordinal >= len(langs):
             return None
         name, level = langs[ordinal]
+        if (field.get("type") or "").lower() == "checkbox":
+            # Ticked for the profile's fluent languages only: Hindi, not the
+            # English the profile calls Intermediate.
+            if _FLUENT_BOX_RE.search(label) and level:
+                return "Yes" if _FLUENT_LEVEL_RE.search(level) else "No"
+            return None
         if is_language_name_label(label):
             return name
         if _LEVEL_LABEL_RE.search(plain_label(label)):
@@ -716,6 +843,12 @@ def entry_value(field: dict[str, Any], data: dict[str, Any]) -> str | None:
         if ordinal >= len(entries):
             return None
         entry = entries[ordinal]
+        if re.search(r"\byear\b|\bpassing\b", label, re.IGNORECASE):
+            # "Year of Degree" (Cargill, Oct 2026) is a year, not a degree:
+            # it got "Bachelors". A start year when it says so, else the year
+            # the degree was finished.
+            side = "start" if _FROM_LABEL_RE.search(label) else id_date_side(field) or "end"
+            return entry.get(side) or None
         for pattern, part in ((_SCHOOL_LABEL_RE, "school"), (_DEGREE_LABEL_RE, "degree"),
                               (_STUDY_LABEL_RE, "field"), (_FROM_LABEL_RE, "start"),
                               (_TO_LABEL_RE, "end")):
@@ -753,8 +886,10 @@ def generic_url_field(field: dict[str, Any]) -> bool:
 _DIAL_CODE_RE = re.compile(r"\+\d{1,3}\b")
 # A dropdown showing "Select an option" holds nothing; treating that as a
 # value left LinkedIn's Country select untouched.
+# "Search and select preferred Location", "e.g. Java Developer": PrimeNG's
+# multiselect shows its placeholder as its text (MyCareernet, Oct 2026).
 _PLACEHOLDER_RE = re.compile(
-    r"^\W*(select|choose|pick|please select|please choose|none selected|-+)\b|^\W*$",
+    r"^\W*(select|choose|pick|search|please select|please choose|none selected|e\.?g\.?|-+)\b|^\W*$",
     re.IGNORECASE,
 )
 
@@ -912,6 +1047,14 @@ def _radio_from_profile(field: dict[str, Any]) -> tuple[str, str] | None:
     if not question or not option or field.get("checked"):
         return None
     data = profile.load_profile()
+    if _ON_NOTICE_RE.search(question):
+        # "Are you currently on notice period?" (Recrew, Oct 2026). An
+        # immediate joiner is serving none, so the answer is No. Any other
+        # notice period says how long the notice is, not whether it has
+        # started, so that stays a question.
+        if notice_days(str(data.get("notice_period") or "")) == 0 and option.casefold() == "no":
+            return "yes", "profile"
+        return None
     for key, question_re in _RADIO_GROUP_RULES:
         if not question_re.search(question):
             continue
@@ -920,6 +1063,10 @@ def _radio_from_profile(field: dict[str, Any]) -> tuple[str, str] | None:
             return "yes", "profile"
         return None
     return None
+
+
+_ON_NOTICE_RE = re.compile(r"\b(currently|presently|already) (on|serving)( your| a| the)? notice\b"
+                           r"|\bserving( your| a| the)? notice\b")
 
 
 def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
@@ -1029,6 +1176,9 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
                 value = " ".join(parts[1:])
         if not value and key == "country":
             value = _country(data)
+        if not value and key == "preferred_language":
+            spoken = profile_languages(data)
+            value = spoken[0][0] if spoken else ""
         if not value and key == "primary_skill":
             value = re.split(r"[,;\n]", str(data.get("skills") or ""))[0].strip()
         if not value and key == "portfolio":
@@ -1043,6 +1193,8 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
             continue
         if key in _ONLY_WHEN_REQUIRED and not field.get("required"):
             continue
+        if key.endswith("_experience_years") and _SKILL_YEARS_RE.search(norm_label):
+            continue
         if key in ("gpa_10_point", "gpa_5_point"):
             # Forms ask both, and the honest answer to the one you did NOT
             # study on is the option that says so - not a converted figure.
@@ -1055,6 +1207,10 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
                 value = f"{studied}-point scale"
         if key == "location" and "," in value and re.search(r"\bcity\b", norm_label):
             value = value.split(",")[0].strip()  # "Bangalore, India" -> City: Bangalore
+        if key == "date_of_birth" and _DATE_PART_LABEL_RE.search(label):
+            value = date_part(value, label)
+            if not value:
+                continue
         matched = (
             (autocomplete and autocomplete in ac_values)
             or (name and name_re.fullmatch(name) is not None)
@@ -1064,8 +1220,10 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
             continue
         if derived:
             # A real <input type="date"> takes it too: the value is always
-            # YYYY-MM-DD, which is the one format such a box accepts.
-            fits = tag == "textarea" or field_type in _FILLABLE_TYPES or field_type == "date"
+            # YYYY-MM-DD, which is the one format such a box accepts. A number
+            # box never does: Playwright refuses to type a date into one.
+            fits = (tag == "textarea" or field_type == "date"
+                    or (field_type in _FILLABLE_TYPES and field_type != "number"))
             return (value, "notice period") if fits else None
         if tag == "select":
             option = _select_value(value, field)
@@ -1187,9 +1345,11 @@ def _tenure_date(field: dict[str, Any], data: dict[str, Any]) -> str:
 # all of it, because it never overwrites a box that holds something. Contact
 # details are not on the list: a site's own formatting of a phone number or
 # a city is not a disagreement.
+# The country too: Workday arrives with "United Kingdom" chosen (Walmart,
+# Oct 2026), and only the model put India in, at the cost of a 34 s call.
 CORRECTABLE = frozenset({
     "total_experience_years", "relevant_experience_years", "primary_skill",
-    "current_company", "current_title", "notice_period",
+    "current_company", "current_title", "notice_period", "country",
 })
 
 
@@ -1223,7 +1383,10 @@ _NOT_OWN_EMPLOYMENT_RE = re.compile(
     r"|why|what|how|describe)\b", re.IGNORECASE)
 _COMPANY_SUFFIX_RE = re.compile(
     r"[,.]?\s+(?:inc|incorporated|llc|ltd|limited|corp|corporation|co|plc|gmbh|ag|pvt|private"
-    r"|technologies|technology|systems|software|solutions|labs)\.?$", re.IGNORECASE)
+    r"|technologies|technology|systems|software|solutions|labs"
+    # "Have you worked with Adani before?" for Adani Enterprises Limited
+    # (Oct 2026): the question says the group's name, not the company's.
+    r"|enterprises?|group|industries|holdings|ventures)\.?$", re.IGNORECASE)
 
 
 def _company_core(name: str) -> str:
@@ -1298,7 +1461,18 @@ def _rule_key(field: dict[str, Any]) -> str:
 
 
 def _agrees(key: str, wanted: str, current: str) -> bool:
+    if key == "notice_period":
+        # "0" in a days box IS "Immediate Joiner": the sweep wrote it that
+        # way, and "correcting" it back was a loop (MyCareernet, Oct 2026).
+        have, want = notice_days(current), notice_days(wanted)
+        if have is not None and want is not None:
+            return have == want
     if key.endswith("_years"):
+        # A band the value falls in agrees: "4+ years" for 6 was "corrected"
+        # four times over on TravClan's form (Oct 2026), never changing.
+        want = re.search(r"\d+(?:\.\d+)?", wanted)
+        if want and in_band(float(want.group()), current) is not None:
+            return bool(in_band(float(want.group()), current))
         # "7 years" against 6; "6 years" against "6.5" is the years box of a
         # years-and-months pair, and agrees.
         have = re.search(r"\d+(?:\.\d+)?", current)
@@ -1311,10 +1485,29 @@ def _agrees(key: str, wanted: str, current: str) -> bool:
     return bool(a and b) and (a in b or b in a)
 
 
+def in_band(number: float, text: str) -> bool | None:
+    """Whether `number` falls in the band `text` names ("4+ years", "2-4
+    years", "5 to 7", "Less than 1 year", "More than 10"), or None when the
+    text is not a band."""
+    flat = plain(text)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)", flat)
+    if m:
+        return float(m.group(1)) <= number <= float(m.group(2))
+    m = re.search(r"(\d+(?:\.\d+)?)\s*\+|(?:more than|over|above|at least)\s*(\d+(?:\.\d+)?)", flat)
+    if m:
+        low = float(m.group(1) or m.group(2))
+        return number >= low
+    m = re.search(r"(?:less than|under|below|up to)\s*(\d+(?:\.\d+)?)", flat)
+    if m:
+        return number < float(m.group(1)) or ("up to" in flat and number == float(m.group(1)))
+    return None
+
+
 def correction(field: dict[str, Any]) -> tuple[str, str] | None:
     """(profile value, current value) for a box that already holds something
     the profile contradicts - only for the CORRECTABLE facts - else None."""
-    current = str(field.get("value") or "").strip()
+    # A listbox button's value is an internal id; what it shows is its text.
+    current = str((field.get("text") if is_listbox_button(field) else field.get("value")) or "").strip()
     if not current or is_blank(field) or about_someone_else(field):
         return None
     # EPAM pre-filled "Tenure at Recent employer" with 02/01/2026 - the start
@@ -1328,7 +1521,7 @@ def correction(field: dict[str, Any]) -> tuple[str, str] | None:
     key = _rule_key(field)
     if key not in CORRECTABLE or in_repeating_section(field):
         return None
-    resolved = resolve(dict(field, value=""))
+    resolved = resolve(dict(field, value="", text=""))
     if resolved is None or resolved[1] != "profile":
         return None
     wanted = resolved[0]
@@ -1364,7 +1557,7 @@ def city_aliases(value: str) -> list[str]:
     text = (value or "").strip()
     if not text:
         return []
-    head = re.split(r"[,\s]", text, 1)[0]
+    head = re.split(r"[,\s]", text, maxsplit=1)[0]
     alias = _CITY_ALIASES.get(head.lower())
     if not alias:
         return []
@@ -1401,6 +1594,44 @@ def iso_date(value: str) -> str:
         return date(year, month, day).isoformat()
     except ValueError:
         return ""
+
+
+MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July", "August",
+               "September", "October", "November", "December")
+# "Date of Birth Month" / "Birth Day" / "DOB - Year": one part of a date that
+# the form asks in three boxes. Oracle Recruiting (Adani, Oct 2026) got the
+# whole "03/10/1997" in each, refused all three, and the model then asked
+# whether that was March or October - which the profile's format settles.
+_DATE_PART_LABEL_RE = re.compile(r"\b(month|day|year|mm|dd|yyyy)\s*\*?\s*:?\s*$", re.IGNORECASE)
+
+
+def date_part(value: str, label: str) -> str:
+    """The part of a profile date a Month / Day / Year box wants: "October",
+    "3", "1997". '' when the label names no part or the date is not real."""
+    part = _DATE_PART_LABEL_RE.search(label or "")
+    iso = iso_date(value)
+    if not part or not iso:
+        return ""
+    year, month, day = iso.split("-")
+    which = part.group(1).lower()
+    if which in ("month", "mm"):
+        return MONTH_NAMES[int(month) - 1]
+    if which in ("day", "dd"):
+        return str(int(day))
+    return year
+
+
+def date_part_wordings(value: str) -> list[str]:
+    """Other ways a list words a month or a day: "October" is "Oct", "10";
+    "3" is "03"."""
+    flat = plain(value).strip()
+    for index, name in enumerate(MONTH_NAMES, start=1):
+        if flat in (name.lower(), name[:3].lower()):
+            return [w for w in dict.fromkeys((name, name[:3], f"{index:02d}", str(index)))
+                    if plain(w) != flat]
+    if re.fullmatch(r"\d{1,2}", flat):
+        return [f"{int(flat):02d}"] if len(flat) == 1 else [str(int(flat))]
+    return []
 
 
 def match_option(value: str, options: list[str]) -> str:
@@ -1444,8 +1675,45 @@ _IMMEDIATE_WORDINGS = ("Available now", "Immediately available", "Immediately", 
                        "Immediate joiner", "0 days", "No notice period", "Currently available")
 
 
+# Where a "How did you hear" list has no LinkedIn of its own (Cargill on
+# SuccessFactors, Oct 2026: "Agency, Agent, Billboards, Broadcast/Radio...").
+# LinkedIn is both of these, so either is a true answer. Tried in order.
+_LINKEDIN_WORDINGS = ("Social Media", "Social Networking", "Social Network",
+                      "Online Job Board", "Internet Job Board", "Job Board")
+
+
+# A nationality and its country, for lists that offer one where the answer
+# is the other: "Indian" saved for Citizenship, asked as "Please select your
+# Nationality" from a list of countries, took "British Indian Ocean
+# Territory" (Walmart, Oct 2026) - the one row with the word in it.
+_NATIONALITIES = {
+    "indian": "India", "american": "United States", "british": "United Kingdom",
+    "canadian": "Canada", "australian": "Australia", "german": "Germany", "french": "France",
+    "irish": "Ireland", "dutch": "Netherlands", "singaporean": "Singapore", "chinese": "China",
+    "japanese": "Japan", "pakistani": "Pakistan", "bangladeshi": "Bangladesh", "nepali": "Nepal",
+    "nepalese": "Nepal", "sri lankan": "Sri Lanka", "emirati": "United Arab Emirates",
+    "swiss": "Switzerland", "swedish": "Sweden", "spanish": "Spain", "italian": "Italy",
+    "polish": "Poland", "new zealander": "New Zealand", "filipino": "Philippines",
+    "malaysian": "Malaysia", "indonesian": "Indonesia", "brazilian": "Brazil", "mexican": "Mexico",
+}
+_COUNTRY_NATIONALITY = {}
+for _demonym, _country_name in _NATIONALITIES.items():
+    _COUNTRY_NATIONALITY.setdefault(_country_name.lower(), _demonym.title())
+
+
+def nationality_pair(value: str) -> str:
+    """The country for a nationality, or the nationality for a country:
+    "Indian" -> "India", "India" -> "Indian". '' when it knows neither."""
+    flat = plain(value).strip()
+    if flat in _NATIONALITIES:
+        return _NATIONALITIES[flat]
+    return _COUNTRY_NATIONALITY.get(flat, "")
+
+
 def equivalents(value: str) -> list[str]:
     """Other ways a form words the same answer; empty when there are none."""
     if _IMMEDIATE_ANSWER_RE.match(plain(value)):
         return [w for w in _IMMEDIATE_WORDINGS if plain(w) != plain(value)]
-    return []
+    if plain(value) == "linkedin":
+        return list(_LINKEDIN_WORDINGS)
+    return date_part_wordings(value)

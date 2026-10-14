@@ -243,7 +243,19 @@ def describe() -> dict[str, Any]:
         "saved": bool(saved),
         "choices": choices(),
         "last_run": last_run_summary(),
+        # The experience filter compares against these; the popup says so.
+        "your_years": _your_years(),
     }
+
+
+def _your_years() -> float | None:
+    from src import experience
+    from src.apply import profile
+
+    try:
+        return experience.candidate_years(profile.load_profile().get("total_experience_years"))
+    except Exception:
+        return None
 
 
 def summary_line(cfg: AppConfig) -> str:

@@ -33,7 +33,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 SCRATCH = Path(tempfile.mkdtemp(prefix="oea_e2e_"))
 
-from src import answers, history  # noqa: E402
+from src import history  # noqa: E402
 from src.apply import browser, profile, worker  # noqa: E402
 from src.apply.worker import ApplyAction, ApplyPlan  # noqa: E402
 from src.config import AppConfig, load_env  # noqa: E402
@@ -165,6 +165,7 @@ def fake_invoke(system: str, user: str, schema):
 
 
 worker.make_invoker = lambda cfg, env, purpose: fake_invoke
+worker.open_claude_session = lambda cfg, log=None: None   # no real Claude process
 # Most scenarios exercise the wizard without a human at each step.
 worker.ASK_BEFORE_ADVANCE = False
 

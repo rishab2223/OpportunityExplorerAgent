@@ -83,6 +83,33 @@ def load_held_waiting() -> list[dict[str, Any]]:
     return waiting
 
 
+def load_referrals() -> list[dict[str, Any]]:
+    """Every job a referral is pending or sent for, from every run.
+
+    A referral is a cross-run state (it lives in the history db), but the
+    row that shows it - links, title, resume - lives in a run's files. So
+    each run is read and the job shown once, from the newest run that
+    carries it; its `stamp` says which, so actions reach that run.
+    Newest ask first.
+    """
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for stamp in list_stamps():                       # newest first
+        for row in load_jobs(stamp):
+            if row.get("history_status") not in history.REFERRAL_STATUSES:
+                continue
+            keys = {k for k in (row.get("job_id") or "",
+                                history.fingerprint(row.get("company") or "", row.get("title") or ""))
+                    if k}
+            if keys & seen:
+                continue
+            seen |= keys
+            row["stamp"] = stamp
+            rows.append(row)
+    rows.sort(key=lambda row: row.get("history_marked_at") or "", reverse=True)
+    return rows
+
+
 def run_dir(stamp: str) -> Path:
     if not STAMP_RE.match(stamp or ""):
         raise RunNotFound(f"invalid run id: {stamp}")
@@ -108,6 +135,36 @@ def _rows(path: Path) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
+_BACKFILLED: set[str] = set()
+
+
+def _descriptions_of(stamp: str) -> dict[str, str]:
+    """{job_id: description} for one run's shortlisted and held-back jobs."""
+    if not STAMP_RE.match(stamp or "") or not (OUTPUT_DIR / stamp).is_dir():
+        return {}
+    found: dict[str, str] = {}
+    for name in ("shortlisted.json", "held_back.json"):
+        for row in _rows(OUTPUT_DIR / stamp / name):
+            if row.get("job_id") and row.get("description"):
+                found[row["job_id"]] = row["description"]
+    return found
+
+
+def backfill_history() -> None:
+    """Once per database per process: give history rows recorded before
+    descriptions were kept the description from the run they came from, so
+    a company + title match can be checked against it. Without it, Recrew
+    AI's Bangalore role stayed "applied" because the Gurugram one was."""
+    key = str(history.DB_PATH)
+    if key in _BACKFILLED:
+        return
+    _BACKFILLED.add(key)
+    try:
+        history.backfill_descriptions(_descriptions_of)
+    except Exception:
+        _BACKFILLED.discard(key)   # try again on the next request
+
+
 def load_jobs(stamp: str) -> list[dict[str, Any]]:
     """The shortlist, then the jobs a filter held back for review.
 
@@ -123,6 +180,7 @@ def load_jobs(stamp: str) -> list[dict[str, Any]]:
         rows.append(row)
     if not rows:
         return []
+    backfill_history()
     decisions = load_decisions(stamp)
     history_by_id, history_by_fp = history.snapshot()
     for row in rows:
@@ -137,6 +195,8 @@ def load_jobs(stamp: str) -> list[dict[str, Any]]:
         if not entry:
             fp = history.fingerprint(row.get("company") or "", row.get("title") or "")
             entry = history_by_fp.get(fp)
+            if not history.same_posting(entry, row.get("description")):
+                entry = None
             h_how = "similar" if entry else ""
         row["history_status"] = entry["status"] if entry else ""
         row["history_how"] = h_how

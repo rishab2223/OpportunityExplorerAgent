@@ -90,6 +90,13 @@ class ProfileMappingTests(ResolverTestCase):
         self.assertEqual(resolver.equivalents("None"), [])
         self.assertEqual(resolver.match_option("None", ["Yes", "No", "Not now"]), "")
 
+    def test_zero_days_is_an_immediate_notice_not_a_mistake(self) -> None:
+        # The sweep writes "Immediate Joiner" as 0 in a days box; reading that
+        # back as a site error to correct looped (MyCareernet, Oct 2026).
+        self.assertTrue(resolver._agrees("notice_period", "Immediate Joiner", "0"))
+        self.assertTrue(resolver._agrees("notice_period", "30 days", "30"))
+        self.assertFalse(resolver._agrees("notice_period", "Immediate Joiner", "60"))
+
     def test_a_whole_date_goes_to_a_date_box_and_a_year_to_a_number_box(self) -> None:
         profile.PROFILE_PATH.write_text(json.dumps({
             **DUMMY_PROFILE, "education_end_date": "22/07/2019"}), encoding="utf-8")
@@ -584,6 +591,35 @@ class EducationEntryTests(ResolverTestCase):
         # A second entry the profile does not have is left to the model.
         self.assertIsNone(resolver.resolve(field(label="Degree*", section="Education :", ordinal=1)))
 
+    def test_greenhouse_education_boxes_are_known_by_their_ids(self) -> None:
+        # BitGo on Greenhouse (Oct 2026): no Education heading at all - the
+        # boxes sat under "Phone" - but the ids name the entry and the part.
+        for elid, label, want in (("school--0", "School*", "Example University"),
+                                  ("degree--0", "Degree*", "Bachelors"),
+                                  ("discipline--0", "Discipline*", "Computer and Information Science"),
+                                  ("start-year--0", "Start date year*", "2015"),
+                                  ("end-year--0", "End date year*", "2019")):
+            box = field(label=label, elid=elid, section="Phone",
+                        type="number" if "year" in elid else "text",
+                        role="" if "year" in elid else "combobox")
+            self.assertEqual(resolver.resolve(box), (want, "profile"), label)
+        # The profile's line holds no month, and no second entry.
+        self.assertIsNone(resolver.resolve(field(label="Start date month*", elid="start-month--0",
+                                                 section="Phone")))
+        self.assertIsNone(resolver.resolve(field(label="School*", elid="school--1", section="Phone")))
+        # Already answered: left alone.
+        self.assertIsNone(resolver.resolve(field(label="School*", elid="school--0", section="Phone",
+                                                 value="Other")))
+
+    def test_a_derived_start_date_never_goes_into_a_number_box(self) -> None:
+        # "Start date year*" (a number box) read as an earliest-start-date box
+        # and got 2026-10-06, which Playwright refuses to type into a number
+        # input. A text box still takes the date.
+        self.assertIsNone(resolver.resolve(field(label="Start date year*", type="number")))
+        got = resolver.resolve(field(label="Start date", type="text"))
+        self.assertIsNotNone(got)
+        self.assertEqual(got[1], "notice period")
+
     def test_a_truncated_option_list_keeps_the_raw_value(self) -> None:
         # The snapshot keeps 40 of 345 options, so the wanted one is not in
         # the captured list; the worker searches the full list in the browser.
@@ -902,6 +938,100 @@ class WorkSlotTests(ResolverTestCase):
         self.assertEqual(resolver.work_slot(field(label="Job Title*")), "title")
 
 
+class RecrewFormTests(ResolverTestCase):
+    """talent.recrew.ai, Oct 2026."""
+
+    def test_an_amount_box_that_says_per_annum_is_not_a_salary_period(self) -> None:
+        profile.PROFILE_PATH.write_text(json.dumps({
+            **DUMMY_PROFILE, "current_ctc": "2500000", "salary_period": "Annual"}), encoding="utf-8")
+        box = field(label="Current CTC in LPA(lakhs per annum) *", type="number")
+        self.assertEqual(resolver.resolve(box), ("2500000", "profile"))
+        # A real period question still gets the period.
+        self.assertEqual(resolver.resolve(field(label="Salary period")), ("Annual", "profile"))
+        self.assertEqual(resolver.resolve(field(label="Is that per annum or per month?")),
+                         ("Annual", "profile"))
+
+    def test_an_immediate_joiner_is_not_on_notice(self) -> None:
+        profile.PROFILE_PATH.write_text(json.dumps({**DUMMY_PROFILE, "notice_period": "Immediate Joiner"}),
+                                        encoding="utf-8")
+
+        def option(label: str) -> dict:
+            return field(type="radio", label=label, name="on_notice",
+                         group="Are you currently on notice period?", checked=False)
+
+        self.assertEqual(resolver.resolve(option("No")), ("yes", "profile"))
+        self.assertIsNone(resolver.resolve(option("Yes")))
+        # A notice of 60 days says nothing about whether it has started.
+        profile.PROFILE_PATH.write_text(json.dumps({**DUMMY_PROFILE, "notice_period": "60 days"}),
+                                        encoding="utf-8")
+        self.assertIsNone(resolver.resolve(option("No")))
+        self.assertIsNone(resolver.resolve(option("Yes")))
+
+    def test_a_whatsapp_number_is_the_phone(self) -> None:
+        self.assertEqual(resolver.resolve(field(label="WhatsApp Number *")),
+                         (DUMMY_PROFILE["phone"], "profile"))
+
+
+class CargillFormTests(ResolverTestCase):
+    """Cargill on SuccessFactors, Oct 2026."""
+
+    def _entries(self) -> list[dict]:
+        """Two SuccessFactors work entries: dates FIRST, then the title."""
+        out = []
+        for _ in range(2):
+            for label in ("* Start Date", "End Date", "* Title", "* Company",
+                          "* Company Location - City, State", "Key Responsibilities"):
+                out.append(field(id=len(out), label=label, section="External Work Experience"))
+            out.append(field(id=len(out), tag="button", type="button", label="Add",
+                             section="External Work Experience"))
+        return out
+
+    def test_an_entry_that_starts_with_its_dates(self) -> None:
+        fields = self._entries()
+        resolver.tag_work_entries(fields, resolver.profile_jobs({"jobs": JOBS}))
+        by_entry = {}
+        for f in fields:
+            if f.get("tag") == "input":
+                by_entry.setdefault(f["work_pos"], []).append(f["label"])
+        self.assertEqual(sorted(by_entry), [0, 1])
+        self.assertEqual(by_entry[0][0], "* Start Date")
+        self.assertEqual(len(by_entry[0]), 6)
+        self.assertEqual(fields[6]["work_pos"], 0)   # the Add button counts as no entry of its own
+
+    def test_company_location_is_a_place(self) -> None:
+        self.assertEqual(resolver.work_slot(field(label="* Company Location - City, State")), "location")
+        self.assertEqual(resolver.work_slot(field(label="* Company")), "company")
+
+    def test_year_of_degree_is_a_year(self) -> None:
+        profile.PROFILE_PATH.write_text(json.dumps({
+            **DUMMY_PROFILE, "education": "Example University - Bachelors, Computer Science, 2015-2019"}),
+            encoding="utf-8")
+        got = resolver.resolve(field(label="* Year of Degree", section="Education (Optional)", ordinal=0))
+        self.assertEqual(got, ("2019", "profile"))
+        got = resolver.resolve(field(label="* Degree", section="Education (Optional)", ordinal=0))
+        self.assertEqual(got, ("Bachelors", "profile"))
+
+    def test_preferred_language_is_the_first_profile_language(self) -> None:
+        profile.PROFILE_PATH.write_text(json.dumps({
+            **DUMMY_PROFILE, "languages": "English - Intermediate; Hindi - Fluent"}), encoding="utf-8")
+        box = field(tag="select", type="", label="Preferred Language",
+                    options=["No Selection", "Chinese", "English", "French"])
+        self.assertEqual(resolver.resolve(box), ("English", "profile"))
+        # A Languages entry's own "Language" box is not this rule's.
+        self.assertIsNone(resolver.resolve(field(tag="select", type="", label="Language",
+                                                 options=["English", "Hindi"])))
+
+    def test_region_of_residence_is_answered_with_the_country(self) -> None:
+        profile.PROFILE_PATH.write_text(json.dumps({**DUMMY_PROFILE, "location": "Gurgaon, India"}),
+                                        encoding="utf-8")
+        self.assertEqual(resolver.resolve(field(label="Region of Residence*")), ("India", "profile"))
+
+    def test_linkedin_has_honest_other_wordings(self) -> None:
+        self.assertIn("Social Media", resolver.equivalents("LinkedIn"))
+        self.assertIn("Job Board", resolver.equivalents("linkedin"))
+        self.assertEqual(resolver.equivalents("Naukri"), [])
+
+
 class NoticePeriodUnitTests(ResolverTestCase):
     """LinkedIn's "Notice Period (In days)*" is a TEXT box that validates as a
     number: "Immediate Joiner" went in and the form answered "Enter a decimal
@@ -930,6 +1060,29 @@ class NoticePeriodUnitTests(ResolverTestCase):
     def test_a_number_input_gets_a_number_whatever_the_label_says(self) -> None:
         box = field(label="Notice period", type="number")
         self.assertEqual(resolver.notice_for_field("Immediate Joiner", box), "0")
+
+    def test_the_form_can_say_what_number_means_immediate(self) -> None:
+        # LinkedIn Easy Apply (Oct 2026): 0 went in where the form said 1.
+        box = field(label="Please mention your notice period in Days( If immediate joiner mention 1 )*")
+        self.assertEqual(resolver.notice_for_field("Immediate Joiner", box), "1")
+        self.assertEqual(resolver.notice_for_field("30 days", box), "30")
+        self.assertEqual(resolver.notice_for_field(
+            "Immediate", field(label="Notice period in days (enter 0 if immediate)")), "0")
+
+    def test_years_with_one_skill_are_not_the_career_total(self) -> None:
+        profile.PROFILE_PATH.write_text(json.dumps({
+            **DUMMY_PROFILE, "total_experience_years": "6", "relevant_experience_years": "5"}),
+            encoding="utf-8")
+        # "with Redis" asks about Redis; the model answers from the resume.
+        self.assertIsNone(resolver.resolve(field(
+            label="How many years of work experience do you have with Redis?*")))
+        self.assertIsNone(resolver.resolve(field(
+            label="Years of experience using Kubernetes")))
+        # The career's own total still comes from the profile.
+        self.assertEqual(resolver.resolve(field(label="Total years of experience*")), ("6", "profile"))
+        self.assertEqual(resolver.resolve(field(
+            label="How many years of experience do you have in software development?")),
+            ("6", "profile"))
 
     def test_no_other_field_is_touched(self) -> None:
         self.assertEqual(
@@ -1145,3 +1298,114 @@ class FormatHintTests(ResolverTestCase):
         self.assertEqual(
             resolver.resolve(self._field("Notice period (in days)")),
             ("Immediate Joiner", "profile"))
+
+
+class SalaryExpectationsLabelTests(unittest.TestCase):
+    def test_words_the_other_way_round(self):
+        for label in ("Salary expectations:", "Salary Expectation", "CTC expectations"):
+            self.assertEqual(resolver.rule_key({"tag": "input", "type": "text", "label": label}),
+                             "expected_ctc", label)
+
+
+class WalmartWorkdayTests(ResolverTestCase):
+    """Walmart's Workday form (Oct 2026), from its dumps."""
+
+    PROFILE = {
+        "full_name": "Test User", "location": "Gurgaon, Haryana, India", "country": "India",
+        "languages": "English - Intermediate; Hindi - Fluent",
+        "education": "Example University - Bachelors, Computer Science, 2015-2019",
+        "jobs": [{"title": "Engineer", "company": "Northwind", "location": "Noida",
+                  "start": "07/2020", "end": "01/2026"}],
+    }
+
+    def setUp(self) -> None:
+        super().setUp()
+        profile.PROFILE_PATH.write_text(json.dumps(self.PROFILE), encoding="utf-8")
+
+    def spin(self, label, elid, section):
+        return field(type="", role="spinbutton", label=label, elid=elid, section=section, ordinal=0)
+
+    def test_the_box_id_says_which_date(self):
+        self.assertEqual(resolver.id_date_side({"elid": "workExperience-289--startDate-dateSectionMonth-input"}),
+                         "start")
+        self.assertEqual(resolver.id_date_side({"elid": "education-325--lastYearAttended-dateSectionYear-input"}),
+                         "end")
+        self.assertEqual(resolver.id_date_side({"elid": "photoDate"}), "")
+
+    def test_education_years_are_from_and_to(self):
+        first = self.spin("Year", "education-325--firstYearAttended-dateSectionYear-input", "Education 1")
+        last = self.spin("Year", "education-325--lastYearAttended-dateSectionYear-input", "Education 1")
+        self.assertEqual(resolver.resolve(first), ("2015", "profile"))
+        self.assertEqual(resolver.resolve(last), ("2019", "profile"))
+
+    def test_work_month_and_year_come_from_the_profile(self):
+        fields = [field(label="Job Title*", section="Work Experience 1", elid="workExperience-289--jobTitle"),
+                  self.spin("Month", "workExperience-289--startDate-dateSectionMonth-input", "Work Experience 1"),
+                  self.spin("Year", "workExperience-289--startDate-dateSectionYear-input", "Work Experience 1"),
+                  self.spin("Month", "workExperience-289--endDate-dateSectionMonth-input", "Work Experience 1"),
+                  self.spin("Year", "workExperience-289--endDate-dateSectionYear-input", "Work Experience 1")]
+        resolver.tag_work_entries(fields, resolver.profile_jobs(self.PROFILE))
+        self.assertEqual([resolver.resolve(f)[0] for f in fields[1:]], ["07", "2020", "01", "2026"])
+
+    def test_translation_and_the_fluent_box_follow_each_language(self):
+        english = field(tag="button", type="button", haspopup="listbox", label="Translation*",
+                        section="Languages 1", ordinal=0)
+        hindi = dict(english, section="Languages 2", ordinal=1)
+        self.assertEqual(resolver.resolve(english), ("Intermediate", "profile"))
+        self.assertEqual(resolver.resolve(hindi), ("Fluent", "profile"))
+        box = field(type="checkbox", label="I am fluent in this language.", section="Languages 1", ordinal=0)
+        self.assertEqual(resolver.resolve(box), ("No", "profile"))
+        self.assertEqual(resolver.resolve(dict(box, section="Languages 2", ordinal=1)), ("Yes", "profile"))
+
+    def test_a_country_the_site_chose_is_corrected(self):
+        country = field(tag="button", type="button", haspopup="listbox", label="Country*",
+                        section="My Information", value="29247e57dbaf46fb855b224e03170bc7",
+                        text="United Kingdom")
+        self.assertEqual(resolver.correction(country), ("India", "United Kingdom"))
+        self.assertIsNone(resolver.correction(dict(country, text="India")))
+
+    def test_nationality_and_country(self):
+        self.assertEqual(resolver.nationality_pair("Indian"), "India")
+        self.assertEqual(resolver.nationality_pair("India"), "Indian")
+        self.assertEqual(resolver.nationality_pair("Atlantis"), "")
+
+
+class OracleRecruitingTests(ResolverTestCase):
+    """Adani's Oracle Recruiting form (Oct 2026)."""
+
+    def test_a_date_of_birth_in_three_boxes(self):
+        self.assertEqual(resolver.date_part("03/10/1997", "Date of Birth Month"), "October")
+        self.assertEqual(resolver.date_part("03/10/1997", "Date of Birth Day"), "3")
+        self.assertEqual(resolver.date_part("03/10/1997", "Date of Birth Year"), "1997")
+        self.assertEqual(resolver.date_part("03/10/1997", "Date of Birth"), "")
+        self.assertEqual(resolver.date_part("not a date", "Birth Month"), "")
+
+    def test_a_month_or_day_worded_another_way(self):
+        self.assertEqual(resolver.equivalents("October"), ["Oct", "10"])
+        self.assertEqual(resolver.equivalents("3"), ["03"])
+
+    def test_the_group_name_is_the_company(self):
+        self.assertEqual(resolver._company_core("Adani Enterprises Limited"), "adani")
+        profile.PROFILE_PATH.write_text(json.dumps({"jobs": [
+            {"title": "Engineer", "company": "Northwind", "start": "07/2020", "end": "01/2026"}]}),
+            encoding="utf-8")
+        no = field(type="radio", label="No", group="Have you worked with Adani Before ?")
+        self.assertEqual(resolver.worked_here_before(no, "Adani Enterprises Limited"), ("yes", "profile"))
+
+
+class TurboHireTests(ResolverTestCase):
+    """TravClan on TurboHire (Oct 2026)."""
+
+    def test_only_the_degree_year_is_the_graduation_year(self):
+        for label in ("12th year of passing", "Post Graduation Year of Passing", "PG Year of Passing",
+                      "Class XII passing year", "10th year of completion"):
+            self.assertEqual(resolver.rule_key(field(label=label)), "", label)
+        for label in ("Graduation Year of Passing", "Year of Passing", "Passing Year"):
+            self.assertEqual(resolver.rule_key(field(label=label)), "graduation_year", label)
+
+    def test_a_band_holding_the_years_agrees(self):
+        self.assertTrue(resolver._agrees("total_experience_years", "6", "4+ years"))
+        self.assertTrue(resolver._agrees("total_experience_years", "6", "5 to 7 years"))
+        self.assertFalse(resolver._agrees("total_experience_years", "6", "2-4 years"))
+        self.assertFalse(resolver._agrees("total_experience_years", "6", "Less than 1 year"))
+        self.assertIsNone(resolver.in_band(6, "Senior"))
