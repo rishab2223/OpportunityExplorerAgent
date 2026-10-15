@@ -196,6 +196,9 @@ class OptionPick(BaseModel):
     match: Literal["exact", "close", "loose", "none"] = Field(
         description="exact: same meaning; close: the nearest honest fit; loose: a stretch; none: nothing fits")
     reason: str = Field(default="", description="A few words")
+    position: int = Field(default=0, description=(
+        "Only for a question whose options are in a picture: the chosen option's row in "
+        "the pictured list, 1 for the top row; else 0"))
 
 
 class OptionPicks(BaseModel):
@@ -211,30 +214,50 @@ PICK_SYSTEM = (
     "pick 'Other', 'No Selection', 'None' or 'Prefer not to say' unless the answer "
     "itself says so. Copy the option exactly as written. If nothing fits honestly, "
     "return match 'none' with an empty option. Rate each pick: exact, close, loose "
-    "or none."
+    "or none. Some questions have their options in a picture of the open list "
+    "instead: read them from it, top to bottom, copy the chosen one as it is shown "
+    "and give its row number (1 = the top row of the list). A row you cannot read "
+    "clearly is never chosen: return 'none'."
 )
 
 
-def pick_with_model(invoke, items: list[dict[str, Any]]) -> dict[int, OptionPick]:
+def pick_with_model(invoke, items: list[dict[str, Any]],
+                    images: list[bytes] | None = None) -> dict[int, OptionPick]:
     """One call for every open question on the page. `items`: ref, question,
-    value, options. Returns the checked picks by ref: the option must be on
-    that question's list, word for word, and the rating exact or close."""
+    value, options - or, for a list that could not be read, no options and
+    `picture`, its number among `images`. Returns the checked picks by ref:
+    the option must be on that question's list, word for word, and the rating
+    exact or close; a picture's pick must name its row."""
     if not items:
         return {}
     lines = []
     for item in items:
-        options = "; ".join(item["options"])
+        if item.get("picture"):
+            options = (f"not readable as text - they are in picture {item['picture']}, the "
+                       f"list opened after '{item.get('typed') or item['value']}' was typed")
+        else:
+            options = "; ".join(item["options"])
         lines.append(f"{item['ref']}. Question: {item['question']}\n"
                      f"   Candidate's answer: {item['value']}\n   Options: {options}")
-    result = invoke(PICK_SYSTEM, "\n\n".join(lines), OptionPicks)
+    if images:
+        result = invoke(PICK_SYSTEM, "\n\n".join(lines), OptionPicks, images=images)
+    else:
+        result = invoke(PICK_SYSTEM, "\n\n".join(lines), OptionPicks)
     by_ref = {item["ref"]: item for item in items}
     good: dict[int, OptionPick] = {}
     for pick in result.picks:
         item = by_ref.get(pick.ref)
         if item is None or pick.match not in ("exact", "close"):
             continue
-        listed = next((o for o in item["options"] if o.strip() == pick.option.strip()), "")
-        if not listed or NEUTRAL_OPTION_RE.match(listed):
-            continue
+        if item.get("picture"):
+            # Nothing to check it against but the row and the box's read-back
+            # when it is taken.
+            listed = pick.option.strip()
+            if pick.position < 1 or not listed or NEUTRAL_OPTION_RE.match(listed):
+                continue
+        else:
+            listed = next((o for o in item["options"] if o.strip() == pick.option.strip()), "")
+            if not listed or NEUTRAL_OPTION_RE.match(listed):
+                continue
         good[pick.ref] = pick.model_copy(update={"option": listed})
     return good

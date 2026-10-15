@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head><meta charset="utf-8"><title>Apply - Infor</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; max-width: 760px; }
+  .react-select__control { display: flex; border: 1px solid #888; min-height: 34px; align-items: center; }
+  .react-select__value-container { flex: 1; position: relative; padding: 2px 8px; }
+  .react-select__input { border: 0; outline: 0; width: 100%; }
+  .react-select__menu { border: 1px solid #888; max-height: 220px; overflow: auto; background: #fff; }
+  .react-select__option, .opt { padding: 6px 8px; cursor: default; }
+  .react-select__option--is-focused, .opt.focused { background: #def; }
+  .opt.drawn::before { content: attr(data-name); }
+  .opt.drawn { min-height: 18px; }
+  .a11y { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .hidden-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  /* As on the real page: each option's label is laid over its own radio. */
+  .checkable-input { display: inline-block; position: relative; width: 120px; height: 30px; margin-right: 24px; }
+  .checkable-input input { position: absolute; left: 4px; top: 8px; margin: 0; }
+  .checkable-input label { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+                           padding: 6px 0 0 24px; box-sizing: border-box; }
+</style></head>
+<body>
+<!--
+  Infor's application form (careers.infor.com, dumped Oct 14 2026), reduced to
+  the two things that went wrong on it:
+
+  Country - an older react-select (no role on its option rows: they are
+  div.react-select__option#react-select-2-option-N), under an accessibility
+  overlay that labels the search box "Text field". Typing filters on any part
+  of a name, so "India" leaves "British Indian Ocean Territory" first and
+  "India" second, and Enter takes the first. #plain draws the rows as plain
+  divs nothing marks as options (the agent reads them by where they are);
+  #drawn puts their names in CSS only, so no text read finds them - what the
+  real page amounted to - and only a picture shows them.
+
+  3. Questions - five Yes/No questions under one legend, each option's label
+  laid over its radio (a tick cost 4.4 s waiting for the label to move,
+  Oct 15 2026). Each option's name
+  comes from a hidden div holding the whole question and the answer ("Are
+  you at least 18 years old? yes"); only the input names tell the questions
+  apart. The relatives question is longer than the 200 characters a label
+  keeps, so its two options read the same.
+-->
+<form onsubmit="return false">
+<fieldset>
+  <legend>1. Apply</legend>
+  <div id="address-country">
+    <label class="external-form__label external-form__label--required">Country</label>
+    <div class="react-select css-b62m3t-container" id="rs">
+      <span id="react-select-2-live-region" class="a11y"></span>
+      <span aria-live="polite" class="a11y"><span id="aria-selection"></span><span id="aria-context"> Select is focused ,type to refine list, press Down to open the menu, </span></span>
+      <div class="react-select__control" id="control">
+        <div class="react-select__value-container" id="values">
+          <div class="react-select__placeholder" id="placeholder">Select...</div>
+          <div class="react-select__input-container"><input class="react-select__input" autocapitalize="none"
+               autocomplete="off" id="application_form[application][country]" spellcheck="false" tabindex="0"
+               type="text" aria-autocomplete="list" aria-expanded="false" aria-haspopup="true" role="combobox"
+               aria-label="Text field"></div>
+        </div>
+        <div class="react-select__indicators">
+          <div class="react-select__indicator react-select__clear-indicator" id="clear" aria-hidden="true" style="display:none">&#215;</div>
+          <div class="react-select__indicator react-select__dropdown-indicator" aria-hidden="true">&#9662;</div>
+        </div>
+      </div>
+      <input name="application_form[application][country]" type="hidden" value="" id="country-code">
+    </div>
+  </div>
+</fieldset>
+
+<fieldset class="external-form__fieldset" id="application-fieldset-questions">
+  <legend class="external-form__legend"><span class="external-form__legend-index">3.</span>Questions</legend>
+  <div id="questions"></div>
+</fieldset>
+
+<button type="submit" name="button">Submit Application</button>
+</form>
+<script>
+  // ---- 3. Questions, as Infor renders each one ----
+  var QUESTIONS = [
+    "Are you at least 18 years old?",
+    "Are you legally authorised to work in the country in which the role you are applying for is based?",
+    "Do you have relatives who are currently employed by Infor or a Koch affiliated company (ex. Georgia-Pacific, INVISTA, Flint Hills Resources, Molex, Guardian Industries, SRG Global, etc.) or who have pending offers?",
+    "Have you at any time signed a non-compete, non-solicitation, confidential information or similar agreement with any previous employer?",
+    "Have you previously worked for Infor or an Infor affiliated company (ex. Koch, Georgia-Pacific, INVISTA, Flint Hills Resources, Molex, Guardian Industries, SRG Global, etc.)?"
+  ];
+  var html = "";
+  QUESTIONS.forEach(function (q, n) {
+    var base = "application_form_application_answers_attributes_" + n + "_boolean_answer";
+    var name = "application_form[application][answers_attributes][" + n + "][boolean_answer]";
+    html += '<div class="pad-v-3"><label class="external-form__label" for="' + base + '"><span>' + q + '</span></label><div>';
+    [["true", "Yes", "yes"], ["false", "No", "no"]].forEach(function (o) {
+      var id = base + "_" + o[0], lab = "answer-label-" + n + "-" + o[0];
+      html += '<div class="checkable-input"><div id="' + lab + '" class="hidden-name">' + q + ' ' + o[2] + '</div>' +
+        '<input type="radio" id="' + id + '" name="' + name + '" aria-labelledby="' + lab + '" value="' + o[0] + '">' +
+        '<label aria-labelledby="' + lab + '" for="' + id + '">' + o[1] + '</label></div>';
+    });
+    html += '</div></div>';
+  });
+  document.getElementById("questions").innerHTML = html;
+
+  // ---- Country: an older react-select ----
+  var COUNTRIES = [["TJ", "Tajikistan"], ["IO", "British Indian Ocean Territory"], ["IN", "India"],
+                   ["ID", "Indonesia"], ["PK", "Pakistan"], ["AE", "United Arab Emirates"], ["GB", "United Kingdom"],
+                   ["US", "United States"], ["NL", "Netherlands"], ["SG", "Singapore"]];
+  var plain = location.hash === "#plain", drawn = location.hash === "#drawn";
+  var input = document.getElementById("application_form[application][country]");
+  var shell = document.getElementById("rs"), control = document.getElementById("control");
+  var menu = null, rows = [], focused = 0, chosen = null;
+
+  function matches() {
+    var t = input.value.toLowerCase();
+    return COUNTRIES.filter(function (c) { return c[1].toLowerCase().indexOf(t) >= 0; });
+  }
+  function closeMenu() { if (menu) { menu.remove(); menu = null; } input.setAttribute("aria-expanded", "false"); }
+  function drawMenu() {
+    closeMenu();
+    rows = matches();
+    focused = 0;
+    menu = document.createElement("div");
+    menu.className = "react-select__menu";
+    var list = document.createElement("div");
+    list.className = "react-select__menu-list";
+    if (!rows.length) {
+      var none = document.createElement("div");
+      none.className = "react-select__menu-notice";
+      none.textContent = "No options";
+      list.appendChild(none);
+    }
+    rows.forEach(function (c, n) {
+      var o = document.createElement("div");
+      if (plain || drawn) { o.className = "opt" + (n === 0 ? " focused" : "") + (drawn ? " drawn" : ""); }
+      else {
+        o.className = "react-select__option" + (n === 0 ? " react-select__option--is-focused" : "");
+        o.id = "react-select-2-option-" + n;
+      }
+      if (drawn) o.setAttribute("data-name", c[1]); else o.textContent = c[1];
+      o.addEventListener("mousedown", function (e) { e.preventDefault(); choose(c); });
+      list.appendChild(o);
+    });
+    menu.appendChild(list);
+    shell.appendChild(menu);
+    input.setAttribute("aria-expanded", "true");
+  }
+  function choose(c) {
+    chosen = c;
+    var old = document.getElementById("single");
+    if (old) old.remove();
+    var v = document.createElement("div");
+    v.className = "react-select__single-value";
+    v.id = "single";
+    v.textContent = c[1];
+    document.getElementById("values").insertBefore(v, input.parentElement);
+    document.getElementById("placeholder").style.display = "none";
+    document.getElementById("clear").style.display = "";
+    document.getElementById("country-code").value = c[0];
+    document.getElementById("aria-selection").textContent = "option " + c[1] + ", selected.";
+    input.value = "";
+    closeMenu();
+  }
+  function clearChoice() {
+    chosen = null;
+    var old = document.getElementById("single");
+    if (old) old.remove();
+    document.getElementById("placeholder").style.display = "";
+    document.getElementById("clear").style.display = "none";
+    document.getElementById("country-code").value = "";
+  }
+  control.addEventListener("mousedown", function (e) {
+    if (e.target.id === "clear") return;
+    if (e.target !== input) e.preventDefault();
+    input.focus();
+    if (!menu) drawMenu();
+  });
+  document.getElementById("clear").addEventListener("mousedown", function (e) {
+    e.preventDefault(); e.stopPropagation(); clearChoice();
+  });
+  input.addEventListener("input", function () { drawMenu(); });
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (menu && rows.length) choose(rows[focused]);
+    } else if (e.key === "Backspace" && !input.value && chosen) {
+      clearChoice();
+    } else if (e.key === "ArrowDown") {
+      if (!menu) drawMenu(); else focused = Math.min(rows.length - 1, focused + 1);
+    } else if (e.key === "Escape") {
+      closeMenu();
+    }
+  });
+  input.addEventListener("blur", function () { input.value = ""; closeMenu(); });
+</script>
+</body>
+</html>

@@ -21,16 +21,23 @@ RESUME = r"""\documentclass[11pt, letterpaper]{article}
 Engineer.
 \section*{Experience}
 \begin{itemize}
-  \item Built a CCNA lab tool.
+  \item Built a Scrum lab tool.
   \item Shipped APIs.
 \end{itemize}
 \section*{Certifications}
 \begin{itemize}
   \item AWS Solutions Architect
-  \item CCNA
+  \item Scrum
 \end{itemize}
 \end{document}
 """
+
+
+# A two-step policy, as a candidate might save one: a bullet, then its section.
+STEPS = [
+    {"kind": "drop_item", "section": "Certifications", "match": "scrum", "label": "Drop the Scrum bullet"},
+    {"kind": "drop_section", "section": "Certifications", "label": "Drop the Certifications section"},
+]
 
 
 def step(**kw) -> fp.FitStep:
@@ -38,7 +45,7 @@ def step(**kw) -> fp.FitStep:
 
 
 def default(index: int) -> fp.FitStep:
-    return fp.FitStep.model_validate(fp.DEFAULT_STEPS[index])
+    return fp.FitStep.model_validate(STEPS[index])
 
 
 class StepTests(unittest.TestCase):
@@ -59,18 +66,18 @@ class StepTests(unittest.TestCase):
         self.assertEqual(fp.apply_step(RESUME, step(kind="layout", setting="margin", value=0.75)), "")
 
     def test_a_bullet_is_dropped_only_in_its_section(self) -> None:
-        out = fp.apply_step(RESUME, step(kind="drop_item", section="Certifications", match="ccna"))
-        self.assertIn("Built a CCNA lab tool", out)          # Experience untouched
-        self.assertNotIn(r"\item CCNA", out)
+        out = fp.apply_step(RESUME, step(kind="drop_item", section="Certifications", match="scrum"))
+        self.assertIn("Built a Scrum lab tool", out)          # Experience untouched
+        self.assertNotIn(r"\item Scrum", out)
         self.assertIn("AWS Solutions Architect", out)
 
     def test_sections_dropped_and_replaced(self) -> None:
         out = fp.apply_step(RESUME, step(kind="drop_section", section="certifications"))
         self.assertNotIn("Certifications", out)
         short = step(kind="replace_section", section="Certifications",
-                     latex_body="AWS Solutions Architect; CCNA")
+                     latex_body="AWS Solutions Architect; Scrum")
         out = fp.apply_step(RESUME, short)
-        self.assertIn("AWS Solutions Architect; CCNA", out)
+        self.assertIn("AWS Solutions Architect; Scrum", out)
         self.assertNotIn(r"\item AWS", out)
         self.assertEqual(fp.apply_step(RESUME, step(kind="drop_section", section="Publications")), "")
 
@@ -93,11 +100,11 @@ class StepTests(unittest.TestCase):
         self.assertNotIn("Shipped APIs", out)
         self.assertNotIn("deadlocks", out)                       # its nested list went with it
         self.assertEqual(out.count(r"\begin{itemize}"), out.count(r"\end{itemize}"))
-        self.assertIn("Built a CCNA lab tool", out)
+        self.assertIn("Built a Scrum lab tool", out)
 
     def test_the_only_bullet_takes_its_list_with_it(self) -> None:
         lone = RESUME.replace("  \\item Shipped APIs.\n", "")
-        lone = lone.replace("  \\item Built a CCNA lab tool.\n", "  \\item Only bullet here.\n")
+        lone = lone.replace("  \\item Built a Scrum lab tool.\n", "  \\item Only bullet here.\n")
         out = fp.apply_step(lone, step(kind="drop_item", match="only bullet"))
         self.assertNotIn("Only bullet", out)
         self.assertEqual(out.count(r"\begin{itemize}"), 1)      # Certifications' list only
@@ -131,8 +138,8 @@ class StepTests(unittest.TestCase):
 
     def test_a_fenced_body_loses_its_fence(self) -> None:
         short = step(kind="replace_section", section="Certifications",
-                     latex_body="```latex\nAWS; CCNA\n```")
-        self.assertEqual(short.latex_body, "AWS; CCNA")
+                     latex_body="```latex\nAWS; Scrum\n```")
+        self.assertEqual(short.latex_body, "AWS; Scrum")
 
     def test_a_section_the_resume_lacks_is_named(self) -> None:
         problems = fp.missing_sections([step(kind="drop_section", section="Certification")], RESUME)
@@ -147,13 +154,13 @@ class StepTests(unittest.TestCase):
 
 class RestoreTests(unittest.TestCase):
     def test_what_the_old_rule_cut_comes_back(self) -> None:
-        for cut in fp.DEFAULT_STEPS:
+        for cut in STEPS:
             trimmed = fp.apply_step(RESUME, fp.FitStep.model_validate(cut))
             self.assertEqual(fp.restore_trims(trimmed, RESUME), RESUME, cut["label"])
 
     def test_tailoring_is_kept(self) -> None:
         tailored = RESUME.replace("Engineer.", "Backend engineer, AWS.")
-        trimmed = fp.apply_step(tailored, fp.FitStep.model_validate(fp.DEFAULT_STEPS[1]))
+        trimmed = fp.apply_step(tailored, fp.FitStep.model_validate(STEPS[1]))
         back = fp.restore_trims(trimmed, RESUME)
         self.assertIn("Backend engineer, AWS.", back)
         self.assertIn(r"\section*{Certifications}", back)
@@ -161,7 +168,7 @@ class RestoreTests(unittest.TestCase):
 
     def test_a_section_only_the_tailored_resume_has_keeps_its_place(self) -> None:
         tailored = RESUME.replace(r"\section*{Experience}", "\\section*{Highlights}\nTwo things.\n\\section*{Experience}")
-        trimmed = fp.apply_step(tailored, fp.FitStep.model_validate(fp.DEFAULT_STEPS[1]))
+        trimmed = fp.apply_step(tailored, fp.FitStep.model_validate(STEPS[1]))
         back = fp.restore_trims(trimmed, RESUME)
         order = [h for h in ("Summary", "Highlights", "Experience", "Certifications")
                  if f"\\section*{{{h}}}" in back]
@@ -181,9 +188,8 @@ class PolicyFileTests(unittest.TestCase):
 
     def test_default_until_saved(self) -> None:
         self.assertIsNone(fp.saved_policy())
-        self.assertEqual([s.label for s in fp.load().steps],
-                         ["Drop the CCNA bullet", "Drop the Certifications section"])
-        self.assertIn("1. Drop the CCNA bullet", fp.prompt_text())
+        self.assertEqual([s.label for s in fp.load().steps], ["Drop the Certifications section"])
+        self.assertIn("1. Drop the Certifications section", fp.prompt_text())
         fp.save([step(kind="layout", setting="margin", value=0.6)], "Never drop AWS.")
         self.assertEqual([s.label for s in fp.load().steps], ["Margins to 0.6in"])
         text = fp.prompt_text()
@@ -236,7 +242,7 @@ class FitChatTests(unittest.TestCase):
         run = runs.OUTPUT_DIR / stamp
         run.mkdir(parents=True)
         (run / "run.json").write_text(json.dumps({"status": "ok"}), encoding="utf-8")
-        trimmed = fp.apply_step(RESUME, fp.FitStep.model_validate(fp.DEFAULT_STEPS[1]))
+        trimmed = fp.apply_step(RESUME, fp.FitStep.model_validate(STEPS[1]))
         (run / "a.tex").write_text(trimmed, encoding="utf-8")
         (run / "b.tex").write_text(RESUME, encoding="utf-8")
         (run / "shortlisted.json").write_text(json.dumps([
@@ -272,17 +278,17 @@ class FitChatTests(unittest.TestCase):
 
         def invoke(system, user, schema):
             seen["user"] = user
-            return schema(reply="Margins first, then the CCNA bullet.", ready_to_save=True,
+            return schema(reply="Margins first, then the Scrum bullet.", ready_to_save=True,
                           guidance="Never drop AWS.",
                           steps=[{"kind": "layout", "setting": "margin", "value": 0.6},
-                                 {"kind": "drop_item", "section": "Certifications", "match": "CCNA"},
+                                 {"kind": "drop_item", "section": "Certifications", "match": "Scrum"},
                                  {"kind": "layout", "setting": "margin", "value": 0.1}])
 
         draft = fit_chat.chat("Keep my certifications if you can", self.subject, invoke=invoke)
         self.assertIn("Keep my certifications", seen["user"])
         self.assertIn(r"\section*{Certifications}", seen["user"])   # the full version
         self.assertEqual([s["label"] for s in draft["steps"]],
-                         ["Margins to 0.6in", "Drop the bullet mentioning 'CCNA' in Certifications"])
+                         ["Margins to 0.6in", "Drop the bullet mentioning 'Scrum' in Certifications"])
         self.assertIn("could not be used", draft["messages"][-1]["text"])   # the 0.1in margin
         self.assertTrue(draft["ready_to_save"])
         self.assertEqual(draft["last_preview"]["applied"], ["Margins to 0.6in"])
@@ -297,7 +303,7 @@ class FitChatTests(unittest.TestCase):
         self.assertEqual(fit_chat.load_draft()["messages"][-1]["text"], saved["draft"]["messages"][-1]["text"])
 
     def test_hand_edits_are_checked_and_previewed(self) -> None:
-        draft = fit_chat.edit_steps([fp.DEFAULT_STEPS[1]], "", self.subject)
+        draft = fit_chat.edit_steps([STEPS[1]], "", self.subject)
         self.assertEqual(draft["last_preview"]["applied"], ["Drop the Certifications section"])
         self.assertFalse(draft["ready_to_save"])
         with self.assertRaises(ValueError):
@@ -307,15 +313,15 @@ class FitChatTests(unittest.TestCase):
         self.assertTrue(any("Certification" in p for p in draft["last_preview"]["problems"]))
 
     def test_the_same_preview_is_not_compiled_twice(self) -> None:
-        fit_chat.edit_steps([fp.DEFAULT_STEPS[1]], "", self.subject)
+        fit_chat.edit_steps([STEPS[1]], "", self.subject)
         before = len(self.fits)
-        fit_chat.edit_steps([fp.DEFAULT_STEPS[1]], "", self.subject)
+        fit_chat.edit_steps([STEPS[1]], "", self.subject)
         self.assertEqual(len(self.fits), before)
 
     def test_a_reorder_during_a_slow_reply_is_not_lost(self) -> None:
         def slow_invoke(system, user, schema):
             # The candidate removes a step while the model thinks.
-            fit_chat.edit_steps([fp.DEFAULT_STEPS[0]], "", self.subject)
+            fit_chat.edit_steps([STEPS[0]], "", self.subject)
             return schema(reply="ok", steps=[{"kind": "layout", "setting": "margin", "value": 0.6}])
 
         draft = fit_chat.chat("hello", self.subject, invoke=slow_invoke)
@@ -325,7 +331,7 @@ class FitChatTests(unittest.TestCase):
         self.assertEqual([m["text"] for m in draft["messages"]][-2:], ["hello", "ok"])
 
     def test_start_over_and_back_to_default(self) -> None:
-        fit_chat.agree([fp.DEFAULT_STEPS[0]], "")
+        fit_chat.agree([STEPS[0]], "")
         fit_chat.chat("hello", "base", invoke=lambda s, u, schema: schema(reply="hi"))
         fresh = fit_chat.reset_draft()
         self.assertEqual(len(fresh["messages"]), 1)

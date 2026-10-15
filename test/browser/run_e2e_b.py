@@ -221,7 +221,7 @@ assert "Selected '6 years' for Total Professional Experience*" in logs23c, logs2
 assert "Selected '5 years' for Relevant Experience in Primary skill*" in logs23c, logs23c
 # Step 5: the boxes no rule reached, and a project that is not a job.
 assert "[profile] Filled Most recent employer = Acme Corp" in logs23c, logs23c
-assert "Correcting Job Title at Recent employer: the site filled in 'Applied AI & LLM Agents'" in logs23c, logs23c
+assert "Correcting Job Title at Recent employer: the site filled in 'Weekend AI Projects'" in logs23c, logs23c
 assert "[profile] Filled Job Title at Recent employer = Software Engineer" in logs23c, logs23c
 assert "[profile] Filled Current Annual Compensation" in logs23c, logs23c
 assert "[profile] Filled Expected Annual Compensation" in logs23c, logs23c

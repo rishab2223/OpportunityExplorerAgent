@@ -605,7 +605,7 @@ def work_slot(field: dict[str, Any]) -> str:
     if _JOB_DESCRIPTION_RE.search(label):
         return "description"
     # Location before company: "Company Location - City, State" (Cargill,
-    # Oct 2026) names a place, and got "Cadence Design" cut to 20 letters.
+    # Oct 2026) names a place, and got "Initech Systems" cut to 20 letters.
     if _JOB_LOCATION_RE.search(label) or re.search(r"\blocation\b", label, re.IGNORECASE):
         return "location"
     if _JOB_EMPLOYER_RE.search(label):
@@ -889,7 +889,10 @@ _DIAL_CODE_RE = re.compile(r"\+\d{1,3}\b")
 # "Search and select preferred Location", "e.g. Java Developer": PrimeNG's
 # multiselect shows its placeholder as its text (MyCareernet, Oct 2026).
 _PLACEHOLDER_RE = re.compile(
-    r"^\W*(select|choose|pick|search|please select|please choose|none selected|e\.?g\.?|-+)\b|^\W*$",
+    # "— Make a Selection —": iCIMS's (Planview, Oct 2026), which read as a
+    # chosen value, so the country code was never asked for.
+    r"^\W*(select|choose|pick|search|please select|please choose|none selected|e\.?g\.?|-+"
+    r"|make (a|your) (selection|choice))\b|^\W*$",
     re.IGNORECASE,
 )
 
@@ -1069,6 +1072,62 @@ _ON_NOTICE_RE = re.compile(r"\b(currently|presently|already) (on|serving)( your|
                            r"|\bserving( your| a| the)? notice\b")
 
 
+# "Which cities would you prefer to work in?" as a list of tick boxes, or one
+# choice of several. The profile's preferred_location answers it: "Any"
+# means location is no filter - every place offered is ticked, and on a
+# one-choice question the option that says so ("Any location", "No
+# preference"); a list of cities ticks the ones it names. Before this the
+# model ticked one city, and only sometimes (Oct 2026).
+_PLACE = r"(locations?|cit(y|ies)|offices?|work ?places?|work ?locations?|base locations?)"
+_LOCATION_QUESTION_RE = re.compile(
+    rf"\b(prefer\w*|preference|interested in|open to|willing to (work|join|be based))\b.{{0,50}}\b{_PLACE}\b"
+    rf"|\b{_PLACE}\b.{{0,40}}\b(prefer\w*|preference|open to|interested|willing)\b"
+    rf"|\bwhich (of (the|these) )?{_PLACE}\b")
+# Where the candidate is, not where they would work: answered elsewhere.
+_CURRENT_PLACE_RE = re.compile(r"\b(current(ly)?|present(ly)?|reside|residing|live|living|native|home ?town"
+                               r"|born)\b")
+_NOT_A_PLACE_RE = re.compile(r"^\s*(none\b|other(s)?\b|not applicable|n/?a\b|prefer not|yes\b|no\b)",
+                             re.IGNORECASE)
+ANY_PLACE_RE = profile.ANY_PLACE_RE
+_ANY_OPTION_RE = re.compile(r"\b(any ?where|any (location|city)|all (locations|cities|of the above)|no preference"
+                            r"|open to (all|any)|flexible)\b", re.IGNORECASE)
+
+
+def _names_place(option: str, place: str) -> bool:
+    flat = plain(option)
+    for name in [place, *city_aliases(place)]:
+        name = plain(name)
+        if name and re.search(rf"\b{re.escape(name)}\b", flat):
+            return True
+    return False
+
+
+def location_choice(field: dict[str, Any], data: dict[str, Any]) -> tuple[str, str] | None:
+    """("yes", "profile") to tick this option of a preferred-location
+    question, None to leave it (to the other rules, the model, or unticked)."""
+    question = profile.fingerprint(str(field.get("group") or ""))
+    option = str(field.get("label") or "").strip()
+    if not question or not option or field.get("checked"):
+        return None
+    if not _LOCATION_QUESTION_RE.search(question) or _CURRENT_PLACE_RE.search(question):
+        return None
+    stored = str(data.get("preferred_location") or "").strip()
+    if not stored:
+        return None
+    several = (field.get("type") or "").lower() == "checkbox"
+    if ANY_PLACE_RE.match(stored):
+        if _ANY_OPTION_RE.search(option):
+            return "yes", "profile"
+        if several and not _NOT_A_PLACE_RE.match(option):
+            return "yes", "profile"
+        return None
+    places = [p.strip() for p in re.split(r"[,;/\n]|\bor\b|\band\b", stored) if p.strip()]
+    if several:
+        return ("yes", "profile") if any(_names_place(option, p) for p in places) else None
+    # One choice: only the first place, so two options are never both picked.
+    return ("yes", "profile") if places and _names_place(option, places[0]) else None
+
+
 def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
     """(value, source) for a field the script can fill without the model, else None.
 
@@ -1119,6 +1178,10 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
         return None
     if not listbox and field_type == "radio":
         picked = _radio_from_profile(field)
+        if picked is not None:
+            return picked
+    if not listbox and field_type in ("checkbox", "radio"):
+        picked = location_choice(field, profile.load_profile())
         if picked is not None:
             return picked
     # A dropdown button is type="button" - it must not fall to this guard.
@@ -1189,6 +1252,10 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
             value = str(data.get("github") or "").strip()
         if key == "phone_country_code":
             value = _dial_code(data)
+        if key == "phone" and autocomplete == "tel-national":
+            # The page says so: the national number, its country code in a
+            # box of its own (iCIMS's Number beside Phone Country Code).
+            value = re.sub(r"^\s*\+\d{1,3}[\s-]*", "", value)
         if not value:
             continue
         if key in _ONLY_WHEN_REQUIRED and not field.get("required"):
@@ -1236,7 +1303,7 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
             return value, "profile"
         if tag == "input" and field_type == "date":
             # A real date box takes YYYY-MM-DD and nothing else. It was not
-            # a fillable type here, so the profile's "03/10/1997" never went
+            # a fillable type here, so the profile's "05/11/1990" never went
             # in, the model typed a format the box refused ("Malformed
             # value"), and got it right two minutes later (CryptoMize, Oct 2
             # 2026). The profile writes dates day first (DD/MM/YYYY).
@@ -1341,7 +1408,7 @@ def _tenure_date(field: dict[str, Any], data: dict[str, Any]) -> str:
 # that the profile is the truth for. EPAM (Oct 2026) parsed the resume into
 # "7 years" of experience (the profile says 6), "Amazon Web Services" as the
 # primary skill, "0 years" of relevant experience, and the candidate's own
-# project, "Applied AI & LLM Agents", as their job title - and the agent left
+# project, "Weekend AI Projects", as their job title - and the agent left
 # all of it, because it never overwrites a box that holds something. Contact
 # details are not on the list: a site's own formatting of a phone number or
 # a city is not a disagreement.
@@ -1480,7 +1547,7 @@ def _agrees(key: str, wanted: str, current: str) -> bool:
         return bool(have and want) and int(float(have.group())) == int(float(want.group()))
     a = re.sub(r"[^a-z0-9]", "", wanted.lower())
     b = re.sub(r"[^a-z0-9]", "", current.lower())
-    # "Cadence" for "Cadence Design Systems", "Immediately" for "Immediate".
+    # "Initech" for "Initech Systems", "Immediately" for "Immediate".
     # Not a shared start: "Software Architect" is not "Software Engineer".
     return bool(a and b) and (a in b or b in a)
 
@@ -1600,14 +1667,14 @@ MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July", "
                "September", "October", "November", "December")
 # "Date of Birth Month" / "Birth Day" / "DOB - Year": one part of a date that
 # the form asks in three boxes. Oracle Recruiting (Adani, Oct 2026) got the
-# whole "03/10/1997" in each, refused all three, and the model then asked
-# whether that was March or October - which the profile's format settles.
+# whole "05/11/1990" in each, refused all three, and the model then asked
+# whether that was May or November - which the profile's format settles.
 _DATE_PART_LABEL_RE = re.compile(r"\b(month|day|year|mm|dd|yyyy)\s*\*?\s*:?\s*$", re.IGNORECASE)
 
 
 def date_part(value: str, label: str) -> str:
-    """The part of a profile date a Month / Day / Year box wants: "October",
-    "3", "1997". '' when the label names no part or the date is not real."""
+    """The part of a profile date a Month / Day / Year box wants: "November",
+    "5", "1990". '' when the label names no part or the date is not real."""
     part = _DATE_PART_LABEL_RE.search(label or "")
     iso = iso_date(value)
     if not part or not iso:

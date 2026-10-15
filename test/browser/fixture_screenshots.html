@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Apply - pictures for the model</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  .row { margin: 18px 0; }
+  .err { color: #d00000; font-size: 13px; min-height: 16px; }
+  /* The question is drawn by CSS: nothing in the DOM says what the box asks. */
+  .q::before { content: "Highest degree you hold?"; }
+  ul[role=listbox] { list-style: none; border: 1px solid #888; padding: 4px; margin: 2px 0; width: 220px; }
+  ul[role=listbox][hidden] { display: none; }
+  li[role=option] { padding: 4px; }
+</style>
+</head>
+<body>
+<h1>Apply for Software Engineer</h1>
+<form onsubmit="return false">
+  <div class="row">
+    <label for="pyyears">Years of experience with Python *</label>
+    <div class="wrap"><input id="pyyears" type="text" required></div>
+    <div class="err" id="pyerr"></div>
+  </div>
+
+  <div class="row">
+    <label class="q" for="q7"></label>
+    <input id="q7" type="text">
+  </div>
+
+  <fieldset>
+    <legend>Which cities do you prefer to work in?</legend>
+    <label><input type="checkbox" name="city" value="blr"> Bengaluru</label>
+    <label><input type="checkbox" name="city" value="pune"> Pune</label>
+    <label><input type="checkbox" name="city" value="hyd"> Hyderabad</label>
+    <label><input type="checkbox" name="city" value="none"> None of the above</label>
+  </fieldset>
+
+  <button type="submit">Submit application</button>
+</form>
+<script>
+  // Digits only: anything else is stripped as it is typed, and leaving the
+  // box says so in red underneath - the CTC box of the Oct 2026 report.
+  const box = document.getElementById('pyyears');
+  const err = document.getElementById('pyerr');
+  let bad = false;
+  box.addEventListener('input', () => {
+    if (/\D/.test(box.value)) { bad = true; box.value = box.value.replace(/\D/g, ''); }
+    else bad = false;
+  });
+  box.addEventListener('blur', () => {
+    err.textContent = bad ? 'Invalid input - numbers only' : '';
+    box.setAttribute('aria-invalid', bad ? 'true' : 'false');
+  });
+</script>
+</body>
+</html>

@@ -8,7 +8,7 @@ import unittest.mock
 from pathlib import Path
 
 from src import answers, history
-from src.apply import browser, profile, worker
+from src.apply import browser, profile, shots, worker
 from src.apply.worker import (
     ApplyAction,
     SubmitBlocked,
@@ -1966,14 +1966,14 @@ class DateBoxTests(TempDbTestCase):
     def test_two_numbers_and_a_year_are_day_first_as_the_profile_writes_them(self) -> None:
         from src.apply import worker
 
-        # 3 October 1997 - read month first it was 10 March (MyCareernet, Oct 2026).
-        self.assertEqual(worker._parse_date("03/10/1997"), (10, 3, 1997))
-        self.assertEqual(worker._parse_date("22/07/2019"), (7, 22, 2019))
-        self.assertEqual(worker._parse_date("1997-10-03"), (10, 3, 1997))
+        # 5 November 1990 - read month first it was 11 May (MyCareernet, Oct 2026).
+        self.assertEqual(worker._parse_date("05/11/1990"), (11, 5, 1990))
+        self.assertEqual(worker._parse_date("28/06/2019"), (6, 28, 2019))
+        self.assertEqual(worker._parse_date("1990-11-05"), (11, 5, 1990))
         self.assertEqual(worker._parse_date("2020-07-05"), (7, 5, 2020))
         # Into a month-first box, it goes in month first.
-        month, day, year = worker._parse_date("03/10/1997")
-        self.assertEqual(worker._format_date(month, day, year, "MM/DD/YYYY"), "10/03/1997")
+        month, day, year = worker._parse_date("05/11/1990")
+        self.assertEqual(worker._format_date(month, day, year, "MM/DD/YYYY"), "11/05/1990")
 
     def test_the_box_keeps_its_own_format(self) -> None:
         from src.apply import worker
@@ -2016,7 +2016,7 @@ class RemoveExcludedEntryTests(TempDbTestCase):
         from unittest import mock
 
         patcher = mock.patch("src.apply.profile.load_profile",
-                             return_value={"not_employment": "Applied AI & LLM Agents"})
+                             return_value={"not_employment": "Weekend AI Projects"})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -2037,18 +2037,18 @@ class RemoveExcludedEntryTests(TempDbTestCase):
     def test_the_flagged_entry_is_the_one_removed(self) -> None:
         from src.apply import worker
 
-        fields = (self._entry("Applied AI & LLM Agents", "", 10)
+        fields = (self._entry("Weekend AI Projects", "", 10)
                   + self._entry("Software Engineer", "Initech Systems", 20))
         removals = worker._excluded_entry_removals(fields)
         self.assertEqual(len(removals), 1, removals)
         project, button = removals[0]
-        self.assertEqual(project, "Applied AI & LLM Agents")
+        self.assertEqual(project, "Weekend AI Projects")
         self.assertEqual(button["id"], 13)   # the flagged entry's own button
 
     def test_the_project_named_in_the_company_box_counts(self) -> None:
         from src.apply import worker
 
-        fields = self._entry("Founder", "Applied AI and LLM Agents", 10)
+        fields = self._entry("Founder", "Weekend AI and Projects", 10)
         self.assertEqual(len(worker._excluded_entry_removals(fields)), 1)
 
     def test_real_jobs_are_never_removed(self) -> None:
@@ -2058,7 +2058,7 @@ class RemoveExcludedEntryTests(TempDbTestCase):
                   + self._entry("Software Engineer Intern", "Initech Systems", 20))
         self.assertEqual(worker._excluded_entry_removals(fields), [])
         # An entry with no remove button of its own is left alone.
-        lonely = self._entry("Applied AI & LLM Agents", "", 10)[:-1]
+        lonely = self._entry("Weekend AI Projects", "", 10)[:-1]
         self.assertEqual(worker._excluded_entry_removals(lonely), [])
 
     def test_remove_button_wording(self) -> None:
@@ -2218,16 +2218,16 @@ class NotEmploymentTests(TempDbTestCase):
         from unittest import mock
 
         patcher = mock.patch("src.apply.profile.load_profile",
-                             return_value={"not_employment": "Applied AI & LLM Agents; Side Project X"})
+                             return_value={"not_employment": "Weekend AI Projects; Side Project X"})
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def test_the_flagged_entries_are_read_from_the_profile(self) -> None:
         from src.apply import worker
 
-        self.assertEqual(worker.not_employment(), ["Applied AI & LLM Agents", "Side Project X"])
+        self.assertEqual(worker.not_employment(), ["Weekend AI Projects", "Side Project X"])
         note = worker._not_employment_note()
-        self.assertIn("Applied AI & LLM Agents", note)
+        self.assertIn("Weekend AI Projects", note)
         self.assertIn("never enter them as a work experience", note.lower())
 
     def test_which_boxes_record_employment(self) -> None:
@@ -2249,16 +2249,16 @@ class NotEmploymentTests(TempDbTestCase):
         from src.apply import worker
 
         title = {"label": "Job Title*", "section": "Work Experience :", "group": ""}
-        self.assertEqual(worker._excluded_experience(title, "Applied AI & LLM Agents"),
-                         "Applied AI & LLM Agents")
+        self.assertEqual(worker._excluded_experience(title, "Weekend AI Projects"),
+                         "Weekend AI Projects")
         # The same words in another order or case still count.
-        self.assertEqual(worker._excluded_experience(title, "applied ai and llm agents (self)"),
-                         "Applied AI & LLM Agents")
+        self.assertEqual(worker._excluded_experience(title, "projects (weekend ai, self)"),
+                         "Weekend AI Projects")
         # A real employer passes, and so does the project name elsewhere on
         # the form (a portfolio or a "tell us about a project" answer).
         self.assertEqual(worker._excluded_experience(title, "Initech Systems"), "")
         self.assertEqual(worker._excluded_experience(
-            {"label": "Describe a project", "section": "Questions"}, "Applied AI & LLM Agents"), "")
+            {"label": "Describe a project", "section": "Questions"}, "Weekend AI Projects"), "")
 
 
 class SectionAddTextTests(TempDbTestCase):
@@ -2527,7 +2527,7 @@ class RedoByNameTests(unittest.TestCase):
 
     ANSWERED = {"k1": {"label": "Professional Details *", "value": "I'm a software engineer..."}}
     FIELDS = [
-        {"tag": "input", "type": "date", "label": "Date of Birth *", "id": 15, "value": "1997-10-03"},
+        {"tag": "input", "type": "date", "label": "Date of Birth *", "id": 15, "value": "1990-11-05"},
         {"tag": "textarea", "type": "", "label": "Professional Details *", "id": 25, "value": "..."},
         {"tag": "input", "type": "text", "label": "Date of Joining", "id": 40, "value": ""},
     ]
@@ -2545,7 +2545,7 @@ class RedoByNameTests(unittest.TestCase):
 
     def test_a_date_is_spelled_out(self) -> None:
         # The browser draws it month first; the candidate must not read March.
-        self.assertEqual(worker._spelled_date("1997-10-03"), "3 October 1997")
+        self.assertEqual(worker._spelled_date("1990-11-05"), "5 November 1990")
 
 
 class NotFoundPageTests(unittest.TestCase):
@@ -3813,3 +3813,231 @@ class TickBoxNeedsYesOrNoTests(unittest.TestCase):
             worker._apply_value(None, box, "no", "", sess)
             worker._apply_value(None, box, "yes", "", sess)
         self.assertEqual([c.args[3] for c in ticked.call_args_list], [False, True])
+
+
+class PictureTriggerTests(unittest.TestCase):
+    """When the model gets a picture of part of the form (see shots.py)."""
+
+    def test_only_a_message_the_value_brought_on_counts(self):
+        before = (False, ["This field is required"])
+        self.assertEqual(worker._new_messages(before, (True, ["This field is required"]), held=False), [])
+        self.assertEqual(worker._new_messages((False, []), (True, ["Invalid input"]), held=False),
+                         ["Invalid input"])
+
+    def test_a_bare_required_after_the_value_held_is_stale(self):
+        self.assertEqual(worker._new_messages((False, []), (True, ["This field is required"]), held=True), [])
+        self.assertEqual(worker._new_messages((False, []), (True, ["Must be a number"]), held=True),
+                         ["Must be a number"])
+
+    def test_a_bare_required_after_the_value_was_dropped_is_the_box_saying_it_is_empty(self):
+        # Not a refusal: the typeahead search and the annual-salary retry
+        # below it are what answer a box that dropped "35 LPA".
+        self.assertEqual(worker._new_messages((False, []), (True, ["This field is required"]), held=False), [])
+        self.assertEqual(worker._new_messages((False, []), (True, ["Max 100"]), held=False), ["Max 100"])
+
+    def test_pick_from_the_list_is_left_to_the_typeahead(self):
+        self.assertEqual(worker._new_messages((False, []), (True, ["Please select a value from the list"]),
+                                              held=False), [])
+
+    def test_unclear_fields(self):
+        unclear = [
+            {"id": 1, "tag": "input", "type": "text", "label": ""},
+            {"id": 2, "tag": "button", "haspopup": "listbox", "label": "Select One", "text": "Select One"},
+            {"id": 3, "tag": "input", "type": "radio", "label": "Yes", "group": ""},
+            {"id": 4, "tag": "input", "type": "text", "label": "Apply now", "section": "Apply now"},
+        ]
+        for field in unclear:
+            self.assertTrue(worker._unclear(field), field)
+        clear = [
+            {"id": 5, "tag": "input", "type": "text", "label": "Current CTC"},
+            {"id": 6, "tag": "input", "type": "radio", "label": "Yes", "group": "Do you need sponsorship?"},
+            {"id": 7, "tag": "input", "type": "text", "label": "", "placeholder": "Your notice period"},
+            {"id": 8, "tag": "input", "type": "file", "label": ""},
+        ]
+        for field in clear:
+            self.assertFalse(worker._unclear(field), field)
+
+    def test_native_selects_are_never_opened_for_a_picture(self):
+        self.assertFalse(worker._opens_a_list({"tag": "select", "label": "Notice"}))
+        self.assertTrue(worker._opens_a_list({"tag": "input", "role": "combobox", "label": "City"}))
+        self.assertTrue(worker._opens_a_list({"tag": "button", "haspopup": "listbox", "label": "Notice"}))
+
+    def test_the_prompt_lists_the_pictures_in_order(self):
+        page = types.SimpleNamespace(url="https://example.invalid/apply")
+        with unittest.mock.patch.object(worker.browser, "page_text", lambda p: ""), \
+                unittest.mock.patch.object(worker.profile, "as_prompt_text", lambda: ""), \
+                unittest.mock.patch.object(worker.answers, "entries", lambda: []):
+            prompt = worker._build_prompt({}, "", [], page, [], [], set(),
+                                          pictures=["first box: Invalid input", "second box"])
+            plain = worker._build_prompt({}, "", [], page, [], [], set())
+        self.assertIn("PICTURES (attached, in this order):\n1. first box: Invalid input\n2. second box", prompt)
+        self.assertNotIn("PICTURES (", plain)
+
+    def test_look_is_a_plan_action_that_never_waits_for_the_candidate(self):
+        look = ApplyAction(action="look", field_id=3)
+        self.assertFalse(worker._needs_user(look, {"id": 3, "label": "x"}, "x"))
+
+
+class ShotRegionTests(unittest.TestCase):
+    def test_room_around_and_kept_on_screen(self):
+        clip = shots.region([{"x": 100, "y": 200, "width": 300, "height": 30}], (1280, 900))
+        self.assertEqual(clip, {"x": 100 - shots.PAD_SIDE, "y": 200 - shots.PAD_ABOVE,
+                                "width": 300 + 2 * shots.PAD_SIDE,
+                                "height": 30 + shots.PAD_ABOVE + shots.PAD_BELOW})
+        edge = shots.region([{"x": 5, "y": 10, "width": 100, "height": 20}], (1280, 900))
+        self.assertEqual((edge["x"], edge["y"]), (0, 0))
+
+    def test_too_big_is_cut_back_around_the_first_box(self):
+        clip = shots.region([{"x": 600, "y": 100, "width": 100, "height": 30},
+                             {"x": 0, "y": 100, "width": 3000, "height": 3000}], (4000, 4000))
+        self.assertLessEqual(clip["width"], shots.MAX_WIDTH)
+        self.assertLessEqual(clip["height"], shots.MAX_HEIGHT)
+        self.assertLessEqual(clip["x"], 600)
+        self.assertGreaterEqual(clip["x"] + clip["width"], 700)
+
+    def test_nothing_on_screen_is_no_picture(self):
+        self.assertIsNone(shots.region([], (1280, 900)))
+        self.assertIsNone(shots.region([{"x": 0, "y": 0, "width": 0, "height": 0}], (1280, 900)))
+
+    def test_folder_names(self):
+        self.assertEqual(shots.folder_name("Acme Corp (India) Pvt. Ltd."), "Acme-Corp-India-Pvt-Ltd")
+        self.assertEqual(shots.folder_name(""), "unknown-company")
+
+
+class ApplyOpenerTests(unittest.TestCase):
+    """A job page's Apply opens the form; it is not the form's submit."""
+
+    def test_a_link_opens_the_application_too(self):
+        # Indeed's "Apply now" became a link (Oct 14 2026): the agent told the
+        # candidate to click it "then type done", as if it sent the form.
+        link = {"tag": "a", "form": -1, "label": "Apply now", "text": "Apply now"}
+        self.assertTrue(worker._opens_the_application(link, []))
+        self.assertFalse(worker._opens_the_application(link, ["clicked Next"]))
+        self.assertTrue(worker._opens_the_application(dict(link, tag="button"), []))
+        self.assertFalse(worker._opens_the_application(dict(link, label="Submit application"), []))
+
+    def _link_to(self, href, tag="a", here="https://careers.example.com/postings/1"):
+        class Loc:
+            def get_attribute(self, name, timeout=None):
+                return href
+
+        class Page:
+            url = here
+        field = {"id": 1, "tag": tag, "form": -1, "label": "Apply Now", "text": "Apply Now"}
+        with unittest.mock.patch.object(worker.browser, "locate", return_value=Loc()):
+            return worker._apply_link(Page(), [field], [])
+
+    def test_a_plain_apply_link_is_followed_to_its_address(self):
+        # Infor (Oct 15 2026): <a href="/postings/<id>/applications/new">Apply Now</a>.
+        found = self._link_to("/postings/1/applications/new")
+        self.assertEqual(found[1], "https://careers.example.com/postings/1/applications/new")
+
+    def test_icims_wording_opens_the_form_too(self):
+        for text in ("Apply for this job online", "Apply to this position", "Apply here", "Apply"):
+            self.assertTrue(worker.APPLY_OPENER_RE.match(text), text)
+        for text in ("Apply with LinkedIn", "Submit application", "Applying tips"):
+            self.assertFalse(worker.APPLY_OPENER_RE.match(text), text)
+
+    def test_a_header_search_box_is_not_something_to_fill_on_a_job_page(self):
+        self.assertTrue(worker._names_a_search({"label": "Search for:", "elid": "search-keywords",
+                                                "placeholder": "Search Planview"}))
+        self.assertFalse(worker._names_a_search({"label": "Email", "elid": "email"}))
+
+    def test_a_submit_input_is_called_by_its_words(self):
+        # iCIMS's <input type=submit value="Next"> was "#4" (Planview, Oct 2026).
+        self.assertEqual(worker._field_label({"id": 4, "tag": "input", "type": "submit", "value": "Next"}), "Next")
+        self.assertEqual(worker._field_label({"id": 5, "tag": "input", "type": "text", "value": "typed"}), "#5")
+
+    def test_only_a_real_address_and_only_a_link(self):
+        for href in ("", "#", "#apply", "javascript:void(0)", "JavaScript:apply()", "mailto:jobs@example.com"):
+            self.assertIsNone(self._link_to(href), href)
+        # A button is never followed - one-click apply on a job board.
+        self.assertIsNone(self._link_to("/apply", tag="button"))
+        # A page saved to disk may link to another; a web page may not link to disk.
+        self.assertIsNotNone(self._link_to("form.html", here="file:///tmp/job.html"))
+        self.assertIsNone(self._link_to("file:///etc/passwd"))
+
+
+class UploadOfferWordingTests(unittest.TestCase):
+    def test_add_a_resume_as_a_heading_offers_the_upload(self):
+        # Indeed's step with a CV already on the account (Oct 14 2026).
+        self.assertTrue(worker.UPLOAD_OFFER_RE.search("Go back\nAdd a resume\nOld_CV.pdf\nContinue"))
+        self.assertTrue(worker.UPLOAD_OFFER_RE.search("Upload a different resume"))
+        self.assertTrue(worker.UPLOAD_OFFER_RE.search("Add your CV"))
+
+    def test_the_words_inside_a_sentence_do_not(self):
+        self.assertFalse(worker.UPLOAD_OFFER_RE.search("You can add a resume to your profile later."))
+
+
+class SharedGroupTests(unittest.TestCase):
+    """Infor (Oct 14 2026): five Yes/No questions under one group, the
+    question written into each option's label, only the names apart."""
+
+    @staticmethod
+    def option(n, answer, label=None, beside=None, value=None):
+        question = ["Are you at least 18 years old?", "Have you worked for us before?"][n]
+        return {"id": n * 2 + (answer == "no"), "tag": "input", "type": "radio",
+                "section": "3.Questions", "group": "3.Questions",
+                "label": label if label is not None else f"{question} {answer}",
+                "name": f"answers[{n}][boolean_answer]",
+                "beside": beside if beside is not None else answer.title(),
+                "value": value if value is not None else ("true" if answer == "yes" else "false")}
+
+    def test_each_question_gets_its_own_group_and_plain_options(self):
+        fields = [self.option(0, "yes"), self.option(0, "no"), self.option(1, "yes"), self.option(1, "no")]
+        browser.split_shared_groups(fields)
+        self.assertEqual([f["group"] for f in fields],
+                         ["Are you at least 18 years old?"] * 2 + ["Have you worked for us before?"] * 2)
+        self.assertEqual([f["label"] for f in fields], ["Yes", "No", "Yes", "No"])
+
+    def test_labels_cut_before_the_answer_take_it_from_beside_or_value(self):
+        cut = "Do you have relatives who work here or who have p"
+        fields = [self.option(0, "yes", label=cut), self.option(0, "no", label=cut),
+                  self.option(1, "yes", label=cut, beside=""), self.option(1, "no", label=cut, beside="")]
+        browser.split_shared_groups(fields)
+        self.assertEqual([f["label"] for f in fields], ["Yes", "No", "Yes", "No"])
+        self.assertEqual({f["group"] for f in fields}, {cut})
+
+    def test_a_group_that_is_the_question_itself_is_left_alone(self):
+        fields = [dict(self.option(0, "yes"), group="Do you need sponsorship?", label="Yes"),
+                  dict(self.option(0, "no"), group="Do you need sponsorship?", label="No")]
+        before = [dict(f) for f in fields]
+        browser.split_shared_groups(fields)
+        self.assertEqual(fields, before)
+
+    def test_options_with_no_question_in_common_are_left_alone(self):
+        fields = [dict(self.option(0, "yes"), label="Bengaluru"), dict(self.option(0, "no"), label="Pune"),
+                  dict(self.option(1, "yes"), label="Yes"), dict(self.option(1, "no"), label="No")]
+        before = [dict(f) for f in fields]
+        browser.split_shared_groups(fields)
+        self.assertEqual(fields, before)
+
+    def test_names_decide_which_options_are_one_question(self):
+        fields = [self.option(0, "yes"), self.option(0, "no"), self.option(1, "yes"), self.option(1, "no")]
+        # Even unsplit, with the shared group: the name wins.
+        self.assertEqual([f["id"] for f in worker._group_options(fields, fields[2])], [2, 3])
+        self.assertIs(worker._sibling_option(fields, fields[2], "no"), fields[3])
+        self.assertFalse(worker._same_question(fields[0], fields[2]))
+        self.assertTrue(worker._same_question(dict(fields[0], name=""), dict(fields[2], name="")))
+
+    def test_an_answer_is_cached_per_question_not_per_shared_group(self):
+        fields = [self.option(0, "yes"), self.option(1, "yes")]
+        keys = {worker._answer_key(f, "x") for f in fields}
+        self.assertEqual(len(keys), 2)
+
+
+class RefusedValuesTests(unittest.TestCase):
+    def test_every_refused_value_is_remembered_not_just_the_last(self):
+        sess = types.SimpleNamespace()
+        worker._remember_refusal(sess, "country", "India", ValueError("took the wrong row"))
+        worker._remember_refusal(sess, "country", "Republic of India", ValueError("took nothing"))
+        self.assertTrue(worker._refused_before(sess, "country", "Republic of India"))
+        self.assertTrue(worker._refused_before(sess, "country", "india"))
+        self.assertFalse(worker._refused_before(sess, "country", "Bharat"))
+
+
+class UndoWrongChoiceTests(unittest.TestCase):
+    def test_a_choice_the_box_already_held_is_never_cleared(self):
+        # No locator needed: nothing is touched.
+        self.assertEqual(worker._undo_wrong_choice(None, None, "India", "India", None, "", "Country"), "")
+        self.assertEqual(worker._undo_wrong_choice(None, None, "", "", None, "", "Country"), "")

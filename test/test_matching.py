@@ -98,6 +98,28 @@ class ModelPickTests(unittest.TestCase):
         self.assertEqual({ref: p.option for ref, p in picks.items()}, {1: "Advanced"})
         self.assertEqual(matching.pick_with_model(invoke, []), {})
 
+    def test_a_pictured_list_is_read_off_its_picture_and_must_name_the_row(self) -> None:
+        items = [{"ref": 1, "question": "Country", "value": "India", "options": [], "picture": 1,
+                  "typed": "India"},
+                 {"ref": 2, "question": "State", "value": "Karnataka", "options": [], "picture": 2,
+                  "typed": "Karnataka"},
+                 {"ref": 3, "question": "Source", "value": "Friend", "options": [], "picture": 3,
+                  "typed": "Friend"}]
+        seen = {}
+
+        def invoke(system, user, schema, images=None):
+            seen["user"], seen["images"] = user, images
+            self.assertIn("row number", system)
+            item = schema.model_fields["picks"].annotation.__args__[0]
+            return schema(picks=[item(ref=1, option="India", match="exact", position=2),
+                                 item(ref=2, option="Karnataka", match="exact", position=0),
+                                 item(ref=3, option="Other", match="close", position=4)])
+        picks = matching.pick_with_model(invoke, items, images=[b"a", b"b", b"c"])
+        self.assertEqual(seen["images"], [b"a", b"b", b"c"])
+        self.assertIn("in picture 1, the list opened after 'India' was typed", seen["user"])
+        # No row named, and "Other", are dropped; India keeps its row.
+        self.assertEqual({ref: (p.option, p.position) for ref, p in picks.items()}, {1: ("India", 2)})
+
 
 class PickRefusedTests(unittest.TestCase):
     """The page's one nearest-option call, end to end with fakes."""
@@ -153,6 +175,132 @@ class PickRefusedTests(unittest.TestCase):
         self.assertTrue(any("[best match]" in line and "Advanced" in line for line in sess.lines))
         # And remembered: the next form gets it from the rules' memory.
         self.assertEqual(matching.remembered(PROFICIENCY, "Fluent")[0], 1)
+
+    def _unread_country(self):
+        """A Country dropdown that refused India with no options read (Infor,
+        Oct 2026): the call had nothing to go on and was never made."""
+        country = {"id": 5, "tag": "input", "type": "text", "role": "combobox", "label": "Country",
+                   "group": "", "value": "", "name": ""}
+
+        class Sess:
+            def __init__(self):
+                self.lines, self.refused = [], {}
+
+            def log(self, t):
+                self.lines.append(t)
+
+        class Attach:
+            calls = 0
+
+        sess = Sess()
+        worker._remember_refusal(sess, worker._field_key(country, "Country"), "India",
+                                 ValueError("now shows 'British Indian Ocean Territory'"))
+        return country, sess, Attach()
+
+    def test_an_unread_list_goes_to_the_call_with_its_picture(self) -> None:
+        country, sess, attach = self._unread_country()
+        calls, taken = [], []
+
+        def invoke(system, user, schema, images=None):
+            calls.append((user, images))
+            item = schema.model_fields["picks"].annotation.__args__[0]
+            return schema(picks=[item(ref=1, option="India", match="exact", position=2)])
+        invoke.takes_images = True
+        attach.pick_invoke = invoke
+        handled: set[str] = set()
+        with mock.patch.object(worker, "_look_at", return_value=b"png") as look, \
+                mock.patch.object(worker, "_pick_row_by_keys",
+                                  side_effect=lambda page, f, typed, pos, opt, s: taken.append((typed, pos, opt))):
+            filled = worker._pick_refused(None, [country], handled, sess, attach)
+        self.assertEqual(filled, 1)
+        self.assertEqual({k: look.call_args.kwargs[k] for k in ("open_list", "typed")},
+                         {"open_list": True, "typed": "India"})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], [b"png"])
+        self.assertIn("in picture 1", calls[0][0])
+        self.assertEqual(taken, [("India", 2, "India")])
+        self.assertIn(worker._field_key(country, "Country"), handled)
+        self.assertEqual(worker._looks(sess), {})          # nothing left over for the planning call
+
+    def test_rows_read_when_the_list_is_opened_go_as_text_not_a_picture(self) -> None:
+        country, sess, attach = self._unread_country()
+        calls, applied = [], []
+
+        def invoke(system, user, schema, images=None):
+            calls.append((user, images))
+            item = schema.model_fields["picks"].annotation.__args__[0]
+            return schema(picks=[item(ref=1, option="India", match="exact")])
+        invoke.takes_images = True
+        attach.pick_invoke = invoke
+
+        def look(page, field, open_list=False, typed="", fields=None, rows_out=None):
+            rows_out.extend(["British Indian Ocean Territory", "India"])
+            return b"png"
+        with mock.patch.object(worker, "_look_at", side_effect=look), \
+                mock.patch.object(worker, "_live_value", return_value=""), \
+                mock.patch.object(worker, "_apply_value",
+                                  side_effect=lambda page, f, v, pdf, s, source="": applied.append(v)):
+            filled = worker._pick_refused(None, [country], set(), sess, attach)
+        self.assertEqual(filled, 1)
+        self.assertIsNone(calls[0][1])                     # no picture sent
+        self.assertIn("Options: British Indian Ocean Territory; India", calls[0][0])
+        self.assertEqual(applied, ["India"])
+
+    def test_a_failed_keyboard_pick_hands_its_picture_on(self) -> None:
+        country, sess, attach = self._unread_country()
+
+        def invoke(system, user, schema, images=None):
+            item = schema.model_fields["picks"].annotation.__args__[0]
+            return schema(picks=[item(ref=1, option="India", match="exact", position=2)])
+        invoke.takes_images = True
+        attach.pick_invoke = invoke
+        with mock.patch.object(worker, "_look_at", return_value=b"png"), \
+                mock.patch.object(worker, "_pick_row_by_keys", side_effect=ValueError("row 2 gave Indonesia")):
+            self.assertEqual(worker._pick_refused(None, [country], set(), sess, attach), 0)
+        key = worker._field_key(country, "Country")
+        self.assertEqual(worker._looks(sess)[key]["png"], b"png")
+        self.assertIn("did not go in", worker._looks(sess)[key]["why"])
+        self.assertIn("india", worker._refused_values(sess)[key])
+
+    def test_a_failed_call_is_tried_once_more_then_left_to_the_planner(self) -> None:
+        country, sess, attach = self._unread_country()
+        calls = []
+
+        def invoke(system, user, schema, images=None):
+            calls.append(user)
+            raise TimeoutError("model timed out")
+        invoke.takes_images = True
+        attach.pick_invoke = invoke
+        with mock.patch.object(worker, "_look_at", return_value=b"png"):
+            for _ in range(3):
+                worker._pick_refused(None, [country], set(), sess, attach)
+        self.assertEqual(len(calls), 2)
+
+    def test_a_declined_picture_goes_on_to_the_planning_call(self) -> None:
+        country, sess, attach = self._unread_country()
+
+        def invoke(system, user, schema, images=None):
+            item = schema.model_fields["picks"].annotation.__args__[0]
+            return schema(picks=[item(ref=1, option="", match="none")])
+        invoke.takes_images = True
+        attach.pick_invoke = invoke
+        with mock.patch.object(worker, "_look_at", return_value=b"png") as look:
+            filled = worker._pick_refused(None, [country], set(), sess, attach)
+        self.assertEqual(filled, 0)
+        self.assertEqual(look.call_count, 1)
+        key = worker._field_key(country, "Country")
+        self.assertEqual(worker._looks(sess)[key]["png"], b"png")
+        # And the planning call's sweep does not take the same picture again.
+        self.assertIn(f"{key}|india", worker._looked(sess))
+
+    def test_no_call_without_options_or_a_picture(self) -> None:
+        country, sess, attach = self._unread_country()
+        calls = []
+        attach.pick_invoke = lambda system, user, schema: calls.append(user)   # text only
+        with mock.patch.object(worker, "_look_at", return_value=b"png") as look:
+            self.assertEqual(worker._pick_refused(None, [country], set(), sess, attach), 0)
+        self.assertEqual(calls, [])
+        self.assertEqual(look.call_count, 0)
 
 
 class ToggleTests(unittest.TestCase):

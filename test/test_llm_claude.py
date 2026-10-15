@@ -40,6 +40,7 @@ class FakeClient:
     def __init__(self, options=None):
         self.options = options
         self.sessions: list[str] = []
+        self.prompts: list = []
         self.disconnected = False
         FakeClient.started.append(self)
 
@@ -51,7 +52,12 @@ class FakeClient:
         if FakeClient.fail_query:
             raise RuntimeError("process died")
         self.sessions.append(session_id)
-        self.prompt = prompt
+        if not isinstance(prompt, str):
+            # Streaming input: a user turn whose content carries pictures.
+            turns = [m async for m in prompt]
+            prompt = turns[0]["message"]["content"]
+        self.prompts.append(prompt)
+        self.prompt = prompt if isinstance(prompt, str) else prompt[-1]["text"]
 
     async def receive_response(self):
         yield FakeResult({"word": f"echo {self.prompt}"})
@@ -76,7 +82,7 @@ class ClaudeSessionTests(unittest.TestCase):
         self.addCleanup(options.stop)
         self.oneoff = []
 
-        async def oneoff(system, user, schema, model, effort):
+        async def oneoff(system, user, schema, model, effort, images=None):
             self.oneoff.append(user)
             return schema(word="one-off")
 
@@ -95,6 +101,43 @@ class ClaudeSessionTests(unittest.TestCase):
         ids = FakeClient.started[0].sessions
         self.assertEqual(len(set(ids)), 2)
         self.assertEqual(self.oneoff, [])
+
+    def test_each_answer_is_followed_by_clear(self):
+        # A fresh session_id alone does not forget the last call: the second
+        # call answered with a word the first had been told (Oct 2026).
+        sess = llm_claude.ClaudeSession()
+        sess.call("sys", "a", Answer, "opus", "low")
+        sess.call("sys", "b", Answer, "opus", "low")
+        sess.close()
+        client = FakeClient.started[0]
+        deadline = time.monotonic() + 3
+        while not client.disconnected and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(client.prompts, ["a", "/clear", "b", "/clear"])
+
+    def test_pictures_go_ahead_of_the_text(self):
+        sess = llm_claude.ClaudeSession()
+        got = sess.call("sys", "look", Answer, "opus", "low", images=[b"PNG-1", b"PNG-2"])
+        sess.close()
+        self.assertEqual(got.word, "echo look")
+        content = FakeClient.started[0].prompts[0]
+        self.assertEqual([b["type"] for b in content], ["image", "image", "text"])
+        self.assertEqual(content[0]["source"]["data"], "UE5HLTE=")   # base64 of PNG-1
+        self.assertEqual(content[0]["source"]["media_type"], "image/png")
+
+    def test_a_one_off_call_carries_the_pictures_too(self):
+        FakeClient.fail_connect = True
+        seen = []
+
+        async def oneoff(system, user, schema, model, effort, images=None):
+            seen.append(images)
+            return schema(word="one-off")
+
+        with unittest.mock.patch.object(llm_claude, "_agent_call", oneoff):
+            sess = llm_claude.ClaudeSession(lambda _line: None)
+            sess.call("sys", "a", Answer, "opus", "low", images=[b"x"])
+            sess.close()
+        self.assertEqual(seen, [[b"x"]])
 
     def test_another_schema_or_model_gets_its_own_process(self):
         sess = llm_claude.ClaudeSession()
@@ -156,6 +199,9 @@ class OpenSessionTests(unittest.TestCase):
         self.assertEqual(invoke("sys", "user", Answer), "ok")
         self.assertEqual(calls[0], ("warm", "sys", Answer, cfg.claude.pick_model, cfg.claude.pick_effort))
         self.assertEqual(calls[1][:3], ("call", "sys", "user"))
+        self.assertTrue(invoke.takes_images)
+        invoke("sys", "user", Answer, images=[b"png"])
+        self.assertEqual(calls[2][-1], [b"png"])
 
 
 if __name__ == "__main__":

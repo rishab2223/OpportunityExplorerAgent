@@ -44,7 +44,8 @@ GROUPS: dict[str, list[str]] = {
     # overlap them: as one script it was 132s of a 152s run and nothing else
     # could fill the time. The seam is at scenario 12; e2e_common.py holds the
     # rig and says why it falls there.
-    "apply": ["run_e2e.py", "run_e2e_b.py"],
+    "apply": ["run_e2e.py", "run_e2e_b.py",
+              "screenshot_check.py"],   # pictures for the model, the location rule
     "sites": [                        # one replica per ATS widget that bit us
         "phenom_check.py", "material_check.py", "radix_check.py",
         "rippling_check.py", "signin_check.py", "longlist_check.py",
@@ -60,6 +61,8 @@ GROUPS: dict[str, list[str]] = {
         "primeng_check.py", "li_radio_check.py", "huntingcube_check.py",
         "twin_form_check.py", "sf_sections_check.py", "sf_form_check.py",
         "embedded_confirm_check.py", "redraw_on_blur_check.py", "oracle_cx_check.py",
+        "infor_check.py",
+        "planview_check.py",
     ],
     "attach": ["chooser_check.py", "jobvite_upload_check.py", "taleo_check.py",
                "photo_picker_check.py"],
@@ -108,6 +111,8 @@ TOUCHES: list[tuple[str, tuple[str, ...]]] = [
     ("src/apply/resolver.py", ("apply", "sites")),
     ("src/apply/profile.py", ("apply", "sites", "ui")),   # the Profile page reads and saves it
     ("src/answers.py", ("apply", "sites", "ui")),   # the Saved answers page edits it
+    ("src/llm_claude.py", ("unit", "apply")),
+    ("src/llm.py", ("unit", "apply")),
     ("src/apply/", ("apply", "sites")),
     ("src/web/static/", ("ui", "queue")),
     ("src/web/", ("ui", "queue")),

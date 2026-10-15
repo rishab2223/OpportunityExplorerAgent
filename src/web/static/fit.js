@@ -235,7 +235,7 @@ async function fitRestart() {
 }
 
 async function fitBackToDefault() {
-  if (fitBusy || !confirm("Forget your saved policy? Runs go back to dropping the CCNA bullet, then the Certifications section.")) return;
+  if (fitBusy || !confirm("Forget your saved policy? Runs go back to the default: dropping the Certifications section.")) return;
   try {
     const data = await fitRequest("DELETE", "/api/fit/policy");
     if (!data) return;

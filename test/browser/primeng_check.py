@@ -164,9 +164,9 @@ with sync_playwright() as pw:
     print("== the date of birth ==")
     dob = by["*Date Of Birth"]
     check("the box is read as a date box", worker._is_date_box(dob) and dob.get("datepicker") is True)
-    worker._apply_value(page, dob, "03/10/1997", "", sess, source="profile")
-    check("3 October 1997 goes in month-first, as the box wants, in one go",
-          page.input_value("#dateOfBirth") == "10/03/1997", page.input_value("#dateOfBirth"))
+    worker._apply_value(page, dob, "05/11/1990", "", sess, source="profile")
+    check("5 November 1990 goes in month-first, as the box wants, in one go",
+          page.input_value("#dateOfBirth") == "11/05/1990", page.input_value("#dateOfBirth"))
 
     print("== the city dropdown ==")
     loc = by["Select your current location"]

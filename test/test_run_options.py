@@ -244,7 +244,7 @@ class ParallelPdfTests(unittest.TestCase):
             with lock:
                 running[0] -= 1
             Path(path).with_suffix(".pdf").write_bytes(b"%PDF")
-            return FitResult(pages=1, cuts=["CCNA certification"] if "b" in Path(path).stem else [])
+            return FitResult(pages=1, cuts=["Example certification"] if "b" in Path(path).stem else [])
 
         with tempfile.TemporaryDirectory() as tmp:
             jobs = []

@@ -20,38 +20,41 @@ RESUME = r"""\documentclass[11pt]{article}
 
 \section*{Certifications}
 \begin{itemize}[leftmargin=0.15in, nosep]
-    \item \textbf{Lean Six Sigma Yellow Belt} -- American Society for Quality (ASQ).
-    \item \textbf{Cisco Certified Network Associate (CCNA)} -- Routing and Switching.
+    \item \textbf{Example Cert A} -- Example Board.
+    \item \textbf{Example Cert B} -- Example Vendor.
 \end{itemize}
 
 \end{document}
 """
 
 
-def default(index: int) -> fit_policy.FitStep:
-    return fit_policy.FitStep.model_validate(fit_policy.DEFAULT_STEPS[index])
+# One bullet, then the section: a policy a candidate might save.
+BULLET = fit_policy.FitStep(kind="drop_item", section="Certifications", match="cert b",
+                            label="Drop the Cert B bullet")
+SECTION = fit_policy.FitStep(kind="drop_section", section="Certifications",
+                             label="Drop the Certifications section")
 
 
 class DefaultRuleTests(unittest.TestCase):
-    def test_drops_only_the_ccna_bullet(self) -> None:
-        out = fit_policy.apply_step(RESUME, default(0))
-        self.assertNotIn("CCNA", out)
-        self.assertIn("Lean Six Sigma", out)          # the other cert survives
+    def test_drops_only_the_named_bullet(self) -> None:
+        out = fit_policy.apply_step(RESUME, BULLET)
+        self.assertNotIn("Cert B", out)
+        self.assertIn("Cert A", out)          # the other cert survives
         self.assertIn("Built things.", out)           # experience untouched
         self.assertIn(r"\end{itemize}", out)          # list still closed
         self.assertIn(r"\section*{Certifications}", out)
         self.assertEqual(out.count(r"\end{itemize}"), RESUME.count(r"\end{itemize}"))
 
     def test_then_the_whole_section(self) -> None:
-        out = fit_policy.apply_step(RESUME, default(1))
+        out = fit_policy.apply_step(RESUME, SECTION)
         self.assertNotIn("Certifications", out)
-        self.assertNotIn("Lean Six Sigma", out)
+        self.assertNotIn("Cert A", out)
         self.assertIn(r"\section*{Experience}", out)
         self.assertIn(r"\end{document}", out)
 
-    def test_ccna_is_cut_before_the_whole_section(self) -> None:
+    def test_the_default_names_no_ones_certificate(self) -> None:
         labels = [s.label for s in fit_policy.default_policy().steps]
-        self.assertEqual(labels, ["Drop the CCNA bullet", "Drop the Certifications section"])
+        self.assertEqual(labels, ["Drop the Certifications section"])
 
 
 class FitterTests(unittest.TestCase):
@@ -80,25 +83,25 @@ class FitterTests(unittest.TestCase):
             return one_page.fit_to_one_page(self.tex, steps=steps), calls
 
     def test_stops_as_soon_as_it_fits(self) -> None:
-        result, _ = self._fit([2, 1], [default(0), default(1)])
-        self.assertEqual(result.cuts, ["Drop the CCNA bullet"])
-        self.assertEqual(result.trail, [("as written", 2), ("Drop the CCNA bullet", 1)])
-        self.assertIn("Lean Six Sigma", self.tex.read_text(encoding="utf-8"))
+        result, _ = self._fit([2, 1], [BULLET, SECTION])
+        self.assertEqual(result.cuts, ["Drop the Cert B bullet"])
+        self.assertEqual(result.trail, [("as written", 2), ("Drop the Cert B bullet", 1)])
+        self.assertIn("Cert A", self.tex.read_text(encoding="utf-8"))
 
     def test_a_step_that_breaks_the_compile_is_skipped_not_the_policy(self) -> None:
         # The fake compile refuses any source without "Initech", so dropping
         # Experience is the step that "breaks" the document.
         gone = fit_policy.FitStep(kind="drop_section", section="Experience")
-        result, calls = self._fit([2, 1], [gone, default(0)],
+        result, calls = self._fit([2, 1], [gone, BULLET],
                                   compile_ok=lambda src: "Initech" in src)
-        self.assertEqual(result.cuts, ["Drop the CCNA bullet"])
+        self.assertEqual(result.cuts, ["Drop the Cert B bullet"])
         self.assertIn("was skipped", result.note)
         final = self.tex.read_text(encoding="utf-8")
         self.assertIn("Initech", final)           # the broken step was undone
-        self.assertNotIn("CCNA", final)           # the next step still ran
+        self.assertNotIn("Cert B", final)         # the next step still ran
 
     def test_still_long_keeps_the_cuts_and_says_so(self) -> None:
-        result, _ = self._fit([2, 2, 2], [default(0), default(1)])
+        result, _ = self._fit([2, 2, 2], [BULLET, SECTION])
         self.assertEqual(len(result.cuts), 2)
         self.assertIn("still 2 pages", result.note)
 

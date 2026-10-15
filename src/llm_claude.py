@@ -16,6 +16,7 @@ event loop per call.
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import os
 import sys
@@ -43,10 +44,34 @@ def structured_call(
     model: str,
     effort: str,
     env: EnvSettings,
+    images: list[bytes] | None = None,
 ) -> T:
+    """`images`: PNG pictures sent ahead of the text (crops of a form)."""
     if backend == "api":
-        return _api_call(system, user, schema, model, effort, env)
-    return _run_coroutine(_agent_call(system, user, schema, model, effort))
+        return _api_call(system, user, schema, model, effort, env, images)
+    return _run_coroutine(_agent_call(system, user, schema, model, effort, images))
+
+
+def _content(user: str, images: list[bytes] | None) -> str | list[dict[str, Any]]:
+    """The user turn: the text alone, or the pictures and then the text."""
+    if not images:
+        return user
+    blocks: list[dict[str, Any]] = [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                     "data": base64.b64encode(png).decode("ascii")}}
+        for png in images
+    ]
+    blocks.append({"type": "text", "text": user})
+    return blocks
+
+
+def _stream(content: list[dict[str, Any]], session_id: str):
+    """A user turn with pictures, as the SDK's streaming input takes it (a
+    plain string carries text only)."""
+    async def messages():
+        yield {"type": "user", "message": {"role": "user", "content": content},
+               "parent_tool_use_id": None, "session_id": session_id}
+    return messages()
 
 
 def _run_coroutine(coro: Coroutine[Any, Any, T]) -> T:
@@ -139,11 +164,14 @@ def _options(system: str, schema: type[BaseModel], model: str, effort: str):
     )
 
 
-async def _agent_call(system: str, user: str, schema: type[T], model: str, effort: str) -> T:
+async def _agent_call(system: str, user: str, schema: type[T], model: str, effort: str,
+                      images: list[bytes] | None = None) -> T:
     from claude_agent_sdk import ResultMessage, query
 
+    content = _content(user, images)
+    prompt = content if isinstance(content, str) else _stream(content, uuid.uuid4().hex)
     result: ResultMessage | None = None
-    async for message in query(prompt=user, options=_options(system, schema, model, effort)):
+    async for message in query(prompt=prompt, options=_options(system, schema, model, effort)):
         if isinstance(message, ResultMessage):
             result = message
     return _parse_result(result, schema)
@@ -163,8 +191,14 @@ def _parse_result(result: Any, schema: type[T]) -> T:
 
 # Measured Oct 2026 (SDK 0.2.148): a one-off query() took 17.3 s, nearly all
 # of it the bundled binary starting; a kept client took 1.9 s to start and
-# then 2.0-2.7 s a call, each call in a fresh conversation (its own
-# session_id), so nothing one call says reaches the next.
+# then 2.0-2.7 s a call.
+#
+# A fresh session_id per call does NOT start a fresh conversation: asked
+# "what word did I ask you to remember?", the second call answered with the
+# first call's word, and every call's input grew by everything before it.
+# "/clear" sent after each answer does reset it (0.06 s), so each call is
+# answered on its own prompt alone.
+CLEAR_COMMAND = "/clear"
 CONNECT_TIMEOUT_S = 90
 CALL_TIMEOUT_S = 600
 # After this many broken processes the session stops starting new ones and
@@ -210,12 +244,19 @@ class _Kept:
                     break
                 user, reply = item
                 try:
-                    await client.query(user, session_id=uuid.uuid4().hex)
+                    session_id = uuid.uuid4().hex
+                    await client.query(user if isinstance(user, str) else _stream(user, session_id),
+                                       session_id=session_id)
                     result = None
                     async for message in client.receive_response():
                         if isinstance(message, ResultMessage):
                             result = message
                     reply.set_result(result)
+                    # After the answer is on its way, not before: the caller
+                    # does not wait for it.
+                    await client.query(CLEAR_COMMAND, session_id=session_id)
+                    async for _message in client.receive_response():
+                        pass
                 except BaseException as exc:
                     if not reply.done():
                         reply.set_exception(exc)
@@ -226,8 +267,9 @@ class _Kept:
             except BaseException:
                 pass
 
-    def ask(self, user: str) -> Any:
-        """The ResultMessage for one call; raises if the process is broken."""
+    def ask(self, user: str | list[dict[str, Any]]) -> Any:
+        """The ResultMessage for one call (`user` is the text, or content
+        blocks with pictures); raises if the process is broken."""
         self.ready.result(timeout=CONNECT_TIMEOUT_S)
         if self.task.done():
             raise RuntimeError("the kept Claude process has stopped")
@@ -280,16 +322,17 @@ class ClaudeSession:
         """Start the process for these calls without waiting for it."""
         self._get(system, schema, model, effort)
 
-    def call(self, system: str, user: str, schema: type[T], model: str, effort: str) -> T:
+    def call(self, system: str, user: str, schema: type[T], model: str, effort: str,
+             images: list[bytes] | None = None) -> T:
         kept = self._get(system, schema, model, effort)
         if kept is not None:
             try:
-                result = kept.ask(user)
+                result = kept.ask(_content(user, images))
             except BaseException as exc:
                 self._retire(kept, exc)
             else:
                 return _parse_result(result, schema)
-        return _run_coroutine(_agent_call(system, user, schema, model, effort))
+        return _run_coroutine(_agent_call(system, user, schema, model, effort, images))
 
     def _retire(self, kept: _Kept, exc: BaseException) -> None:
         with self._lock:
@@ -325,7 +368,8 @@ class ClaudeSession:
 
 
 def _api_call(
-    system: str, user: str, schema: type[T], model: str, effort: str, env: EnvSettings
+    system: str, user: str, schema: type[T], model: str, effort: str, env: EnvSettings,
+    images: list[bytes] | None = None,
 ) -> T:
     import anthropic
 
@@ -334,7 +378,7 @@ def _api_call(
         model=model,
         max_tokens=MAX_OUTPUT_TOKENS,
         system=system,
-        messages=[{"role": "user", "content": user}],
+        messages=[{"role": "user", "content": _content(user, images)}],
         output_config={"effort": effort},
         output_format=schema,
     )

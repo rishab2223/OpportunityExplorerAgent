@@ -1,7 +1,7 @@
 """Oracle Recruiting Cloud, as Adani's form drew it (Oct 2026):
 
   - the date of birth is three dropdowns, Month / Day / Year, and each got
-    the whole "03/10/1997", which none of them could take;
+    the whole "05/11/1990", which none of them could take;
   - the dropdowns open a GRID (aria-haspopup=grid), whose rows were not read
     as options at all: "its list never opened", for Domicile State too;
   - Yes / No questions are pill buttons marked with aria-pressed. Without a
@@ -31,7 +31,7 @@ TMP = tempfile.TemporaryDirectory()
 profile.PROFILE_PATH = Path(TMP.name) / "apply_profile.json"
 history.DB_PATH = Path(TMP.name) / "history.db"
 profile.PROFILE_PATH.write_text(json.dumps({
-    "full_name": "Test User", "date_of_birth": "03/10/1997", "state": "Haryana",
+    "full_name": "Test User", "date_of_birth": "05/11/1990", "state": "Haryana",
     "location": "Gurgaon, Haryana, India",
     "jobs": [{"title": "Engineer", "company": "Northwind", "start": "07/2020", "end": "01/2026"}],
 }), encoding="utf-8")
@@ -82,14 +82,14 @@ with sync_playwright() as pw:
                       "", sess)
     values = {k: page.locator(f"#{k}").input_value() for k in
               ("month-dateOfBirth-11", "day-dateOfBirth-11", "year-dateOfBirth-11", "domicileState-18")}
-    check("Month: October", values["month-dateOfBirth-11"] == "October", str(values))
-    check("Day: 3", values["day-dateOfBirth-11"] == "3", str(values))
-    check("Year: 1997", values["year-dateOfBirth-11"] == "1997", str(values))
+    check("Month: November", values["month-dateOfBirth-11"] == "November", str(values))
+    check("Day: 5", values["day-dateOfBirth-11"] == "5", str(values))
+    check("Year: 1990", values["year-dateOfBirth-11"] == "1990", str(values))
     log = page.locator("#log").inner_text()
     check("'worked with Example before?' is No, from the profile's employers",
           "Have you worked with Example Before ?=No" in log, log)
-    check("no box got the whole date", not any("03/10/1997" in line for line in sess.lines),
-          str([line for line in sess.lines if "1997" in line]))
+    check("no box got the whole date", not any("05/11/1990" in line for line in sess.lines),
+          str([line for line in sess.lines if "1990" in line]))
 
     print("\n== a dropdown whose list is a grid ==")
     # Domicile is the state of schooling, not of residence: no profile rule

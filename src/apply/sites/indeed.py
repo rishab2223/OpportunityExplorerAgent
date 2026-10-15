@@ -28,9 +28,16 @@ from src.apply.sites.linkedin import focus_employer_tab, open_tabs
 READY_TIMEOUT = 10000
 READY_STEP = 250
 
+# Indeed's layout of Oct 14 2026 has neither id: the job header holds
+# [data-testid=primary-apply-action] with an "Apply now" LINK in it,
+# a[data-testid=viewjob-indeed-apply], to smartapply.indeed.com. Still this
+# job's own control - the header's, never a similar job's card - so anything
+# else in that block is taken as the company-site variant.
+PRIMARY = '[data-testid="primary-apply-action"]'
 BUTTONS = (
-    ("indeed", "#indeedApplyButton", "Apply with Indeed"),
-    ("external", "#applyButtonLinkContainer button, #applyButtonLinkContainer a",
+    ("indeed", '#indeedApplyButton, [data-testid="viewjob-indeed-apply"]', "Apply with Indeed"),
+    ("external", "#applyButtonLinkContainer button, #applyButtonLinkContainer a, "
+     f'{PRIMARY} a:not([data-testid="viewjob-indeed-apply"]), {PRIMARY} button',
      "Apply on company site"),
 )
 # How long a click gets to open something, per attempt. A button can be on

@@ -72,6 +72,11 @@ SNAPSHOT_JS = """
     }
     return null;
   };
+  // A form's validation message, which is never a question: by its markup,
+  // or by its words when the markup says nothing.
+  const MESSAGE_SEL = '[role=alert], [aria-live=assertive], [class*="error" i], [class*="invalid" i], ' +
+                      '[class*="feedback" i], [class*="validation" i]';
+  const MESSAGE_RE = /^(this (field|question) is required|required|(please )?(answer|complete|fill in) this( question| field)?|(please )?(select|choose|pick|enter|provide) (an? |your )?(option|answer|value|response)|.{0,60} is required)[.!]?$/i;
   // A question written inside the group's own box, above its first option: a
   // <legend> in all but name, and what UKG writes (LABEL.control-label). Only
   // text above the FIRST option counts - measured from the option in hand,
@@ -191,6 +196,14 @@ SNAPSHOT_JS = """
     return (seen.length ? seen : parts)
       .map(n => (n.innerText || '').trim()).filter(Boolean).join(' ').trim();
   };
+  // The popups dropdowns name as their own (aria-controls/owns of a
+  // combobox that is not itself a text box): their search boxes belong to them.
+  const popupIds = new Set();
+  for (const c of deepAll(root, '[role=combobox]:not(input), [aria-haspopup=listbox]:not(input)')) {
+    for (const a of ['aria-controls', 'aria-owns']) {
+      for (const id of (c.getAttribute(a) || '').split(/\\s+/).filter(Boolean)) popupIds.add(id);
+    }
+  }
   for (const el of deepAll(root, selector)) {
     const style = window.getComputedStyle(el);
     const type = (el.getAttribute('type') || '').toLowerCase();
@@ -262,12 +275,27 @@ SNAPSHOT_JS = """
       !inner.closest('.p-hidden-accessible, [data-p-hidden-accessible]');
     if (!FORM_TAGS.includes(el.tagName) && el.tagName !== 'BUTTON' && el.tagName !== 'A' &&
         inner && !(standsIn && !innerShows)) continue;
-    if (el.tagName === 'A') {
+    // A dropdown is never just a link, whatever its tag: iCIMS's Phone
+    // Country Code (Planview, Oct 2026) is <a role=combobox> showing
+    // "(+91) India", and was dropped as one of the page's many links.
+    const dropdownRole = (el.getAttribute('role') || '').toLowerCase() === 'combobox' ||
+      (el.getAttribute('aria-haspopup') || '').toLowerCase() === 'listbox';
+    if (el.tagName === 'A' && !dropdownRole) {
       // Pages carry hundreds of links; only apply/continue-style ones matter,
       // and MAX_FIELDS would drown in the rest.
       const looksButton = el.getAttribute('role') === 'button' ||
         /\\bbtn|button\\b/i.test(el.className || '');
       if (!looksButton && !actionable.test(el.innerText || '')) continue;
+    }
+    // The search box INSIDE a dropdown's own popup is the dropdown's, not a
+    // field: iCIMS's "— Type to Search —" took the "Phone Country Code"
+    // label, and typing +91 into it was logged as filled - it only filters.
+    if (el.tagName === 'INPUT' && !dropdownRole && popupIds.size) {
+      let owner = el.parentElement, inPopup = false;
+      for (let d = 0; owner && d < 6; d++, owner = owner.parentElement) {
+        if (owner.id && popupIds.has(owner.id)) { inPopup = true; break; }
+      }
+      if (inPopup) continue;
     }
     // Its old number if it has one; a fresh one if it is new, or if a site
     // cloned a numbered node and two now share one.
@@ -371,7 +399,10 @@ SNAPSHOT_JS = """
     // a dozen comboboxes all reading "Select", and inputs whose only label
     // is a name like "VIQ1zlI-W69" - which is what the transcript then
     // showed the candidate when it filled one in.
-    const JUNK_LABEL = /^(textbox|combobox|listbox|dropdown|select|select\\.\\.\\.|search|choose|choose\\.\\.\\.|option|options|none|value|input|field)$/i;
+    // "Text field" is what an accessibility overlay (UserWay, on Infor's form,
+    // Oct 2026) writes over every box it cannot name: the Country dropdown
+    // was "Text field" to the agent, while <label>Country</label> sat above.
+    const JUNK_LABEL = /^(textbox|combobox|listbox|dropdown|select|select\\.\\.\\.|search|choose|choose\\.\\.\\.|option|options|none|value|input|field|text|edit|text ?field|text ?box|text input|input field|edit text|edit field)$/i;
     // "VIQ1zlI-W69", "KXTFUcVOuOm": one token, both cases, and either a
     // digit or case flipping about all over it. "LinkedIn" flips twice and
     // is a word, so it stays a label.
@@ -439,6 +470,13 @@ SNAPSHOT_JS = """
           // for this one: the span in a Radix dropdown button reads "Remote",
           // which turned the notice-period box into "Remote Notice Period".
           if (h.closest('button, [role=button], [role=combobox], select, textarea')) continue;
+          // Nor is a dropdown's shown choice or what it announces to screen
+          // readers: inside Infor's react-select the nearest texts before the
+          // box were "British Indian Ocean Territory" (its value) and "option
+          // ... selected" (its live region), not the Country label above.
+          if (h.closest('[aria-live], [class*="a11yText"], [class*="singleValue"], [class*="single-value"], ' +
+                        '[class*="select__placeholder"], [class*="select__value-container"], ' +
+                        '[class*="select__control"]')) continue;
           if (!(h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
           const t = (h.innerText || '').trim();
           if (t.length >= 3 && t.length <= 200) found.push(h);
@@ -560,7 +598,22 @@ SNAPSHOT_JS = """
             if (h === el || h.contains(el) || h.contains(rg)) continue;
             if (h.querySelector('input, select, textarea, button, [role=radio]')) continue;
             if (!(h.compareDocumentPosition(rg) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+            // Never the question before's error message: "Answer this
+            // question" under an unanswered Yes / No became the NEXT
+            // question's text, so the model was told the wrong question.
+            if (h.closest(MESSAGE_SEL)) continue;
+            // Nor the question before's own words, inside ITS group.
+            const owner = h.closest('fieldset, [role=radiogroup], [role=group]');
+            if (owner && !owner.contains(el)) continue;
+            // Nor another control's label: "Notice period", a dropdown's,
+            // two rows up, is not what this question asks.
+            if (h.tagName === 'LABEL' && h.htmlFor && !rg.contains(document.getElementById(h.htmlFor))) continue;
+            if (h.id && window.CSS && CSS.escape) {
+              const user = document.querySelector('[aria-labelledby~="' + CSS.escape(h.id) + '"]');
+              if (user && user !== el && user !== rg && !rg.contains(user)) continue;
+            }
             const t = (h.innerText || '').trim();
+            if (MESSAGE_RE.test(t)) continue;
             if (t.length >= 3 && t.length <= 200) before.push(t);
           }
           if (before.length) group = before[before.length - 1];
@@ -891,9 +944,17 @@ _last_dropped = 0
 
 # Visible form controls in a document - the measure of which frame holds
 # the application form.
+# A site's search box is not a form: Planview's header "Search Planview"
+# (Oct 2026), drawn only some of the time, made the page "have a control"
+# and raised the bar its iCIMS frame had to clear from 1 control to 4.
 CONTROL_COUNT_JS = """
 () => Array.from(document.querySelectorAll('input:not([type=hidden]), textarea, select'))
-  .filter(e => e.getClientRects().length).length
+  .filter(e => e.getClientRects().length)
+  .filter(e => !(e.type === 'search' || e.closest('[role=search], form[role=search]') ||
+                 /\\bsearch\\b/i.test((e.getAttribute('placeholder') || '') + ' ' +
+                                    (e.getAttribute('aria-label') || '') + ' ' + (e.id || '') + ' ' +
+                                    (e.getAttribute('name') || ''))))
+  .length
 """
 # Anything worth acting on: a wizard's last step ("Review your application")
 # has buttons and no fields, and the form's frame must not be dropped there.
@@ -1032,7 +1093,14 @@ def target(page, refresh: bool = False):
             if frame == page.main_frame or NOT_A_FORM_RE.search(frame.url or ""):
                 continue
             count = controls(frame)
-            if count < needed or not _frame_is_a_panel(page, frame):
+            # The frame already in use keeps the scan while it holds a form
+            # at all: iCIMS's step in Planview's page (Oct 2026) went from 4
+            # controls to 3 each time its country list closed, under the 4
+            # a frame needs to take over from a page with a search box - so
+            # every open and close of the list swapped the scan between the
+            # form and the page, and the candidate was told to click the
+            # page's "Submit a Ticket", then "#4", then "Submit a Ticket"...
+            if count < (1 if frame is previous else needed) or not _frame_is_a_panel(page, frame):
                 continue
             # The frame already in use wins ties, so a wizard step with one
             # field does not hand the scan to some other frame mid-form.
@@ -1054,6 +1122,9 @@ def snapshot(page) -> list[dict[str, Any]]:
         _last_dropped = 0
         return []
     fields = one_form(fields)
+    for field in fields:
+        field["label"] = strip_placeholder_tail(str(field.get("label") or ""))
+    split_shared_groups(fields)
     fields = collapse_long_groups(fields)
     # Say so when the budget bites. A silent cut is how a whole form went
     # missing: USP's had 102 controls, the last 42 of them - six required
@@ -1064,6 +1135,21 @@ def snapshot(page) -> list[dict[str, Any]]:
     # first time rather than the third session.
     _last_dropped = max(0, len(fields) - MAX_FIELDS)
     return fields[:MAX_FIELDS]
+
+
+# A dropdown's placeholder written into its accessible name: iCIMS's
+# aria-label="Country Code — Make a Selection —" (Planview, Oct 2026) hid the
+# question from the profile's "Country Code" rule.
+_PLACEHOLDER_TAIL_RE = re.compile(
+    r"\s*[—–-]+\s*(make (a|your) (selection|choice)|select( one| an? option)?|choose( one| an? option)?"
+    r"|please (select|choose))\s*[—–-]*\s*$", re.IGNORECASE)
+
+
+def strip_placeholder_tail(label: str) -> str:
+    """The label without a dash-wrapped placeholder at its end; unchanged
+    when that is all there is."""
+    cut = _PLACEHOLDER_TAIL_RE.sub("", label or "").strip()
+    return cut or (label or "")
 
 
 def last_dropped() -> int:
@@ -1153,6 +1239,81 @@ def one_form(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def last_side_forms() -> list[str]:
     """What the last snapshot set aside, one line of box names per form."""
     return list(_last_side_forms)
+
+
+_CHOICE_WORDS = {"yes": "Yes", "no": "No", "true": "Yes", "false": "No", "y": "Yes", "n": "No"}
+
+
+def _question_and_options(options: list[dict[str, Any]]) -> tuple[str, list[str]] | None:
+    """(the question, each option's own words) for options whose labels each
+    carry the whole question: "Are you at least 18 years old? yes" / "... no".
+    None when the labels share no real question."""
+    labels = [re.sub(r"\s+", " ", str(o.get("label") or "")).strip() for o in options]
+    if len(set(labels)) == 1:
+        # Cut at the snapshot's 200 characters before the yes/no (Infor's
+        # relatives question): the option is what stands beside it, or its
+        # value.
+        question = labels[0]
+        names = []
+        for o in options:
+            beside = re.sub(r"\s+", " ", str(o.get("beside") or "")).strip()
+            value = _CHOICE_WORDS.get(str(o.get("value") or "").strip().lower(), "")
+            names.append(beside if beside and len(beside) <= 40 else value)
+        if not all(names) or len({n.lower() for n in names}) != len(names):
+            return None
+        return question, names
+    words = [label.split(" ") for label in labels]
+    shared = 0
+    while all(len(w) > shared for w in words) and len({w[shared].lower() for w in words}) == 1:
+        shared += 1
+    question = " ".join(words[0][:shared]).strip()
+    if shared < 2 or len(question) < 8:
+        return None
+    names = []
+    for o, w in zip(options, words):
+        rest = " ".join(w[shared:]).strip()
+        if not rest:
+            return None
+        beside = re.sub(r"\s+", " ", str(o.get("beside") or "")).strip()
+        names.append(beside if beside.lower() == rest.lower() else rest)
+    return question, names
+
+
+def split_shared_groups(fields: list[dict[str, Any]]) -> None:
+    """Give each question its own group when the page gave several one.
+
+    Infor's form (Oct 2026) put all five Yes/No questions under the section
+    heading "3.Questions", with the question written into each option's
+    label ("Are you at least 18 years old? no") and only the input `name`
+    telling the questions apart. Read as one ten-option question, the answer
+    "no" about relatives ticked "Are you at least 18 years old? no" - three
+    times, once per question it was replayed into. Options sharing a name
+    are one question; when their group text is shared with other names (or
+    empty), the question comes out of their labels and each label becomes the
+    option's own words. In place; anything unclear is left as it was."""
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for field in fields:
+        if (field.get("type") or "").lower() in ("radio", "checkbox") and field.get("name"):
+            by_name.setdefault(str(field["name"]), []).append(field)
+    names_per_group: dict[str, set[str]] = {}
+    for name, options in by_name.items():
+        for option in options:
+            names_per_group.setdefault(str(option.get("group") or "").strip(), set()).add(name)
+    for name, options in by_name.items():
+        if len(options) < 2:
+            continue
+        group = str(options[0].get("group") or "").strip()
+        if any(str(o.get("group") or "").strip() != group for o in options):
+            continue
+        if group and len(names_per_group.get(group, ())) < 2:
+            continue                      # the group is this question's own
+        split = _question_and_options(options)
+        if split is None:
+            continue
+        question, names = split
+        for option, own in zip(options, names):
+            option["group"] = question
+            option["label"] = own
 
 
 def collapse_long_groups(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1368,6 +1529,100 @@ def alerts(page) -> str:
         return target(page).evaluate(ALERTS_JS) or ""
     except Exception:
         return ""
+
+
+# The message a page shows for ONE box: what aria-errormessage and an error
+# aria-describedby point at, error-looking or red text inside the box's own
+# wrapper (the nearest ancestors holding no other control) or just below it,
+# and the browser's own complaint about a pattern or type it breaks. Returns
+# {invalid, messages}; a message is short visible text, never the label.
+FIELD_MESSAGE_JS = """
+(el) => {
+  const shown = (n) => n && n.getClientRects().length && getComputedStyle(n).visibility !== 'hidden';
+  const text = (n) => (n.innerText || '').replace(/\\s+/g, ' ').trim();
+  const labelText = ((el.labels && el.labels[0]) ? text(el.labels[0]) : '') ||
+                    (el.getAttribute('aria-label') || '');
+  const out = [];
+  const add = (n) => {
+    if (!shown(n) || n.contains(el)) return;
+    const t = text(n);
+    if (!t || t.length > 200 || !/[A-Za-z]{3}/.test(t) || t === labelText) return;
+    if (out.some(s => s.includes(t) || t.includes(s))) return;
+    out.push(t);
+  };
+  const red = (n) => {
+    const m = /rgba?\\((\\d+), (\\d+), (\\d+)/.exec(getComputedStyle(n).color || '');
+    return m && +m[1] > 150 && +m[2] < 110 && +m[3] < 110;
+  };
+  const ERR = '[role=alert], [aria-live=assertive], [class*=error i], [class*=invalid i], ' +
+              '[id*=error i], [data-automation-id*=error i]';
+  const root = el.getRootNode();
+  const byId = (id) => (root.getElementById ? root.getElementById(id) : null) || document.getElementById(id);
+  for (const id of (el.getAttribute('aria-errormessage') || '').split(/\\s+/).filter(Boolean)) add(byId(id));
+  for (const id of (el.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean)) {
+    const n = byId(id);
+    if (n && (n.matches(ERR) || red(n))) add(n);
+  }
+  let scope = null;
+  for (let box = el.parentElement, i = 0; box && i < 5; box = box.parentElement, i++) {
+    if (box.querySelectorAll('input:not([type=hidden]), select, textarea').length > 1) break;
+    scope = box;
+  }
+  const look = (container) => {
+    for (const n of container.querySelectorAll('*')) {
+      if (n.children.length > 2) continue;
+      if (n.matches(ERR) || red(n)) add(n);
+    }
+  };
+  if (scope) {
+    look(scope);
+    let next = scope.nextElementSibling;
+    for (let i = 0; next && i < 2; next = next.nextElementSibling, i++) {
+      if (next.querySelector('input, select, textarea')) break;
+      if (next.matches(ERR) || red(next)) add(next); else look(next);
+    }
+  }
+  const native = el.validity && !el.validity.valid && !el.validity.valueMissing;
+  if (native && el.validationMessage && !out.includes(el.validationMessage)) out.push(el.validationMessage);
+  return {invalid: el.getAttribute('aria-invalid') === 'true' || !!native, messages: out.slice(0, 4)};
+}
+"""
+
+
+def field_message(locator) -> tuple[bool, list[str]]:
+    """(marked invalid, the messages shown for this box) - nothing when it
+    cannot be read."""
+    try:
+        found = locator.evaluate(FIELD_MESSAGE_JS, timeout=1000) or {}
+    except Exception:
+        return False, []
+    return bool(found.get("invalid")), [str(m) for m in found.get("messages") or []]
+
+
+# The marked fields (data-oea-id) the page now flags as invalid.
+INVALID_MARKED_JS = """
+() => {
+  const out = [];
+  const walk = (node) => {
+    for (const el of node.querySelectorAll('[data-oea-id]')) {
+      if (!el.getClientRects().length) continue;
+      const native = el.validity && !el.validity.valid && el.willValidate;
+      if (el.getAttribute('aria-invalid') === 'true' || native) out.push(+el.getAttribute('data-oea-id'));
+    }
+    for (const el of node.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+  };
+  walk(document);
+  return out;
+}
+"""
+
+
+def invalid_marked(page) -> list[int]:
+    """The snapshot ids of the boxes the page marks invalid right now."""
+    try:
+        return [int(i) for i in target(page).evaluate(INVALID_MARKED_JS) or []]
+    except Exception:
+        return []
 
 
 # Is this click being refused on purpose? Returns the overlay's name when the

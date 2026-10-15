@@ -10,6 +10,9 @@
                which opens Indeed's own form in the same tab
     #company   #applyButtonLinkContainer > button "Apply on company site",
                which opens the employer's site in a new tab
+    #testid    Indeed's layout of Oct 14 2026: no id, an "Apply now" LINK,
+               a[data-testid=viewjob-indeed-apply] inside the job header's
+               [data-testid=primary-apply-action], to smartapply.indeed.com
 
   The header's What / Where search boxes are why the model used to be asked
   about "2 field(s)" on a page with nothing to fill. The card at the bottom
@@ -47,6 +50,13 @@
       'aria-label="Apply with Indeed">Apply with Indeed</button></span>';
     document.getElementById("indeedApplyButton").addEventListener("click", function () {
       if (wired) location.href = "fixture_late_continue.html";
+    });
+  } else if (mode === "testid") {
+    slot.innerHTML = '<div data-testid="job-header-actions"><div data-testid="primary-apply-action">' +
+      '<div><a href="fixture_late_continue.html" rel="nofollow" role="link" tabindex="0" ' +
+      'data-testid="viewjob-indeed-apply"><div><div>Apply now</div></div></a></div></div></div>';
+    document.querySelector('[data-testid="viewjob-indeed-apply"]').addEventListener("click", function (e) {
+      if (!wired) e.preventDefault();
     });
   } else {
     slot.innerHTML = '<div id="applyButtonLinkContainer"><button type="button" ' +

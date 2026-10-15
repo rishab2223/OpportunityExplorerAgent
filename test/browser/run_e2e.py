@@ -77,11 +77,12 @@ assert "Cover letter skipped" in logs3, logs3
 assert "Cover letter ready" in logs3, logs3
 assert (SCRATCH / "cover_DummyCo_Software_Engineer.tex").exists(), "letter not saved"
 
-# External path: listing -> new tab -> employer form (no attachments there).
-s4 = run("external", listing_url, ["done"], expect_calls=1)
+# External path: listing -> employer form (no attachments there). The
+# listing's "Apply for this job" is a plain link, so it is followed without
+# a model call (it used to cost one, to click it).
+s4 = run("external", listing_url, ["done"], expect_calls=0)
 logs4 = "\n".join(s4.logs)
-assert "Clicked Apply for this job" in logs4
-assert "Switched to" in logs4 and "fixture_form" in logs4
+assert "'Apply for this job' is a link to the application form - opened it" in logs4, logs4
 
 # Modal scoping: the form lives in a role=dialog while 70 background buttons
 # outnumber the model's field budget (the LinkedIn Easy Apply failure shape). The

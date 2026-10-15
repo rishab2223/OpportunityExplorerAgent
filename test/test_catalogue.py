@@ -104,12 +104,12 @@ class CatalogueTests(unittest.TestCase):
         # a real dump, not by reading the code.
         fields = [
             {"tag": "button", "label": "someone@example.invalid", "section": "Account"},
-            {"tag": "input", "label": "Call me on 099993 07737", "section": "Contact"},
+            {"tag": "input", "label": "Call me on 090000 00001", "section": "Contact"},
         ]
         catalogue.record("workday", "https://x/1", fields)
         raw = catalogue.CATALOGUE_PATH.read_text(encoding="utf-8")
         self.assertNotIn("someone@example.invalid", raw)
-        self.assertNotIn("07737", raw)
+        self.assertNotIn("00001", raw)
         self.assertIn("<email>", raw)
         self.assertIn("<number>", raw)
 

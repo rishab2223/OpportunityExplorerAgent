@@ -4,11 +4,9 @@ The model writes LaTeX blind - it never sees rendered output - so "keep it to
 one page" in a prompt is a hope, not a guarantee. Here the PDF is compiled and
 its pages counted, and while it is too long the next step of the candidate's
 fit policy (src/resume/fit_policy.py, agreed in the Resume fit tab) is
-applied and it is recompiled. Without a saved policy the old fixed order
-stands:
+applied and it is recompiled. Without a saved policy the default stands:
 
-    1. the CCNA bullet in Certifications
-    2. the whole Certifications section
+    1. the whole Certifications section
     (stop: anything still too long is flagged rather than gutted)
 
 Every step is reported for the run log, so nothing is silently lost. A step

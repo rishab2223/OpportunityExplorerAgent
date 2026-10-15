@@ -1,0 +1,46 @@
+% A one-page resume in the shape the tailoring step works with: one .tex
+% file, one \section*{...} per part. Copy it to localData/resume.tex and
+% replace the content with your own. Tailoring rewrites section bodies
+% (Summary, Skills, bullet wording); the preamble and headings stay as written.
+\documentclass[11pt]{article}
+\usepackage[margin=0.7in]{geometry}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+
+\begin{document}
+
+{\LARGE \textbf{Alex Example}}\\[2pt]
+Bengaluru, India \quad | \quad alex@example.com \quad | \quad +91 90000 00000 \quad | \quad
+\href{https://www.linkedin.com/in/alex-example}{linkedin.com/in/alex-example}
+
+\section*{Summary}
+Backend engineer with five years of building and running services in Python and Node.js on AWS.
+
+\section*{Skills}
+Python, JavaScript, Node.js, AWS, SQL, Docker, REST APIs
+
+\section*{Experience}
+\textbf{Software Engineer}, Initech Systems \hfill 07/2021 -- Present
+\begin{itemize}[nosep]
+  \item Built and ran the services behind the order pipeline.
+  \item Cut the nightly batch from three hours to forty minutes.
+\end{itemize}
+
+\textbf{Associate Engineer}, Globex \hfill 07/2018 -- 06/2021
+\begin{itemize}[nosep]
+  \item Wrote and tested internal tools used by the support team.
+\end{itemize}
+
+\section*{Education}
+\textbf{Example University} -- Bachelors, Computer Science \hfill 2014 -- 2018
+
+\section*{Certifications}
+\begin{itemize}[nosep]
+  \item Example Cloud Certification
+\end{itemize}
+
+\end{document}

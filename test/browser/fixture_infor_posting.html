@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head><meta charset="utf-8"><title>Software Engineer - Infor</title></head>
+<body>
+<!--
+  Infor's job page (careers.infor.com/postings/<id>, Oct 15 2026): the
+  description, two "Apply Now" LINKS to the form at .../applications/new, a
+  "Register Your Interest" link and the cookie banner - eleven controls and
+  nothing to fill. The agent asked the model about it (21 s) and the model's
+  click on "Apply Now" was refused as submit-worded.
+  #hash-only: the Apply link goes nowhere (href="#"), a button by another
+  name, which is never followed.
+-->
+<a class="external-button" id="apply-top" href="fixture_infor.html">Apply Now</a>
+<a class="external-button" href="fixture_infor.html">Register Your Interest</a>
+<h1>Software Engineer, Senior (Gen AI, Python, RAG and AWS)</h1>
+<p>Infor's AI Studio represents an agentic platform that enables teams to author, configure and deploy
+   solutions utilising natural language processing.</p>
+<a class="external-button" id="apply-bottom" href="fixture_infor.html">Apply Now</a>
+<a href="#top">Back to top</a>
+<a href="#contact">Contact Us</a>
+<div id="onetrust-banner">
+  <button>Cookies Settings</button><button>Reject All</button><button>Accept All Cookies</button>
+</div>
+<script>
+  if (location.hash === "#hash-only") {
+    document.querySelectorAll('a.external-button').forEach(a => a.setAttribute('href', '#'));
+  }
+</script>
+</body>
+</html>

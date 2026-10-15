@@ -2,8 +2,8 @@
 
 The candidate decides, in the Resume fit tab, by talking it through with the
 model; what they agree on is saved here (localData/resume_fit_policy.json)
-and every run applies it from then on. Until they do, the old fixed rule
-stands: the CCNA bullet, then the whole Certifications section.
+and every run applies it from then on. Until they do, the default stands:
+the whole Certifications section goes.
 
 A policy is an ordered list of steps. When a compiled resume is too long the
 first step is applied and it is compiled again, then the next, until it fits
@@ -52,7 +52,7 @@ class StepFields(BaseModel):
     kind: Literal["layout", "drop_item", "drop_section", "replace_section"]
     label: str = Field("", description="What the candidate sees, e.g. 'Margins down to 0.6in'")
     section: str = Field("", description="Section heading, copied from the resume")
-    match: str = Field("", description="drop_item: words the bullet contains, e.g. 'CCNA'")
+    match: str = Field("", description="drop_item: words the bullet contains, e.g. 'Scrum'")
     latex_body: str = Field("", description="replace_section: the complete shorter body, raw LaTeX")
     setting: Literal["margin", "font_size", "section_spacing", "item_spacing", ""] = Field(
         "", description="layout: which setting")
@@ -97,8 +97,9 @@ class FitPolicy(BaseModel):
     agreed_at: str = ""
 
 
+# Generic on purpose: it names no one's certificate. A resume without a
+# Certifications section is flagged as still too long rather than cut.
 DEFAULT_STEPS: list[dict[str, Any]] = [
-    {"kind": "drop_item", "section": "Certifications", "match": "ccna", "label": "Drop the CCNA bullet"},
     {"kind": "drop_section", "section": "Certifications", "label": "Drop the Certifications section"},
 ]
 

@@ -31,7 +31,7 @@ profile.PROFILE_PATH.write_text(json.dumps({
     "languages": "English - Intermediate; Hindi - Fluent",
     "skills": "JavaScript, Node.js, PostgreSQL, AWS, Python, C++",
     "education": "Example University - Bachelors, Computer and Information Science, 2015-2019",
-    "not_employment": "Applied AI & LLM Agents",
+    "not_employment": "Weekend AI Projects",
 }), encoding="utf-8")
 
 
@@ -58,7 +58,7 @@ FIXTURE.write_text(f"""<!doctype html><html><head><style>
   label {{ display:block; margin-top:8px; }}
 </style></head><body>
 <h3>Work Experience :</h3>
-{experience("Applied AI &amp; LLM Agents", "")}
+{experience("Weekend AI Projects", "")}
 {experience("Software Engineer", "Initech Systems")}
 {experience("Software Engineer Intern", "Initech Systems")}
 <label for="d1">From*</label>

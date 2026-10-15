@@ -62,7 +62,7 @@ class ScriptedSession(apply_session.ApplySession):
         raise apply_session.Aborted("the first question ends the check")
 
 
-for mode, how in (("indeed", "navigated"), ("company", "new tab")):
+for mode, how in (("indeed", "navigated"), ("company", "new tab"), ("testid", "navigated")):
     print(f"\n{mode}")
     calls.clear()
     sess = ScriptedSession()
@@ -144,6 +144,22 @@ with sync_playwright() as pw:
                                    ScriptedSession(), [])
     check("a skipped upload is asked about once, not on every pass", declines.asked == 1,
           f"asked {declines.asked} times")
+
+    # The account already holds a CV from an earlier job (Oct 14 2026): one
+    # pre-selected card, "Add a resume" and no "upload a resume" in sight.
+    print("\nthe resume step, with a CV already on the account")
+    page.goto((HERE / "fixture_indeed_stored_cv.html").as_uri())
+    fields = browser.snapshot(page)
+    sess, attach = ScriptedSession(), Attach()
+    asked = []
+    attach.resume_path = ""
+    attach.resume = lambda: asked.append(1) or str(RESUME)
+    acted = worker._handle_attachments(page, fields, set(), attach, sess, [])
+    check("the resume choice is offered", acted and asked == [1], f"acted={acted}, asked={asked}")
+    shown = page.text_content("#stored-name")
+    check("  and the chosen resume replaces the old CV", shown == RESUME.name, shown)
+    check("  through the hidden input, with no menu or system dialog opened",
+          page.locator("#menu").is_hidden())
     b.close()
 
 print()

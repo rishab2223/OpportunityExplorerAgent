@@ -184,7 +184,8 @@ SECTIONS: list[dict[str, Any]] = [
     {"title": "Work preferences", "note": "",
      "fields": [
          ("willing_to_relocate", "Willing to relocate", "choice:Yes|No", ""),
-         ("preferred_location", "Preferred location", "text", ""),
+         ("preferred_location", "Preferred location", "text",
+          "Cities, e.g. Bengaluru, Pune - or Any: every location a form offers is ticked"),
          ("willing_to_travel", "Willing to travel", "choice:Yes|No", ""),
          ("how_did_you_hear", "How did you hear about us", "text", "Default answer, e.g. LinkedIn"),
      ]},
@@ -443,6 +444,13 @@ def _job_lines(jobs: list[Any]) -> list[str]:
     return out
 
 
+# A preferred_location that puts no limit on where: "Any", "Anywhere",
+# "Open to all locations".
+ANY_PLACE_RE = re.compile(r"^\s*(any|anywhere|any ?where in [a-z ]+|any (location|city)|all|all (locations|cities)"
+                          r"|open|flexible|no preference|open to (all|any)( locations?)?)\s*\.?\s*$",
+                          re.IGNORECASE)
+
+
 def as_prompt_text(profile: dict[str, Any] | None = None) -> str:
     data = profile if profile is not None else load_profile()
     lines = []
@@ -455,9 +463,16 @@ def as_prompt_text(profile: dict[str, Any] | None = None) -> str:
             lines.extend(_job_lines(value))
             continue
         if key == "date_of_birth":
-            # Said outright: given "03/10/1997", the model asked whether that
-            # was March or October (Adani, Oct 2026).
+            # Said outright: given "05/11/1990", the model asked whether that
+            # was May or November (Adani, Oct 2026).
             lines.append(f"{key}: {value} (DD/MM/YYYY, day first)")
+            continue
+        if key == "preferred_location" and ANY_PLACE_RE.match(str(value)):
+            # The model ticked one city of a "which cities?" list, and only
+            # sometimes; "Any" alone did not say what to do with a list.
+            lines.append(f"{key}: {value} (location is no filter: tick EVERY location a form offers; "
+                         "on a one-choice question pick 'Any'/'No preference' when offered, else the "
+                         "city nearest the candidate's location)")
             continue
         lines.append(f"{key}: {value}")
     return "\n".join(lines) or "(profile is empty)"

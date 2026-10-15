@@ -11,9 +11,12 @@ build/
 !package.json
 !examples/
 !examples/sample_shortlisted.json
+!examples/apply_profile.example.json
 data/
 localData/
 outputs/
 preps/
 test/output/
 test/browser/_work/
+# Pictures of form fields sent to the model, one folder per company.
+screenshots/

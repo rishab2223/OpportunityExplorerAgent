@@ -7,6 +7,7 @@ returns a validated instance of ``schema``.
 
 from __future__ import annotations
 
+import base64
 from typing import Callable, Literal, TypeVar
 
 from pydantic import BaseModel
@@ -53,20 +54,25 @@ def open_claude_session(cfg: AppConfig, log: Callable[[str], None] | None = None
 def make_invoker(cfg: AppConfig, env: EnvSettings, purpose: Purpose, claude_session=None) -> Invoker:
     """`claude_session`: calls go to its kept processes; the invoker then
     also has warm(system, schema), which starts the process for those calls
-    in the background."""
+    in the background.
+
+    Every invoker takes `images=[png bytes]` as well, pictures sent with the
+    text, and says so with `takes_images = True`; a caller holding some other
+    callable (a test's stand-in) sends the text alone."""
     provider, model, effort, temperature = _settings(cfg, purpose)
 
     if provider == "claude":
         from src.llm_claude import structured_call
 
         if claude_session is not None and cfg.claude.backend == "agent-sdk":
-            def invoke_kept(system: str, user: str, schema: type[T]) -> T:
-                return claude_session.call(system, user, schema, model, effort)
+            def invoke_kept(system: str, user: str, schema: type[T], images: list[bytes] | None = None) -> T:
+                return claude_session.call(system, user, schema, model, effort, images)
 
             invoke_kept.warm = lambda system, schema: claude_session.warm(system, schema, model, effort)
+            invoke_kept.takes_images = True
             return invoke_kept
 
-        def invoke_claude(system: str, user: str, schema: type[T]) -> T:
+        def invoke_claude(system: str, user: str, schema: type[T], images: list[bytes] | None = None) -> T:
             return structured_call(
                 system,
                 user,
@@ -75,8 +81,10 @@ def make_invoker(cfg: AppConfig, env: EnvSettings, purpose: Purpose, claude_sess
                 model=model,
                 effort=effort,
                 env=env,
+                images=images,
             )
 
+        invoke_claude.takes_images = True
         return invoke_claude
 
     if not env.openai_api_key:
@@ -87,11 +95,22 @@ def make_invoker(cfg: AppConfig, env: EnvSettings, purpose: Purpose, claude_sess
     llm = ChatOpenAI(model=model, api_key=env.openai_api_key, temperature=temperature)
     runners: dict[type, object] = {}
 
-    def invoke_openai(system: str, user: str, schema: type[T]) -> T:
+    def invoke_openai(system: str, user: str, schema: type[T], images: list[bytes] | None = None) -> T:
         runner = runners.get(schema)
         if runner is None:
             runner = runners[schema] = llm.with_structured_output(schema)
-        result = runner.invoke(f"{system}\n\n{user}")
+        if images:
+            from langchain_core.messages import HumanMessage, SystemMessage
+
+            content: list[dict] = [{"type": "text", "text": user}]
+            content.extend(
+                {"type": "image_url",
+                 "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}}
+                for png in images)
+            result = runner.invoke([SystemMessage(content=system), HumanMessage(content=content)])
+        else:
+            result = runner.invoke(f"{system}\n\n{user}")
         return result if isinstance(result, schema) else schema.model_validate(result)
 
+    invoke_openai.takes_images = True
     return invoke_openai

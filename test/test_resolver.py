@@ -19,7 +19,7 @@ DUMMY_PROFILE = {
     "notice_period": "60 days",
     "expected_ctc": "30 LPA",
     "work_authorization": "Yes",
-    "postal_code": "122001",
+    "postal_code": "560001",
 }
 
 
@@ -53,7 +53,7 @@ class ProfileMappingTests(ResolverTestCase):
                       # EPAM (Oct 2026), a typeahead.
                       "PIN code (postal code)*", "Postal code / ZIP code"):
             self.assertEqual(resolver.resolve(field(label=label)),
-                             ("122001", "profile"), label)
+                             ("560001", "profile"), label)
         self.assertIsNone(resolver.resolve(field(label="Security PIN")))
 
     def test_epam_labels_reach_the_profile(self) -> None:
@@ -99,9 +99,9 @@ class ProfileMappingTests(ResolverTestCase):
 
     def test_a_whole_date_goes_to_a_date_box_and_a_year_to_a_number_box(self) -> None:
         profile.PROFILE_PATH.write_text(json.dumps({
-            **DUMMY_PROFILE, "education_end_date": "22/07/2019"}), encoding="utf-8")
+            **DUMMY_PROFILE, "education_end_date": "28/06/2019"}), encoding="utf-8")
         ended = resolver.resolve(field(type="date", elid="educationEndDate", label=""))
-        self.assertEqual(ended, ("2019-07-22", "profile"))
+        self.assertEqual(ended, ("2019-06-28", "profile"))
         self.assertIsNone(resolver.resolve(field(type="number", elid="educationEndDate", label="")))
         profile.PROFILE_PATH.write_text(json.dumps({
             **DUMMY_PROFILE, "education": "B.Tech, 2015-2019"}), encoding="utf-8")
@@ -124,9 +124,9 @@ class ProfileMappingTests(ResolverTestCase):
         self.assertEqual(resolver.resolve(end), ("2019", "profile"))
         # Full dates, when given, win - day first in the profile, ISO out.
         profile.PROFILE_PATH.write_text(json.dumps(dict(
-            DUMMY_PROFILE, graduation_year="2019", education_start_date="20/07/2015",
+            DUMMY_PROFILE, graduation_year="2019", education_start_date="01/08/2015",
             education_end_date="05/07/2019")), encoding="utf-8")
-        self.assertEqual(resolver.resolve(start), ("2015-07-20", "profile"))
+        self.assertEqual(resolver.resolve(start), ("2015-08-01", "profile"))
         self.assertEqual(resolver.resolve(end), ("2019-07-05", "profile"))   # 5 July, not 7 May
         # A job's dates are not a school's.
         self.assertIsNone(resolver.resolve(field(label="Tenure at Recent employer",
@@ -137,7 +137,7 @@ class ProfileMappingTests(ResolverTestCase):
         data = dict(DUMMY_PROFILE, jobs=[
             {"title": "Software Engineer", "company": "Acme", "start": "07/2020", "end": "01/2026"},
             {"title": "Intern", "company": "Acme", "start": "06/2019", "end": "07/2020"}],
-            not_employment="Applied AI & LLM Agents")
+            not_employment="Weekend AI Projects")
         profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
         start = field(label="Tenure at Recent employer", elid="startDateAtRecentEmployer")
         end = field(label="", elid="endDateAtRecentEmployer")
@@ -205,19 +205,19 @@ class ProfileMappingTests(ResolverTestCase):
 
     def test_site_prefills_the_profile_contradicts_are_corrected(self) -> None:
         data = dict(DUMMY_PROFILE, total_experience_years="6", relevant_experience_years="6",
-                    current_title="Software Engineer", current_company="Cadence Design Systems",
-                    skills="Node.js, JavaScript", not_employment="Applied AI & LLM Agents")
+                    current_title="Software Engineer", current_company="Initech Systems",
+                    skills="Node.js, JavaScript", not_employment="Weekend AI Projects")
         profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
         wrong = (("Total Professional Experience*", "7 years", "6"),
                  ("Relevant Experience in Primary skill*", "0 years", "6"),
                  ("Primary Skill*", "Amazon Web Services", "Node.js"),
                  # The candidate's own project is never a job title.
-                 ("Job Title at Recent employer", "Applied AI & LLM Agents", "Software Engineer"))
+                 ("Job Title at Recent employer", "Weekend AI Projects", "Software Engineer"))
         for label, current, want in wrong:
             self.assertEqual(resolver.correction(field(label=label, value=current)),
                              (want, current), label)
         agreeing = (("Total Professional Experience*", "6 years"),
-                    ("Most recent employer", "Cadence"),
+                    ("Most recent employer", "Initech"),
                     ("Job Title at Recent employer", "Software Engineer II"),
                     ("Primary Skill*", "Node.js"))
         for label, current in agreeing:
@@ -380,26 +380,26 @@ class DateBoxTests(ResolverTestCase):
         profile._cache = None
 
     def test_the_profile_dob_goes_in_as_iso(self) -> None:
-        self.write_dob("03/10/1997")       # day first, as the profile asks
+        self.write_dob("05/11/1990")       # day first, as the profile asks
         got = resolver.resolve(field(type="date", label="Date of Birth *"))
-        self.assertEqual(got, ("1997-10-03", "profile"))
+        self.assertEqual(got, ("1990-11-05", "profile"))
 
     def test_iso_and_other_separators(self) -> None:
-        for value in ("1997-10-03", "03-10-1997", "3.10.1997"):
+        for value in ("1990-11-05", "05-11-1990", "5.11.1990"):
             with self.subTest(value=value):
-                self.assertEqual(resolver.iso_date(value), "1997-10-03")
+                self.assertEqual(resolver.iso_date(value), "1990-11-05")
 
     def test_what_is_not_a_date_is_left_alone(self) -> None:
-        for value in ("31/02/1997", "October 1997", "1997", ""):
+        for value in ("31/02/1990", "November 1990", "1990", ""):
             with self.subTest(value=value):
                 self.assertEqual(resolver.iso_date(value), "")
-        self.write_dob("sometime in 1997")
+        self.write_dob("sometime in 1990")
         self.assertIsNone(resolver.resolve(field(type="date", label="Date of Birth *")))
 
     def test_a_text_box_still_gets_the_profile_text(self) -> None:
-        self.write_dob("03/10/1997")
+        self.write_dob("05/11/1990")
         self.assertEqual(resolver.resolve(field(label="Date of Birth (DD/MM/YYYY)")),
-                         ("03/10/1997", "profile"))
+                         ("05/11/1990", "profile"))
 
 
 class MatchOptionTests(unittest.TestCase):
@@ -735,8 +735,8 @@ class WorkedHereBeforeTests(ResolverTestCase):
     def setUp(self) -> None:
         super().setUp()
         profile.PROFILE_PATH.write_text(json.dumps({
-            **DUMMY_PROFILE, "current_company": "Cadence Design Systems",
-            "jobs": [{"title": "Engineer", "company": "Cadence Design Systems", "start": "07/2020"},
+            **DUMMY_PROFILE, "current_company": "Initech Systems",
+            "jobs": [{"title": "Engineer", "company": "Initech Systems", "start": "07/2020"},
                      {"title": "Intern", "company": "Acme Labs Pvt Ltd", "start": "06/2019",
                       "end": "07/2020"}]}), encoding="utf-8")
 
@@ -762,8 +762,8 @@ class WorkedHereBeforeTests(ResolverTestCase):
         self.assertIsNone(resolver.worked_here_before(yes, "Databricks"))
 
     def test_a_past_employer_is_left_to_the_candidate(self) -> None:
-        asked = "Have you previously worked for Cadence?"
-        self.assertIsNone(resolver.worked_here_before(self.combo(asked), "Cadence"))
+        asked = "Have you previously worked for Initech?"
+        self.assertIsNone(resolver.worked_here_before(self.combo(asked), "Initech"))
         self.assertIsNone(resolver.worked_here_before(
             self.combo("Have you worked for Acme before?"), "Acme Labs"))
 
@@ -1374,10 +1374,10 @@ class OracleRecruitingTests(ResolverTestCase):
     """Adani's Oracle Recruiting form (Oct 2026)."""
 
     def test_a_date_of_birth_in_three_boxes(self):
-        self.assertEqual(resolver.date_part("03/10/1997", "Date of Birth Month"), "October")
-        self.assertEqual(resolver.date_part("03/10/1997", "Date of Birth Day"), "3")
-        self.assertEqual(resolver.date_part("03/10/1997", "Date of Birth Year"), "1997")
-        self.assertEqual(resolver.date_part("03/10/1997", "Date of Birth"), "")
+        self.assertEqual(resolver.date_part("05/11/1990", "Date of Birth Month"), "November")
+        self.assertEqual(resolver.date_part("05/11/1990", "Date of Birth Day"), "5")
+        self.assertEqual(resolver.date_part("05/11/1990", "Date of Birth Year"), "1990")
+        self.assertEqual(resolver.date_part("05/11/1990", "Date of Birth"), "")
         self.assertEqual(resolver.date_part("not a date", "Birth Month"), "")
 
     def test_a_month_or_day_worded_another_way(self):
@@ -1409,3 +1409,76 @@ class TurboHireTests(ResolverTestCase):
         self.assertFalse(resolver._agrees("total_experience_years", "6", "2-4 years"))
         self.assertFalse(resolver._agrees("total_experience_years", "6", "Less than 1 year"))
         self.assertIsNone(resolver.in_band(6, "Senior"))
+
+
+class IcimsPhoneStepTests(ResolverTestCase):
+    """iCIMS's phone step (Planview, Oct 2026)."""
+
+    def test_a_national_number_box_gets_the_number_without_its_country_code(self):
+        data = dict(DUMMY_PROFILE, phone="+91 98765 43210")
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        national = resolver.resolve({"tag": "input", "type": "text", "label": "Number",
+                                     "autocomplete": "tel-national"})
+        self.assertEqual(national, ("98765 43210", "profile"))
+        whole = resolver.resolve({"tag": "input", "type": "tel", "label": "Phone", "autocomplete": "tel"})
+        self.assertEqual(whole, ("+91 98765 43210", "profile"))
+
+    def test_make_a_selection_is_a_placeholder(self):
+        box = {"tag": "a", "role": "combobox", "label": "Country Code", "text": "— Make a Selection —"}
+        self.assertTrue(resolver.is_blank(box))
+        self.assertFalse(resolver.is_blank(dict(box, text="(+91) India")))
+
+    def test_a_placeholder_written_into_a_dropdowns_name_is_cut_off(self):
+        from src.apply import browser
+        self.assertEqual(browser.strip_placeholder_tail("Country Code — Make a Selection —"), "Country Code")
+        self.assertEqual(browser.strip_placeholder_tail("State - Select One"), "State")
+        self.assertEqual(browser.strip_placeholder_tail("— Make a Selection —"), "— Make a Selection —")
+        self.assertEqual(browser.strip_placeholder_tail("Full-time - permanent"), "Full-time - permanent")
+
+
+class PreferredLocationTests(ResolverTestCase):
+    """"Which cities do you prefer?" answered from preferred_location (Oct
+    2026: the model ticked one city, and only sometimes)."""
+
+    def choice(self, stored: str, option: str, question: str, kind: str = "checkbox"):
+        data = dict(DUMMY_PROFILE, preferred_location=stored)
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        return resolver.resolve({"tag": "input", "type": kind, "label": option, "group": question})
+
+    def test_any_ticks_every_place_of_a_list(self):
+        for option in ("Bengaluru", "Pune", "Hyderabad", "Remote"):
+            self.assertEqual(self.choice("Any", option, "Which cities do you prefer to work in?"),
+                             ("yes", "profile"), option)
+
+    def test_any_leaves_none_and_other_alone(self):
+        for option in ("None of the above", "Other", "Not applicable"):
+            self.assertIsNone(self.choice("Any", option, "Preferred work locations"), option)
+
+    def test_any_on_one_choice_takes_only_the_option_that_says_so(self):
+        self.assertEqual(self.choice("Anywhere", "No preference", "Preferred location", "radio"),
+                         ("yes", "profile"))
+        self.assertIsNone(self.choice("Any", "Pune", "Preferred location", "radio"))
+
+    def test_a_list_of_cities_ticks_the_ones_named_with_their_other_spellings(self):
+        question = "Select the locations you are open to"
+        self.assertEqual(self.choice("Bangalore, Pune", "Bengaluru", question), ("yes", "profile"))
+        self.assertEqual(self.choice("Bangalore, Pune", "Pune (Hinjewadi)", question), ("yes", "profile"))
+        self.assertIsNone(self.choice("Bangalore, Pune", "Chennai", question))
+
+    def test_one_choice_with_a_list_takes_the_first_city_only(self):
+        self.assertEqual(self.choice("Pune; Bengaluru", "Pune", "Which location do you prefer?", "radio"),
+                         ("yes", "profile"))
+        self.assertIsNone(self.choice("Pune; Bengaluru", "Bengaluru", "Which location do you prefer?", "radio"))
+
+    def test_where_the_candidate_is_now_is_not_a_preference(self):
+        self.assertIsNone(self.choice("Any", "Pune", "Which city are you currently located in?"))
+        self.assertIsNone(self.choice("Any", "Pune", "Which city do you live in?"))
+
+    def test_nothing_without_a_preference_or_a_location_question(self):
+        self.assertIsNone(self.choice("", "Pune", "Which cities do you prefer?"))
+        self.assertIsNone(self.choice("Any", "Python", "Which skills do you prefer?"))
+
+    def test_the_model_is_told_what_any_means(self):
+        text = profile.as_prompt_text({"preferred_location": "Any"})
+        self.assertIn("tick EVERY location", text)
+        self.assertEqual(profile.as_prompt_text({"preferred_location": "Pune"}), "preferred_location: Pune")

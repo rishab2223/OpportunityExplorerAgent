@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Enter Your Information - iCIMS</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  .form-control, .dropdown-select { display: block; width: 300px; padding: 6px; border: 1px solid #888; margin: 4px 0 12px; }
+  .dropdown-select { cursor: pointer; text-decoration: none; color: #000; }
+  .dropdown-container { border: 1px solid #888; width: 300px; max-height: 220px; overflow: auto; }
+  .dropdown-result { padding: 4px; list-style: none; cursor: pointer; }
+  .dropdown-results { margin: 0; padding: 0; }
+</style></head>
+<body>
+<!--
+  iCIMS's sign-up step inside Planview's careers page (Oct 15 2026), reduced
+  from the dump. Phone Country Code is an <a role=combobox> showing the
+  choice; its list sits in #dropdownOptions (display:none until opened)
+  with a "Type to Search" box and li[role=option] rows. The <label for>
+  points at that search box, not at the combobox. The agent dropped the <a>
+  as "just a link", read the hidden search box as Phone Country Code, and
+  typed +91 into it once the candidate opened the list ("Filled") - which
+  only filters. Next is type=submit, which the agent never clicks.
+  #preset: the list opens on India already chosen, as the real one did.
+-->
+<form id="enterEmailForm" method="post" onsubmit="window.sent = true; return false">
+<label for="email">Email</label>
+<input type="email" autocomplete="email" id="email" name="css_loginName" class="form-control" value="">
+<div class="country-phone-group">
+<div class="country-code">
+<label for="countryCode">Phone Country Code</label>
+<div class="country-code iCIMS_InfoData">
+<input type="text" id="selectedCountryCode" name="countryCodeSelect" class="form-control" value="" tabindex="-1" aria-hidden="true" style="display: none;">
+<a id="dropdown" class="dropdown-select" onclick="toggleDropdown()" aria-expanded="false" tabindex="0" aria-label="Country Code — Make a Selection —" aria-required="true" role="combobox" aria-controls="dropdownOptions">
+<span id="dropdown-select-span" class="dropdown-text">— Make a Selection —</span></a>
+<div class="dropdown-container hidden" id="dropdownOptions" style="display: none;">
+<div aria-live="polite">
+<input type="text" class="dropdown-search" id="countryCode" name="countryCodeSearch" oninput="filterOptions()" placeholder="— Type to Search —">
+<ul class="dropdown-results" id="dropdownResults" role="listbox"></ul>
+</div></div></div></div>
+<div class="phone">
+<label for="phoneNumber">Number</label>
+<input type="text" autocomplete="tel-national" id="phoneNumber" name="css_phoneNumber" class="form-control" value="">
+</div></div>
+<input id="enterEmailSubmitButton" type="submit" class="iCIMS_PrimaryButton" value="Next">
+</form>
+<script>
+  var CODES = [["-1", "— Make a Selection —"], ["US", "(+1) United States"], ["AF", "(+93) Afghanistan"],
+               ["IO", "(+246) British Indian Ocean Territory"], ["IN", "(+91) India"], ["ID", "(+62) Indonesia"],
+               ["GB", "(+44) United Kingdom"]];
+  var list = document.getElementById("dropdownResults");
+  CODES.forEach(function (c) {
+    var li = document.createElement("li");
+    li.className = "dropdown-result result-selectable";
+    li.setAttribute("role", "option");
+    li.setAttribute("dropdown-result", c[0]);
+    li.setAttribute("aria-label", c[1]);
+    li.textContent = c[1];
+    li.addEventListener("click", function () { choose(c); });
+    list.appendChild(li);
+  });
+  function choose(c) {
+    document.getElementById("selectedCountryCode").value = c[0] === "-1" ? "" : c[0];
+    document.getElementById("dropdown-select-span").textContent = c[1];
+    closeList();
+  }
+  function closeList() {
+    document.getElementById("dropdownOptions").style.display = "none";
+    document.getElementById("dropdown").setAttribute("aria-expanded", "false");
+  }
+  function toggleDropdown() {
+    var box = document.getElementById("dropdownOptions");
+    if (box.style.display === "none") {
+      box.style.display = "";
+      document.getElementById("dropdown").setAttribute("aria-expanded", "true");
+      document.getElementById("countryCode").value = "";
+      filterOptions();
+    } else { closeList(); }
+  }
+  function filterOptions() {
+    var t = document.getElementById("countryCode").value.toLowerCase();
+    Array.prototype.forEach.call(list.children, function (li) {
+      li.style.display = li.textContent.toLowerCase().indexOf(t) >= 0 ? "" : "none";
+    });
+  }
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeList(); });
+  if (location.hash === "#preset") choose(CODES[4]);
+</script>
+</body>
+</html>

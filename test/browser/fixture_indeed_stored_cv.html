@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Add a resume | Indeed</title>
+<style>
+  .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin: 12px 0; }
+  .menu[hidden] { display: none; }
+</style></head>
+<body>
+<!--
+  Indeed's "Add a resume" step when the account already holds a CV
+  (smartapply.indeed.com, resume-selection; dumped Oct 14 2026). One card
+  shows the CV uploaded for an earlier job, pre-selected; "CV options" opens
+  a menu with "Upload a different file"; the file input is display:none. The
+  page never says "upload a resume", so the step read as filled in and the
+  old CV would have gone out with the application.
+-->
+<button type="button">Go back</button>
+<button type="button">Save and close</button>
+<form data-testid="resume-selection-form" onsubmit="return false">
+  <h1 id="heading">Add a resume</h1>
+  <fieldset data-testid="resume-selection-radio-card-group" role="radiogroup" aria-labelledby="heading">
+    <div class="card">
+      <label for="stored-input" data-testid="resume-selection-file-resume-radio-card-label">
+        <span id="stored-name">Old_Resume_For_Another_Job.pdf</span></label>
+      <span>Uploaded Oct 6, 2026</span>
+      <section role="group" aria-label="Old_Resume_For_Another_Job.pdf">(preview)</section>
+      <input accept="application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/rtf,text/rtf,text/plain"
+             data-testid="resume-selection-file-resume-radio-card-file-input" type="file" id="file-input"
+             style="display: none;">
+      <button type="button" data-testid="ResumeOptionsMenu" aria-controls="menu" aria-expanded="false"
+              onclick="var m = document.getElementById('menu'); m.hidden = !m.hidden"><span>CV options</span></button>
+      <div id="menu" class="menu" hidden><ul><li><button type="button"
+           onclick="document.getElementById('file-input').click()">Upload a different file</button></li></ul></div>
+    </div>
+  </fieldset>
+  <button type="button">Continue</button>
+</form>
+<script>
+  document.getElementById('file-input').addEventListener('change', function () {
+    var f = this.files[0];
+    if (f) document.getElementById('stored-name').textContent = f.name;
+  });
+</script>
+</body>
+</html>

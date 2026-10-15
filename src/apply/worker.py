@@ -8,13 +8,13 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, Callable, Literal
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from pydantic import BaseModel, Field
 
 from src import answers
 from src.apply import (browser, catalogue, cover_letter, matching, profile, resolver, salary,
-                       session, sites)
+                       session, shots, sites)
 from src.apply.session import (TERMINAL_STATUSES, Aborted, ApplySession, Parked,
                                Submitted)
 from src.apply.sites import indeed, linkedin
@@ -209,6 +209,16 @@ Rules:
   salary, demographic or yes/no questions.
 - Use "ask" for one-time passwords, captchas, consent or legal checkboxes, and anything
   you are unsure about.
+- Use "look" (field_id, nothing else) when a field's question or options cannot be
+  made out from the text - no question words, an unnamed widget, a list whose
+  options you cannot see. The next request then carries a picture of it. Look
+  before asking the candidate about such a field; never look at a field you have
+  already been sent a picture of, and leave fields you can answer out of it.
+- PICTURES, when sent, are crops of the form, in the order listed under PICTURES.
+  A red message under a box is the page refusing what was typed: read it, and
+  fill again in the form it wants ("25 LPA" into a digits-only box is "25", or
+  the full figure if the message asks for one). Read option names off the
+  picture exactly as written.
 - Government identifiers - PAN, Aadhaar, passport, SSN, national insurance, driving
   licence - are never held here and must never be invented. Ask only when the field
   is required; when it is optional, leave it out of the plan entirely.
@@ -264,7 +274,7 @@ Set reusable=true only when the answer would apply to other applications too."""
 
 class ApplyAction(BaseModel):
     action: Literal[
-        "fill", "select", "check", "uncheck", "click", "upload", "goto", "ask", "wait", "done"
+        "fill", "select", "check", "uncheck", "click", "upload", "goto", "ask", "look", "wait", "done"
     ]
     field_id: int = -1
     value: str = ""
@@ -726,6 +736,16 @@ def _is_site_search(field: dict[str, Any]) -> bool:
     return bool(SITE_SEARCH_RE.search(re.sub(r"[_\-]+", " ", haystack)))
 
 
+def _names_a_search(field: dict[str, Any]) -> bool:
+    """Any box named a search ("Search Planview"), looser than
+    _is_site_search: only for telling a job's page from a form, where a skills
+    search inside a form never comes up - a form has its other boxes."""
+    if _is_site_search(field) or (field.get("type") or "").lower() == "search":
+        return True
+    haystack = " ".join(str(field.get(key) or "") for key in ("label", "name", "elid", "placeholder"))
+    return bool(re.search(r"\bsearch\b", re.sub(r"[_\-]+", " ", haystack), re.IGNORECASE))
+
+
 class StaleField(Exception):
     """The planned element no longer exists (the page moved on mid-plan)."""
 
@@ -737,6 +757,60 @@ class NoOptionMatch(ValueError):
     def __init__(self, message: str, options: list[str]):
         super().__init__(message)
         self.options = [o for o in options if str(o).strip()]
+
+
+class FieldRejected(ValueError):
+    """A box turned its value down with a message of its own ("Invalid
+    input"). Carries a picture of the box and the message, for the next
+    model call (see _remember_refusal)."""
+
+    def __init__(self, message: str, png: bytes | None = None):
+        super().__init__(message)
+        self.png = png
+
+
+# A bare "required" after a value went in is the page's stale verdict on the
+# empty box, not a complaint about the value.
+_REQUIRED_ONLY_RE = re.compile(
+    r"^\W*(this |the )?(field |value )?(is )?required\W*$|\bcan(?:not|'t) be (?:empty|blank)\b",
+    re.IGNORECASE)
+
+
+def _new_messages(before: tuple[bool, list[str]], after: tuple[bool, list[str]],
+                  held: bool) -> list[str]:
+    """The messages shown for a box now that were not there before it was
+    typed into. Words only: an aria-invalid flag alone is also what a
+    typeahead sets until a suggestion is picked, and that box has its own
+    path (_commit_typeahead)."""
+    old = before[1]
+    # A bare "required" is never about the value: kept, it is a stale verdict
+    # on the empty box; dropped, it is the box saying it is empty - and the
+    # paths below (a typeahead's search, a salary box's annual figure) are
+    # what answers that, not a refusal that skips them.
+    fresh = [m for m in after[1] if m not in old and not _REQUIRED_ONLY_RE.search(m)]
+    if not held and any(_PICK_FROM_LIST_RE.search(m) for m in fresh):
+        return []       # "select a value from the list": a typeahead, picked below
+    return fresh
+
+
+_PICK_FROM_LIST_RE = re.compile(r"\b(select|choose|pick)\b.{0,30}\b(list|suggestions?|options?|dropdown)\b"
+                                r"|\bfrom the (list|suggestions|dropdown)\b", re.IGNORECASE)
+
+
+def _rejected(page, locator, label: str, value: str, messages: list[str]) -> FieldRejected:
+    """The refusal, with a picture taken while the message is on screen. The
+    box is then emptied: a half-kept value ("25") reads as answered, and the
+    corrected one would never be asked for."""
+    shown = _shown(locator)
+    png = shots.crop(page, [locator])
+    try:
+        locator.fill("", timeout=2000)
+    except Exception:
+        pass
+    text = f"'{label}' did not accept '{value}': the page says '{_brief(' | '.join(messages), 160)}'"
+    if shown.strip() and shown.strip() != (value or "").strip():
+        text += f" (the box showed '{_brief(shown, 40)}')"
+    return FieldRejected(text, png)
 
 
 def _log_best_match(sess, prefix: str, label: str, value: str, option: str, why: str) -> None:
@@ -810,6 +884,8 @@ def run_session(
     pw = context = None
     claude = None
     llm_calls = 0
+    # Pictures sent to the model are kept under screenshots/<company>/.
+    sess.company = str(job.get("company") or "")
     try:
         if not url:
             raise RuntimeError("this job has no apply_url or listing_url")
@@ -1026,7 +1102,8 @@ def run_session(
             # form the candidate could neither see nor correct - and the
             # session ended on "I am not making progress", which is true but
             # says nothing about what to do. A reload is what to do.
-            if browser.page_blocked(page):
+            blocked = browser.page_blocked(page)
+            if blocked:
                 # Almost always this: the panel the overlay is foregrounding
                 # is simply off screen. UKG puts its Work Experience editor
                 # 1400px down a 6800px page, and because the overlay is fixed
@@ -1036,7 +1113,8 @@ def run_session(
                 shown = browser.reveal_foreground(page)
                 if shown:
                     sess.log(f"The form put '{_brief(shown, 40)}' in front; scrolled to it.")
-            blocked = browser.page_blocked(page)
+                    # Asked again only when something moved.
+                    blocked = browser.page_blocked(page)
             if blocked and not blocked_told:
                 # Asked once per episode. Re-asking on every page change gave
                 # the candidate the same sentence twelve times in thirty
@@ -1404,6 +1482,21 @@ def run_session(
                 continue
 
             unresolved = _unresolved_fields(fields, handled)
+            reopen = _reopened(sess)
+            if reopen:
+                # Marked invalid as they stand: holding a value, they read as
+                # answered, and the loop would click Next at them again.
+                unresolved += [f for f in fields if f not in unresolved
+                               and _field_key(f, _field_label(f)) in reopen - handled]
+            # The job's own page, nothing on it to fill, its "Apply Now" a
+            # plain link to the form: followed, never clicked (_apply_link).
+            # (A header's search box - "Search Planview" - is not something
+            # to fill; nor is anything else named a search, on a first page.)
+            if (not history and not any(_accepts_value(f) and not _names_a_search(f) for f in fields)
+                    and _site_of(page) not in ("linkedin", "indeed")
+                    and _open_apply_link(page, fields, history, sess)):
+                last_llm_sig = ""
+                continue
             submit_field = next((f for f in fields if _is_submit(f)), None)
             if (submit_field is not None and submit_field.get("tag") == "a"
                     and not any(_accepts_value(f) for f in fields)):
@@ -1564,6 +1657,13 @@ def run_session(
                         + (f"; the page says: {problems}" if problems else "")
                     )
                     last_llm_sig = ""
+                    # The boxes the page now marks invalid go back to the
+                    # model with a picture each, before the candidate is
+                    # asked to find them: until now nothing was left open,
+                    # so no model call ever saw the page's complaint.
+                    if getattr(invoke, "takes_images", False) and _flag_invalid(
+                            page, fields, handled, written, sess, advance_label):
+                        continue
                     # With the page naming the problem, one model round to fix
                     # it is enough; a third click would be the old loop.
                     limit = 2 if problems else MAX_ATTEMPTS_PER_FIELD
@@ -1760,17 +1860,28 @@ def run_session(
                 + (" (the first call can take a minute)"
                    if llm_calls == 0 and not hasattr(invoke, "warm") else "")
             )
+            # Pictures only for a model that can take them (a test's stand-in
+            # gets the text alone); see _pictures_for_call for when.
+            pictures = (_pictures_for_call(page, fields, handled, sess, unresolved)
+                        if getattr(invoke, "takes_images", False) else [])
+            if pictures:
+                sess.log(f"Sending {len(pictures)} picture(s) of the form with it: "
+                         + "; ".join(_brief(p[0] or "unlabelled field", 40) for p in pictures))
             prompt = _build_prompt(job, resume_text, fields, page, history, notes, handled,
-                                   refused=_refusals(sess))
+                                   refused=_refusals(sess), pictures=[p[1] for p in pictures])
             asked_at = time.monotonic()
             try:
-                plan, calls_made = _invoke_with_retry(invoke, sess, prompt)
+                plan, calls_made = _invoke_with_retry(invoke, sess, prompt,
+                                                      images=[p[2] for p in pictures])
                 llm_calls += calls_made
             except Exception as exc:
                 # A model outage must not kill the session: the user can still
                 # finish the form by hand and have the outcome recorded.
                 llm_calls += 1
                 sess.log(f"Model error: {_short(exc)}")
+                # The pictures it was to see wait for the retry.
+                for name, why, png, key in pictures:
+                    _add_look(sess, key, name, why, png)
                 reply = sess.ask(
                     "The model is unavailable right now. Type retry to try again, "
                     "or finish the form yourself in the browser and type done once "
@@ -1786,6 +1897,7 @@ def run_session(
                 last_llm_sig = ""
                 continue
             last_llm_sig = sig
+            _reopened(sess).clear()          # asked about; see _flag_invalid
             # How long, and how much it was given: one call on Walmart's form
             # took 34 s and another 4 s, and nothing said why (Oct 2026).
             sess.log(f"Model returned {len(plan.actions)} action(s) in "
@@ -1808,9 +1920,32 @@ def run_session(
             # boxes the profile could fill.
             ordered = sorted(plan.actions[:MAX_PLAN_ACTIONS],
                              key=lambda a: _pauses_for_user(a, fields))
+            # A dropdown that refused its answer in this plan is retried with a
+            # picture of its open list BEFORE the candidate is asked anything:
+            # on Infor's form (Oct 2026) the Country box failed, and the
+            # session moved straight on to three questions and a consent box,
+            # with the box left wrong. The questions come back in the next plan.
+            list_refused = False
+            replan = False
+            held_keys: set[str] = set()
+            refusals_before = {k: v[0] for k, v in _refusals(sess).items()}
+            side_effects = False
             for action in ordered:
                 if sess.aborted():
                     raise Aborted("user aborted")
+                if list_refused and _pauses_for_user(action, fields):
+                    notes.append("a dropdown refused its answer (its options are in the refusal, "
+                                 "or in a picture of its open list) - settle it first, then ask "
+                                 "what is still open")
+                    replan = True
+                    # Held back, not passed over: the check after the plan
+                    # retires a required field the model left out.
+                    for held in ordered[ordered.index(action):]:
+                        held_field = _field_by_id(fields, held.field_id)
+                        if held_field is not None:
+                            held_keys.add(_field_key(held_field, _field_label(held_field)))
+                            held_keys.add(_choice_group(held_field))
+                    break
                 result = _run_action(
                     page, action, fields, job, attach.resume_path, sess,
                     history, notes, handled, attempts, session_answers, acted_keys,
@@ -1825,6 +1960,8 @@ def run_session(
                 elif result == "executed":
                     executed += 1
                     errors_in_a_row = 0
+                    if action.action not in ("fill", "type"):
+                        side_effects = True
                     if action.action in ("fill", "select"):
                         # A multi-value typeahead (Skills) takes one entry per
                         # action on the same control: a success is not an
@@ -1842,6 +1979,18 @@ def run_session(
                                 consumed.add(done_key)  # after the plan: later skills in it still go in
                 elif result == "error":
                     errors_in_a_row += 1
+                    failed_field = _field_by_id(fields, action.field_id)
+                    # Only a refusal newly on record: an unreachable box (the
+                    # page re-drew it) teaches a replan nothing.
+                    failed_key = (_field_key(failed_field, _field_label(failed_field))
+                                  if failed_field is not None else "")
+                    now_refused = _refusals(sess).get(failed_key)
+                    if (action.action in ("fill", "select") and failed_field is not None
+                            and _opens_a_list(failed_field)
+                            and getattr(invoke, "takes_images", False)
+                            and now_refused is not None
+                            and now_refused[0] != refusals_before.get(failed_key)):
+                        list_refused = True
                 elif result == "stale":
                     notes.append("the page changed mid-plan; re-reading it")
                     break
@@ -1892,6 +2041,8 @@ def run_session(
                 key = _field_key(field, _field_label(field))
                 if not key or key in acted_keys:
                     continue
+                if key in held_keys or (_choice_group(field) or None) in held_keys:
+                    continue          # held back for the next plan, not passed over
                 if _choice_group(field) in answered_groups - {""}:
                     handled.add(key)
                     continue
@@ -1931,7 +2082,13 @@ def run_session(
                     sess.log(f"FILL THIS ONE YOURSELF: {_brief(_question_of(field), 120)} "
                              f"- required, and I could not work out what to put in it.")
 
-            if executed:
+            # A box that refused the model's value (with a picture waiting, or
+            # a new refusal on record) leaves the page looking as it was - the
+            # box is emptied - and the unchanged page skipped every call after
+            # it, so the model never saw why. Bounded by MAX_CONSECUTIVE_ERRORS.
+            learned = bool(_looks(sess)) or (
+                {k: v[0] for k, v in _refusals(sess).items()} != refusals_before)
+            if executed or replan or learned:
                 noop_streak = 0
                 last_llm_sig = ""
             elif refused:
@@ -1947,8 +2104,9 @@ def run_session(
             # next read. Dropping this had the listing page's "Apply for this
             # job" clicked twice, because the tab it opens had not appeared
             # yet when the loop came round and asked the model again. A pass
-            # that clicked nothing has nothing to wait for.
-            if executed:
+            # that clicked nothing has nothing to wait for - nor one that only
+            # typed into boxes (0.4 s a plan, Oct 2026).
+            if executed and side_effects:
                 page.wait_for_timeout(400)
         else:
             outcome, outcome_text = "failed", f"gave up after {MAX_STEPS} steps"
@@ -2433,9 +2591,14 @@ DROPZONE_RE = re.compile(
 # and "Upload a resume" - whose radios and file input are all hidden behind
 # them; the scan saw only Continue, and the candidate was told "This step is
 # filled in" on the one step that asks for the resume.
+# With a CV already on the account (Oct 14 2026) the same step is one
+# pre-selected card holding the CV sent with an earlier job, under "Add a
+# resume"; its "Upload a different file" sits in a closed menu. Nothing said
+# "upload a resume", so that old CV was about to go out with the application.
 UPLOAD_OFFER_RE = re.compile(
-    r"\bupload\s+(?:a|an|your|the)?\s*(?:new\s+|different\s+)?(?:resume|r[ée]sum[ée]|cv)\b",
-    re.IGNORECASE,
+    r"\bupload\s+(?:a|an|your|the)?\s*(?:new\s+|different\s+)?(?:resume|r[ée]sum[ée]|cv)\b"
+    r"|^\s*add\s+(?:a|an|your)\s+(?:resume|r[ée]sum[ée]|cv)\s*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 # The page's only file input that takes documents (ALTEN also has a photo
 # input, which accepts images only). "Only one" keeps a cover-letter slot
@@ -2702,7 +2865,9 @@ def _handle_attachments(page, fields, handled, attach, sess, notes) -> bool:
     #    UPLOAD_OFFER_RE). After the tiles, because a tile names its own input
     #    and has the picker to fall back on; this only knows the page has one.
     if hidden_upload_possible and not attach.resume_attached:
-        text = browser.page_text(page, 1500)
+        # Further than 1500 characters: Indeed's header, job title and the
+        # stored CV's name come before the heading on the stored-CV layout.
+        text = browser.page_text(page, 4000)
         if UPLOAD_OFFER_RE.search(text) and _resume_words(text):
             if _resume_into_hidden_input(page, handled, attach, sess, notes, "this page's resume upload"):
                 return True
@@ -3245,11 +3410,13 @@ def _while_model_thinks(sess: ApplySession, call):
         pool.shutdown(wait=False)
 
 
-def _invoke_with_retry(invoke, sess: ApplySession, prompt: str) -> tuple[ApplyPlan, int]:
+def _invoke_with_retry(invoke, sess: ApplySession, prompt: str,
+                       images: list[bytes] | None = None) -> tuple[ApplyPlan, int]:
     """One plan call with automatic backoff on transient provider errors
     (529 Overloaded and friends). Returns (plan, calls actually made)."""
     calls = 0
     last_exc: Exception | None = None
+    extra = {"images": images} if images else {}
     for delay in (0, 8, 20):
         if sess.aborted():
             raise Aborted("user aborted")
@@ -3258,7 +3425,7 @@ def _invoke_with_retry(invoke, sess: ApplySession, prompt: str) -> tuple[ApplyPl
             time.sleep(delay)
         calls += 1
         try:
-            return _while_model_thinks(sess, lambda: invoke(SYSTEM, prompt, ApplyPlan)), calls
+            return _while_model_thinks(sess, lambda: invoke(SYSTEM, prompt, ApplyPlan, **extra)), calls
         except (Aborted, Parked):
             raise
         except Exception as exc:
@@ -3311,8 +3478,13 @@ def _refusals(sess) -> dict[str, tuple[str, str]]:
 
 def _remember_refusal(sess, key: str, value: str, exc: Exception) -> None:
     """A box turned `value` down: say so to the model, and keep the options
-    it offered for the page's nearest-option call."""
+    it offered for the page's nearest-option call (and the picture, when
+    the refusal came with one)."""
     _refusals(sess)[key] = (value, _refusal_text(exc))
+    _refused_values(sess).setdefault(key, set()).add(resolver.plain(value or ""))
+    png = getattr(exc, "png", None)
+    if png:
+        _add_look(sess, key, "", _refusal_text(exc), png)
     if isinstance(exc, NoOptionMatch) and exc.options:
         offered = getattr(sess, "refused_options", None)
         if offered is None:
@@ -3324,6 +3496,333 @@ def _remember_refusal(sess, key: str, value: str, exc: Exception) -> None:
         offered[key] = list(exc.options)
 
 
+# -- pictures for the model -----------------------------------------------------
+#
+# When one is taken, and when not. Taken where the text the model gets falls
+# short or something visibly went wrong:
+#   - a box turned its value down with a message (FieldRejected, at the fill);
+#   - a dropdown refused the answer and is still unanswered (opened, at the
+#     next model call);
+#   - a field with no question words of its own (_unclear, at the next call);
+#   - boxes the page marks invalid after Next did not move (_flag_invalid);
+#   - a field the model asked to see (action "look").
+# Never for what the rules filled, a page where everything resolved, a native
+# <select> (its options are all in the text, and its list is drawn by the
+# system, not the page), or the whole screen. At most shots.PER_CALL a call,
+# each field pictured once a session unless it refuses something new.
+
+def _looks(sess) -> dict[str, dict[str, Any]]:
+    """Pictures waiting for the next model call, by field key."""
+    store = getattr(sess, "looks", None)
+    if store is None:
+        store = {}
+        try:
+            sess.looks = store
+        except Exception:
+            pass
+    return store
+
+
+def _looked(sess) -> set[str]:
+    """Field keys pictured already this session."""
+    store = getattr(sess, "looked", None)
+    if store is None:
+        store = set()
+        try:
+            sess.looked = store
+        except Exception:
+            pass
+    return store
+
+
+def _add_look(sess, key: str, label: str, why: str, png: bytes) -> None:
+    _looks(sess)[key] = {"label": label, "why": why, "png": png}
+
+
+def _is_option(field: dict[str, Any]) -> bool:
+    return (field.get("type") or "").lower() in ("radio", "checkbox")
+
+
+def _picture_key(field: dict[str, Any]) -> str:
+    """What one picture is of: a QUESTION, not one of its options. Each
+    option of a radio question is a field of its own, so keyed by field,
+    Indeed's "Are you located in Vadodara, Gujarat?" (Oct 2026) was sent
+    twice - a crop around Yes and another around No, the same question in
+    both. The options of a question share this key (see _same_question)."""
+    if _is_option(field):
+        name = str(field.get("name") or "").strip().lower()
+        if name:
+            return f"question:{name}"
+        group = profile.fingerprint(str(field.get("group") or ""))
+        if group:
+            return f"question:{group}"
+    return _field_key(field, _field_label(field))
+
+
+def _picture_parts(page, fields: list[dict[str, Any]] | None, field: dict[str, Any]) -> list:
+    """What goes in a field's picture: the field, then - for an option - the
+    other options of its question, so the one picture shows them all."""
+    parts = [browser.locate(page, field["id"], str(field.get("elid") or ""))]
+    if _is_option(field):
+        for other in fields or []:
+            if (other.get("id") != field.get("id") and _is_option(other)
+                    and _same_question(field, other)):
+                parts.append(browser.locate(page, other["id"], str(other.get("elid") or "")))
+    return parts[:12]
+
+
+def _picture_name(field: dict[str, Any]) -> str:
+    """What a picture is called, in the prompt and its file name: an option
+    by its question ("Are you located in Vadodara?"), not by "Yes"."""
+    if _is_option(field):
+        question = str(field.get("group") or "").strip()
+        if question:
+            return question
+    return _field_label(field)
+
+
+def _opens_a_list(field: dict[str, Any]) -> bool:
+    """A dropdown the page draws itself (not a native <select>)."""
+    if field.get("tag") == "select":
+        return False
+    return _is_listbox_button(field) or (field.get("role") or "").lower() == "combobox" or (
+        (field.get("haspopup") or "").lower() in ("listbox", "true", "grid"))
+
+
+# Words that name no question: "Select One" over a dropdown, "Yes" as an
+# option with no question beside it.
+_GENERIC_TEXT_RE = re.compile(
+    r"(-+\s*)?((please )?(select|choose)( one| an? (option|answer|value))?|answer|your answer|type here"
+    r"|enter( here| text| value)?|option|value|yes|no|none|n/?a)?(\s*-+)?", re.IGNORECASE)
+
+
+def _unclear(field: dict[str, Any]) -> bool:
+    """No words anywhere on this field say what it asks. A label that is only
+    the section's heading counts as none: the snapshot names an unlabelled
+    box after the heading above it ("Apply for Software Engineer")."""
+    if _is_submit(field) or not _accepts_value(field) or (field.get("type") or "").lower() == "file":
+        return False
+    heading = re.sub(r"[*:?]+", " ", str(field.get("section") or "")).strip().casefold()
+    for part in ("label", "group", "placeholder", "beside"):
+        words = re.sub(r"[*:?]+", " ", str(field.get(part) or "")).strip()
+        if not words or _GENERIC_TEXT_RE.fullmatch(words) or words.casefold() == heading:
+            continue
+        # A group that is only its options' words ("Yes No": the snapshot's
+        # last resort reads the block's first line) asks nothing either.
+        if part == "group" and all(_GENERIC_TEXT_RE.fullmatch(w) for w in re.split(r"[\s/|,]+", words) if w):
+            continue
+        return False
+    return True
+
+
+# How far below its box an open list whose rows cannot be read is pictured:
+# POPUP_ROWS_JS's reach.
+UNREAD_LIST_PX = 320
+
+
+def _look_at(page, field: dict[str, Any], open_list: bool = False, typed: str = "",
+             fields: list[dict[str, Any]] | None = None,
+             rows_out: list[str] | None = None) -> bytes | None:
+    """A picture of one field with its surroundings - an option with the
+    rest of its question's options (`fields` names them); a dropdown is
+    opened first so its options are in it (with `typed` in its search box,
+    when given), then closed again. A list whose rows cannot be read is
+    pictured by the room below the box, where it opened; one that says it
+    did not open at all is not pictured (it would be a picture of the page
+    under the box). The rows it could read go in `rows_out`."""
+    try:
+        locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
+    except Exception:
+        return None
+    if not open_list:
+        return shots.crop(page, _picture_parts(page, fields, field))
+    try:
+        browser.click(locator, timeout=2000)
+    except Exception:
+        return shots.crop(page, [locator])
+    if typed:
+        try:
+            locator.fill(typed, timeout=3000)
+        except Exception:
+            typed = ""
+        if typed and not _list_opens(page, locator):
+            try:
+                locator.fill("", timeout=2000)
+            except Exception:
+                pass
+            _dismiss(page, locator, toggle=_is_listbox_button(field))
+            return None
+    rows, texts = _wait_for_options(page, locator, timeout=500 if typed else 800)
+    if rows_out is not None:
+        rows_out.extend(t for t in texts if t)
+    parts = [locator]
+    try:
+        parts += [rows.nth(i) for i in range(min(rows.count(), 8))]
+    except Exception:
+        pass
+    png = shots.crop(page, parts, below=0 if len(parts) > 1 else UNREAD_LIST_PX)
+    if typed:
+        try:
+            locator.fill("", timeout=2000)
+        except Exception:
+            pass
+    _dismiss(page, locator, toggle=_is_listbox_button(field))
+    return png
+
+
+def _pictures_for_call(page, fields, handled, sess, unresolved) -> list[tuple[str, str, bytes, str]]:
+    """(label, why, png, key) for the next model call: pictures already
+    taken first, then the refused dropdowns and the unclear fields still
+    open. Each one sent is kept under screenshots/<company>/. `key` is what
+    the picture is filed under, to queue it again if the call fails."""
+    out: list[tuple[str, str, bytes, str]] = []
+    ready = _looks(sess)
+    looked = _looked(sess)
+    by_key: dict[str, dict[str, Any]] = {}
+    for f in fields:
+        by_key.setdefault(_field_key(f, _field_label(f)), f)
+        by_key.setdefault(_picture_key(f), f)
+    for key in list(ready):
+        if len(out) >= shots.PER_CALL:
+            break                     # the rest wait for the next call
+        item = ready.pop(key)
+        owner = by_key.get(key)
+        # Not for a field gone from the page, nor one answered since (by the
+        # candidate, or a later pass): its error is gone too.
+        if owner is not None and _field_key(owner, _field_label(owner)) not in handled:
+            looked.add(key)
+            out.append((item["label"] or _picture_name(owner), item["why"], item["png"], key))
+    refused = _refusals(sess)
+    still_open = {id(f) for f in unresolved}
+    for field in fields:
+        if len(out) >= shots.PER_CALL:
+            break
+        label = _field_label(field)
+        key = _field_key(field, label)
+        if not key or key in handled or id(field) not in still_open:
+            continue
+        if key in refused and _opens_a_list(field):
+            # Once per value refused, not per field: a dropdown that turns
+            # down the model's second try is looked at again, open.
+            seen = f"{key}|{resolver.plain(refused[key][0])}"
+            if seen in looked:
+                continue
+            offered = (getattr(sess, "refused_options", None) or {}).get(key) or []
+            if len([o for o in offered if o.strip() and not _PLACEHOLDER_ROW_RE.match(o)]) >= 2:
+                # Its options are in the refusal, word for word, already:
+                # opening it for a picture adds nothing but a second.
+                looked.add(seen)
+                continue
+            why = (f"'{label}' (field id {field['id']}), opened: it refused "
+                   f"'{refused[key][0]}'; read its options here")
+            # Opened on the refused value in a box that is typed into: a list
+            # that loads as it is searched shows nothing until then.
+            typed = refused[key][0] if field.get("tag") == "input" else ""
+            png = _look_at(page, field, open_list=True, typed=typed)
+            if png is None and typed:
+                png = _look_at(page, field, open_list=True)
+            name = label
+            seen_key = key
+        elif _unclear(field) and _picture_key(field) not in looked:
+            # One picture a question: its options all go in it.
+            seen = _picture_key(field)
+            name = _picture_name(field)
+            ids = [field["id"]] + [o["id"] for o in fields if o is not field and _is_option(field)
+                                   and _is_option(o) and _same_question(field, o)]
+            why = (f"field id{'s' if len(ids) > 1 else ''} {', '.join(str(i) for i in ids)} "
+                   f"('{name or 'no label'}'): the text does not say what it asks")
+            png = _look_at(page, field, fields=fields)
+            seen_key = seen
+        else:
+            continue
+        looked.add(seen)
+        if png:
+            out.append((name, why, png, seen_key))
+    company = getattr(sess, "company", None)
+    if company is not None:
+        for label, _why, png, _key in out:
+            shots.save(png, company, label)
+    return out
+
+
+def _flag_invalid(page, fields, handled, written, sess, clicked: str) -> int:
+    """The boxes the page marks invalid after `clicked` did not move it on:
+    each pictured with its message, opened again for the model, and its
+    value counted as refused (so it is not typed back as it was). A text box
+    is emptied, or it would read as answered. A question's options, all
+    marked, are ONE picture of the question with every option in it.
+
+    Pictured once a session; reopened every time - a field pictured before
+    and marked again was left "handled", and the model could never touch it.
+    Only a box with a message of its own is emptied and its value refused:
+    "End date before start date" marks the right start date too. And one
+    still holding a value (a ticked option, a chosen dropdown, a kept box)
+    goes to the next model call (_reopened): it reads as answered, and the
+    loop used to click Next again instead. Returns how many questions."""
+    flagged = 0
+    looked = _looked(sess)
+    reopen = _reopened(sess)
+    pictured: set[str] = set()
+    for field_id in browser.invalid_marked(page):
+        field = _field_by_id(fields, field_id)
+        if field is None:
+            continue
+        label = _field_label(field)
+        key = _field_key(field, label)
+        if not key:
+            continue
+        question = _picture_key(field)
+        name = _picture_name(field)
+        locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
+        _invalid, messages = browser.field_message(locator)
+        why = (f"'{name}' is marked invalid after '{clicked}' was clicked"
+               + (f": the page says '{_brief(' | '.join(messages), 160)}'" if messages else ""))
+        if question not in pictured:
+            pictured.add(question)
+            if question not in looked and key not in looked and flagged < shots.PER_CALL:
+                png = shots.crop(page, _picture_parts(page, fields, field))
+                if png:
+                    _add_look(sess, question, name, why, png)
+                sess.log(f"{_brief(name, LOG_LABEL)} is marked invalid"
+                         + (f": {_brief(' | '.join(messages), 100)}" if messages else "")
+                         + " - sending the model a picture of it.")
+            else:
+                sess.log(f"{_brief(name, LOG_LABEL)} is marked invalid again"
+                         + (f": {_brief(' | '.join(messages), 100)}" if messages else "")
+                         + "; the model has seen it - telling it so.")
+            flagged += 1
+        value = _live_value(page, field)
+        text_box = field.get("tag") in ("input", "textarea") and \
+            (field.get("type") or "").lower() not in ("checkbox", "radio", "file")
+        if value and messages and text_box:
+            _refusals(sess)[key] = (value, why)
+            try:
+                locator.fill("", timeout=2000)
+            except Exception:
+                pass
+        else:
+            # Kept as it is, and asked about: nothing empty would bring the
+            # model to it otherwise.
+            reopen.add(key)
+        handled.discard(key)
+        if written is not None:
+            written.pop(key, None)
+    return flagged
+
+
+def _reopened(sess) -> set[str]:
+    """Field keys the next model call must be asked about though they hold a
+    value: the page marked them invalid as they stand (see _flag_invalid)."""
+    store = getattr(sess, "reopened", None)
+    if store is None:
+        store = set()
+        try:
+            sess.reopened = store
+        except Exception:
+            pass
+    return store
+
+
 def _pick_refused(page, fields, handled, sess, attach) -> int:
     """One model call for every dropdown on the page that refused the
     profile's answer and offered other options: the nearest honest option for
@@ -3331,10 +3830,17 @@ def _pick_refused(page, fields, handled, sess, attach) -> int:
     from its list word for word. Picks rated loose or none are left alone, so
     the planning model or the candidate decides those. Each pick is
     remembered for the next form with the same answer and options. Legal and
-    personal questions never come here. Returns how many went in."""
+    personal questions never come here. Returns how many went in.
+
+    A dropdown whose options could not be read at all comes too, with a
+    picture of its list opened on the refused value: the model reads the
+    options off it and names the row, which is taken by the keyboard and
+    checked. Without that, the call had nothing to go on and was never made
+    - Infor's Country box (Oct 2026), where "India" was the second row."""
     invoke = getattr(attach, "pick_invoke", None) if attach is not None else None
     offered = getattr(sess, "refused_options", None) or {}
-    if invoke is None or not offered:
+    sees = bool(getattr(invoke, "takes_images", False))
+    if invoke is None or not (offered or (sees and _refusals(sess))):
         return 0
     asked = getattr(sess, "picks_asked", None)
     if asked is None:
@@ -3344,51 +3850,249 @@ def _pick_refused(page, fields, handled, sess, attach) -> int:
         except Exception:
             return 0
     tried = _refusals(sess)
+    looked = _looked(sess)
     items: list[dict[str, Any]] = []
-    by_ref: dict[int, tuple[dict[str, Any], str, list[str], str]] = {}
+    images: list[bytes] = []
+    by_ref: dict[int, tuple[dict[str, Any], str, list[str], str, bytes | None]] = {}
     for field in fields:
         label = _field_label(field)
         key = _field_key(field, label)
-        if key in handled or key in asked or key not in offered or key not in tried:
+        if key in handled or key in asked or key not in tried:
             continue
         if not resolver.is_blank(field):
             continue                 # answered since: by the candidate or the page
         if answers.classify(label, str(field.get("group") or "")) != "neutral":
             continue
-        options = [o for o in offered[key] if o.strip() and not _PLACEHOLDER_ROW_RE.match(o)]
-        if len(options) < 2:
-            continue
-        ref = len(items) + 1
         value = tried[key][0]
+        options = [o for o in offered.get(key, []) if o.strip() and not _PLACEHOLDER_ROW_RE.match(o)]
+        ref = len(items) + 1
+        if len(options) >= 2:
+            items.append({"ref": ref, "question": _question_of(field), "value": value,
+                          "options": options[:200]})
+            by_ref[ref] = (field, key, options, value, None)
+            continue
+        # A picture only of a box that is typed into: a dropdown BUTTON
+        # cannot take the search, and the keyboard pick types it.
+        if (options or not sees or not _opens_a_list(field) or field.get("tag") != "input"
+                or len(images) >= shots.PER_CALL):
+            continue
+        read: list[str] = []
+        png = _look_at(page, field, open_list=True, typed=value, rows_out=read)
+        read = [t for t in read if t.strip() and not _PLACEHOLDER_ROW_RE.match(t)]
+        if len(read) >= 2:
+            # Opened this time with its rows readable: the call gets them as
+            # text, and no picture is needed.
+            items.append({"ref": ref, "question": _question_of(field), "value": value,
+                          "options": read[:200]})
+            by_ref[ref] = (field, key, read, value, None)
+            continue
+        if not png:
+            continue
+        images.append(png)
+        looked.add(f"{key}|{resolver.plain(value)}")
+        company = getattr(sess, "company", None)
+        if company is not None:
+            shots.save(png, company, label)
         items.append({"ref": ref, "question": _question_of(field), "value": value,
-                      "options": options[:200]})
-        by_ref[ref] = (field, key, options, value)
+                      "options": [], "picture": len(images), "typed": value})
+        by_ref[ref] = (field, key, [], value, png)
     if not items:
         return 0
-    asked.update(entry[1] for entry in by_ref.values())
-    sess.log(f"Choosing the nearest option for {len(items)} question(s)…")
+    sess.log(f"Choosing the nearest option for {len(items)} question(s)…"
+             + (f" ({len(images)} read from a picture of the list)" if images else ""))
     try:
-        picks = matching.pick_with_model(invoke, items)
+        picks = matching.pick_with_model(invoke, items, images=images or None)
         attach.calls += 1
     except Exception as exc:
         sess.log(f"Could not choose the nearest options: {_short(exc)}")
+        # Asked again on the next pass once; a second failure is the model
+        # being down, and the planning call takes these fields from there.
+        if getattr(sess, "pick_failed", False):
+            asked.update(entry[1] for entry in by_ref.values())
+        else:
+            try:
+                sess.pick_failed = True
+            except Exception:
+                asked.update(entry[1] for entry in by_ref.values())
+        for field, key, _options, value, png in by_ref.values():
+            if png:
+                _add_look(sess, key, _field_label(field), _unread_list_why(field, value), png)
         return 0
+    asked.update(entry[1] for entry in by_ref.values())
     filled = 0
-    for ref, pick in picks.items():
-        field, key, options, value = by_ref[ref]
+    for ref, (field, key, options, value, png) in by_ref.items():
+        pick = picks.get(ref)
         label = _field_label(field)
+        if pick is None:
+            if png:
+                # The planning model gets the same picture, not a second one.
+                _add_look(sess, key, label, _unread_list_why(field, value), png)
+            continue
+        where = f", row {pick.position} of the pictured list" if png else ""
         sess.log(f"[best match] {_brief(label, LOG_LABEL)}: '{_brief(value, LOG_VALUE)}' -> "
-                 f"'{_brief(pick.option, LOG_VALUE)}' ({pick.match}: {_brief(pick.reason, 80)})")
+                 f"'{_brief(pick.option, LOG_VALUE)}' ({pick.match}{where}: {_brief(pick.reason, 80)})")
         try:
-            _apply_value(page, field, pick.option, "", sess, source="best match")
+            if png:
+                _pick_row_by_keys(page, field, value, pick.position, pick.option, sess)
+            else:
+                _apply_value(page, field, pick.option, "", sess, source="best match")
         except Exception as exc:
             sess.log(f"Could not fill {_brief(label, LOG_LABEL)}: {_short(exc)}")
+            # Not tried again as it was, and the planning model still sees
+            # the list: its picture goes on, with what did not work.
+            _refused_values(sess).setdefault(key, set()).add(resolver.plain(pick.option))
+            if png:
+                _add_look(sess, key, label, _unread_list_why(field, value)
+                          + f"; row {pick.position} ('{pick.option}') did not go in", png)
             continue
         handled.add(key)
         tried.pop(key, None)
-        matching.remember(options, value, pick.option)
+        if options:
+            # What the box took, not what was asked of it: the fill may have
+            # landed on another row by its own fallbacks.
+            # (A native select reads back its value attribute, not the name.)
+            shown = "" if field.get("tag") == "select" else _live_value(page, field)
+            if not shown or resolver.plain(shown) == resolver.plain(pick.option):
+                matching.remember(options, value, pick.option)
         filled += 1
     return filled
+
+
+def _unread_list_why(field: dict[str, Any], value: str) -> str:
+    label = _field_label(field)
+    return (f"'{label}' (field id {field['id']}), opened on '{value}': its options "
+            "could not be read as text")
+
+
+def _pick_row_by_keys(page, field: dict[str, Any], typed: str, position: int, option: str,
+                      sess, prefix: str = "") -> None:
+    """Take row `position` (1 = top) of the list `typed` opens, by the
+    keyboard: for a list whose rows the page gives no handle on, read off a
+    picture. What the box shows afterwards decides, never the row count: a
+    list that highlights its first row on opening wants one Down fewer than
+    one that highlights nothing, so both are tried, and a wrong row is taken
+    back out each time."""
+    label = _field_label(field)
+    locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
+    shown_before = _combobox_shows(locator)
+    taken = ""
+    for downs in (position - 1, position):
+        if downs < 0:
+            continue
+        try:
+            locator.click(timeout=3000)
+            locator.fill(typed, timeout=3000)
+            if not _list_opens(page, locator):
+                raise ValueError("its list did not open")
+            for _ in range(downs):
+                locator.press("ArrowDown")
+            _press_enter(locator)
+        except ValueError:
+            _dismiss(page, locator)
+            raise
+        except Exception as exc:
+            _dismiss(page, locator)
+            raise ValueError(f"could not reach row {position} ({_short(exc)})") from exc
+        page.wait_for_timeout(100)
+        taken = _combobox_shows(locator)
+        try:
+            left = locator.input_value(timeout=OPTION_READ_MS)
+        except Exception:
+            left = ""
+        if taken and resolver.plain(taken) == resolver.plain(left) == resolver.plain(typed):
+            # The search term still in the box, or the choice written into
+            # it in the same words: no telling which. Not tried again - the
+            # next row down would only be a wrong one.
+            taken = ""
+            break
+        # The row read off the picture, word for word: "Bachelor of Arts" is
+        # not "Bachelor", though _same_answer's whole-word match says it is,
+        # and a list that highlights nothing on opening lands one row above.
+        if taken and resolver.plain(taken) == resolver.plain(option):
+            sess.log(f"{prefix}Selected '{_brief(taken, 40)}' for {_brief(label, LOG_LABEL)} "
+                     f"(dropdown, row {position} of its pictured list)")
+            return
+        if taken:
+            _undo_wrong_choice(page, locator, taken, shown_before, sess, prefix, label)
+    _dismiss(page, locator)
+    raise ValueError(f"row {position} of the list did not give '{_brief(option, 40)}'"
+                     + (f" (the box showed '{_brief(taken, 40)}')" if taken else ""))
+
+
+def _list_opens(page, locator, timeout: int = 600) -> bool:
+    """Has the box opened its list since text was typed? Waits for it to say
+    so (aria-expanded) instead of a fixed pause; a box that never says
+    anything either way is given 300 ms and taken as open."""
+    waited = 0
+    while waited < timeout:
+        try:
+            state = (locator.get_attribute("aria-expanded", timeout=OPTION_READ_MS) or "").lower()
+        except Exception:
+            state = ""
+        if state == "true":
+            return True
+        if state == "" and waited >= 300:
+            return True
+        page.wait_for_timeout(50)
+        waited += 50
+    return False
+
+
+# Enter in a dropdown with no row highlighted falls through to the form:
+# the browser clicks the form's default button and fires submit. For the one
+# keypress, both are stopped before the page sees them (window, capture), and
+# the caller is told. The agent never sends an application.
+SUBMIT_GUARD_JS = """
+(el, on) => {
+  const form = el.form || el.closest('form');
+  if (on) {
+    window.__oeaSubmitTried = false;
+    window.__oeaGuard = (e) => {
+      const t = e.target;
+      const isSubmit = e.type === 'submit' ||
+        (t && t.closest && t.closest('button, input[type=submit], input[type=image]') &&
+         (t.closest('button, input') || {}).type === 'submit');
+      if (!isSubmit) return;
+      if (form && !(form === t || form.contains(t))) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      window.__oeaSubmitTried = true;
+    };
+    window.addEventListener('submit', window.__oeaGuard, true);
+    window.addEventListener('click', window.__oeaGuard, true);
+    return true;
+  }
+  if (window.__oeaGuard) {
+    window.removeEventListener('submit', window.__oeaGuard, true);
+    window.removeEventListener('click', window.__oeaGuard, true);
+  }
+  window.__oeaGuard = null;
+  return !!window.__oeaSubmitTried;
+}
+"""
+
+
+def _press_enter(locator) -> None:
+    """Enter in a dropdown, with the form's submission held off for the
+    keypress (see SUBMIT_GUARD_JS). Raises ValueError when Enter tried to
+    send the form: nothing was chosen, and nothing was sent."""
+    try:
+        guarded = bool(locator.evaluate(SUBMIT_GUARD_JS, True, timeout=OPTION_READ_MS))
+    except Exception:
+        guarded = False
+    if not guarded and _enter_may_submit(locator):
+        raise ValueError("Enter here could send the form, and it could not be held off")
+    try:
+        locator.press("Enter")
+    finally:
+        tried = False
+        if guarded:
+            try:
+                tried = bool(locator.evaluate(SUBMIT_GUARD_JS, False, timeout=OPTION_READ_MS))
+            except Exception:
+                tried = False
+    if tried:
+        raise ValueError("Enter fell through to the form (no option was highlighted); "
+                         "the form was not sent and nothing was chosen")
 
 
 def _refusal_text(exc: Exception) -> str:
@@ -3400,11 +4104,29 @@ def _refusal_text(exc: Exception) -> str:
     return lines[0][:1500] if lines else ""
 
 
+def _refused_values(sess) -> dict[str, set[str]]:
+    """EVERY value each box has refused this session, not just the last:
+    with only the last kept, the model's "Republic of India" on Infor's
+    Country box (Oct 2026) made the profile's refused "India" look new, and
+    the sweep typed it at the same list again - eight seconds, and a second
+    refusal of it."""
+    store = getattr(sess, "refused_values", None)
+    if store is None:
+        store = {}
+        try:
+            sess.refused_values = store
+        except Exception:
+            pass
+    return store
+
+
 def _refused_before(sess, key: str, value: str) -> str:
     """Why `value` was refused for this box earlier in the session, or ''."""
     tried = _refusals(sess).get(key)
     if tried and resolver.plain(tried[0]) == resolver.plain(value or ""):
         return tried[1] or "refused"
+    if resolver.plain(value or "") in _refused_values(sess).get(key, ()):
+        return "refused earlier in this session"
     return ""
 
 
@@ -3925,8 +4647,8 @@ def _redo_answer(page, fields, holder, job, attach, sess, reply: str) -> bool:
     is_date = (field.get("type") or "").lower() == "date"
     shown = entry["value"]
     if is_date and shown:
-        # The browser draws a date box in its own order (10/03/1997 for a US
-        # build), which reads as March to anyone in India. Say it in words.
+        # The browser draws a date box in its own order (11/05/1990 for a US
+        # build), which reads as May to anyone in India. Say it in words.
         spelled = _spelled_date(shown)
         prompt = (f"Editing '{_brief(label, LOG_LABEL)}': it holds {shown}, that is {spelled}. "
                   "Send the right date (DD/MM/YYYY), or skip to leave it.")
@@ -3983,7 +4705,7 @@ def _field_named(fields: list[dict[str, Any]], words: str) -> dict[str, Any] | N
 
 
 def _spelled_date(iso: str) -> str:
-    """'1997-10-03' -> '3 October 1997'; the text itself when it is not ISO."""
+    """'1990-11-05' -> '5 November 1990'; the text itself when it is not ISO."""
     from datetime import date
 
     try:
@@ -4317,7 +5039,9 @@ def _run_action(
         # candidate's instruction sat unread for three idle passes.
         return "refused"
     if action.action == "wait":
-        page.wait_for_timeout(1500)
+        # Up to 1.5 s, and over as soon as the page has changed and held
+        # still: what the model is waiting for is the page.
+        browser.settle(page, browser.page_shape(page), 1500)
         return "skipped"
     if action.action == "goto":
         target = (action.value or "").strip()
@@ -4340,6 +5064,27 @@ def _run_action(
     if key and key in handled:
         notes.append(f"'{label}' is already handled; leave it alone")
         return "skipped"
+    if action.action == "look":
+        # A picture of the field for the next call. "refused" so the loop
+        # plans again with it, whatever else this plan did.
+        # One picture a question: "look" at Yes and then at No is one look.
+        looked = _looked(sess)
+        question = _picture_key(field)
+        name = _picture_name(field)
+        if question in looked or question in _looks(sess):
+            notes.append(f"you were already sent a picture of '{name}'; answer it from that "
+                         "or ask the candidate")
+            return "skipped"
+        png = _look_at(page, field, open_list=_opens_a_list(field), fields=fields)
+        if png is None:
+            looked.add(question)
+            notes.append(f"'{name}' could not be pictured; decide from the text or ask the candidate")
+            return "refused"
+        sess.log(f"The model asked to see {_brief(_question_of(field) or 'an unlabelled field', LOG_LABEL)}; "
+                 "taking a picture of it.")
+        # Sent, and marked as looked at, by _pictures_for_call.
+        _add_look(sess, question, name, f"'{name}' (field id {field['id']}), as you asked to see it", png)
+        return "refused"
     if action.action == "click" and _is_submit(field):
         notes.append(
             f"'{_field_label(field)}' is the submit button; the candidate clicks it, not you"
@@ -4880,6 +5625,7 @@ def _build_prompt(
     notes: list[str],
     handled: set[str],
     refused: dict[str, tuple[str, str]] | None = None,
+    pictures: list[str] | None = None,
 ) -> str:
     shown, left_out, left_open = _prompt_fields(fields, handled)
     annotated = []
@@ -4923,6 +5669,10 @@ def _build_prompt(
         ["TRIED AND REFUSED (do not send these values again; choose from the options "
          "named, or ask the candidate):\n" + "\n".join(turned_down)]
         if turned_down else [])
+    pictured = (
+        ["PICTURES (attached, in this order):\n"
+         + "\n".join(f"{n}. {why}" for n, why in enumerate(pictures, 1))]
+        if pictures else [])
     return "\n\n".join(
         [
             f"JOB: {job.get('title', '')} at {job.get('company', '')}",
@@ -4937,6 +5687,7 @@ def _build_prompt(
             # Before the field list: the list must stay one JSON document,
             # and FORM FIELDS ... ALREADY DONE is how it is read back.
             *refused_section,
+            *pictured,
             f"FORM FIELDS:\n{json.dumps(annotated, ensure_ascii=False)}",
             f"ALREADY DONE:\n{chr(10).join(history) or '(nothing yet)'}",
             f"NOTES FROM THE CANDIDATE:\n{chr(10).join(notes[-10:]) or '(none)'}",
@@ -5019,9 +5770,15 @@ def _answer_key(field: dict[str, Any] | None, key: str) -> str:
     the control itself."""
     if field is None:
         return key
-    group = field.get("group") or ""
-    if (field.get("type") or "").lower() == "radio" and group:
-        return profile.fingerprint(group) or key
+    if (field.get("type") or "").lower() == "radio":
+        # By the input name first: one group text can cover several questions
+        # (Infor's "3.Questions"), and one "no" was replayed into all five.
+        name = str(field.get("name") or "").strip()
+        if name:
+            return f"radio:{name}"
+        group = field.get("group") or ""
+        if group:
+            return profile.fingerprint(group) or key
     return key
 
 
@@ -5280,7 +6037,12 @@ def _apply_value(
                 "a radio option cannot be unchecked; choose the option that should be selected"
             )
         _set_checked(page, locator, field, on)
-        sess.log(f"{prefix}{'Checked' if on else 'Unchecked'} {_brief(label, LOG_LABEL)}")
+        # "Checked No" alone said nothing about which question got the No
+        # (Infor, five Yes / No questions, Oct 2026): name it.
+        question = str(field.get("group") or "").strip()
+        about = (f" - {_brief(question, LOG_LABEL)}"
+                 if field_type == "radio" and question and question != label else "")
+        sess.log(f"{prefix}{'Checked' if on else 'Unchecked'} {_brief(label, LOG_LABEL)}{about}")
         return
 
     # An instruction is not an answer: "llm: shorter, and mention AWS" reached
@@ -5321,6 +6083,9 @@ def _apply_value(
     if _is_date_box(field):
         _type_date_box(page, locator, value, label, prefix, sess, field)
         return
+    # What the box says before anything is typed, so only a message the
+    # value brought on counts against it.
+    before = browser.field_message(locator)
     locator.fill(value, timeout=10000)
     # "Filled" must mean the field HOLDS the value: Workday showed empty
     # Address/City/Postal boxes under log lines saying they were filled.
@@ -5343,7 +6108,19 @@ def _apply_value(
     # every text box of Walmart's form (Oct 2026). locate() finds the new
     # node by its id once the marker has gone.
     locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
-    if not _holds(locator, value):
+    held = _holds(locator, value)
+    # The page's own word on it: "25 LPA" into a digits-only CTC box came
+    # out as "25" with a red "Invalid input" under it, and was reported as
+    # a box that would not keep its value, with nothing said about why
+    # (Oct 2026). A message the value brought on goes to the model with a
+    # picture of the box, and the box is emptied for the corrected value.
+    fresh = _new_messages(before, browser.field_message(locator), held)
+    if not fresh and not held:
+        page.wait_for_timeout(150)      # a message drawn a moment after the blur
+        fresh = _new_messages(before, browser.field_message(locator), held)
+    if fresh:
+        raise _rejected(page, locator, label, value, fresh)
+    if not held:
         if field_type == "number":
             raise ValueError(f"typed '{value}' into the number box '{label}' but it shows '{_shown(locator)}'")
         # A chip-style prompt may already hold the choice as a pill (an
@@ -5501,8 +6278,12 @@ def _set_checked(page, locator, field: dict[str, Any], on: bool) -> None:
         shown = locator.is_visible()
     except Exception:
         shown = True
-    first: Exception = RuntimeError(
-        f"'{_field_label(field)}' could not be ticked ({_tick_why(locator)})")
+    first: Exception | None = None     # why, worked out only if every rung fails
+    # Nor can one its own label is drawn over: check() waits out its 4 s on
+    # "label intercepts pointer events" and the first rung below then ticks
+    # it at once. Infor's Yes / No (Oct 2026) cost 4.4 s a tick that way.
+    if shown and _under_own_label(locator):
+        shown = False
     if shown:
         try:
             # 4 s, not 8: a box that is actionable ticks at once, and one a
@@ -5553,8 +6334,31 @@ def _set_checked(page, locator, field: dict[str, Any], on: bool) -> None:
             continue
         page.wait_for_timeout(200)
     if state() != on:
-        raise first
+        raise first or RuntimeError(f"'{_field_label(field)}' could not be ticked ({_tick_why(locator)})")
     return
+
+
+# Is the box drawn over by one of its own labels (an absolutely placed label
+# sized over a hidden-looking radio)? Then a real click lands on the label,
+# which is the box's own, and Playwright's check() still waits for it to move.
+UNDER_OWN_LABEL_JS = """
+el => {
+  const r = el.getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  if (!top || top === el || el.contains(top)) return false;
+  const label = top.closest('label');
+  if (!label) return false;
+  return Array.from(el.labels || []).includes(label) || (el.id && label.htmlFor === el.id);
+}
+"""
+
+
+def _under_own_label(locator) -> bool:
+    try:
+        return bool(locator.evaluate(UNDER_OWN_LABEL_JS, timeout=1000))
+    except Exception:
+        return False
 
 
 # Why a box would not take a tick, for the transcript: whether it is drawn
@@ -5654,10 +6458,10 @@ def _is_date_box(field: dict[str, Any]) -> bool:
 
 def _parse_date(value: str) -> tuple[int | None, int | None, int | None]:
     """(month, day, year) from 'Jul 2020', '07/2020', '2020-07-15', 'July 15,
-    2020', '03/10/1997'. Two numbers and a year are read DAY FIRST: that is
+    2020', '05/11/1990'. Two numbers and a year are read DAY FIRST: that is
     how the profile stores dates (DD/MM/YYYY) and how the candidate is asked
-    to type them. Read month first, the profile's 3 October 1997 went into a
-    date of birth as 10 March (MyCareernet, Oct 2026)."""
+    to type them. Read month first, the profile's 5 November 1990 went into a
+    date of birth as 11 May (MyCareernet, Oct 2026)."""
     text = (value or "").strip()
     iso = re.fullmatch(r"((?:19|20)\d{2})-(\d{1,2})-(\d{1,2})", text)
     if iso:
@@ -5746,7 +6550,7 @@ def _type_date_box(page, locator, value: str, label: str, prefix: str, sess,
     locator.focus(timeout=5000)
     # The whole value at once first: a picker that reads the box as it is
     # typed (ngx-bootstrap, MyCareernet, Oct 2026) made "10 Jan, 2003" of
-    # "10/03/1997" typed key by key, while the same text set in one go stayed.
+    # "11/05/1990" typed key by key, while the same text set in one go stayed.
     try:
         locator.fill(text, timeout=3000)
         _dismiss(page, locator, date=True)
@@ -6083,7 +6887,7 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
             # rows commits them on Enter. A single pick just needs its list
             # closed.
             if multi and not any(resolver.plain(c) == resolver.plain(chosen) for c in _chips(locator)):
-                locator.press("Enter")
+                _press_enter(locator)
             else:
                 _dismiss(page, locator)
             page.wait_for_timeout(300)
@@ -6599,12 +7403,12 @@ def _wait_for_options(page, locator, timeout: int = 600, step: int = 100):
     """The dropdown's rows as soon as it shows them, or whatever is there
     when `timeout` ms have passed. Same pair as _visible_options: a fixed
     sleep here spent its whole budget on every single option list."""
+    # A deadline, not a sum of the sleeps: the reads take time too, and on a
+    # box swapped out under us they took seconds each.
+    deadline = time.monotonic() + timeout / 1000
     visible, shown = _visible_options(page, locator)
-    waited = 0
-    while not _real_suggestions(shown) and waited < timeout:
-        pause = min(step, timeout - waited)
-        page.wait_for_timeout(pause)
-        waited += pause
+    while not _real_suggestions(shown) and time.monotonic() < deadline:
+        page.wait_for_timeout(max(1, min(step, int((deadline - time.monotonic()) * 1000))))
         visible, shown = _visible_options(page, locator)
     return visible, shown
 
@@ -6624,22 +7428,33 @@ def _visible_options(page, locator):
     to the widget's own listbox (aria-controls/aria-owns) when it names one
     - pages keep hidden option lists around (Greenhouse renders every
     country twice) - else to the list nearest the widget. Never the chips of
-    values already chosen, never a row's inner text node as a second row."""
-    listbox = ""
-    for attr in ("aria-controls", "aria-owns"):
-        try:
-            listbox = (locator.get_attribute(attr, timeout=OPTION_READ_MS) or "").strip()
-        except Exception:
-            listbox = ""
-        if listbox:
-            break
+    values already chosen, never a row's inner text node as a second row.
+
+    One page call a read: this runs on every poll of every dropdown wait,
+    and it used to ask for aria-controls and aria-owns first, a second each
+    when the box had been swapped out - three to four seconds a poll."""
     try:
-        count = int(locator.evaluate(ROWS_JS, listbox, timeout=OPTION_READ_MS) or 0)
+        live = locator.count() > 0
     except Exception:
+        live = False
+    count = 0
+    if live:
+        try:
+            # The box names its own list (aria-controls/owns); ROWS_JS reads it.
+            count = int(locator.evaluate(ROWS_JS, None, timeout=OPTION_READ_MS) or 0)
+        except Exception:
+            live = False
+    if not live:
         # The box was re-rendered under us (Workday swaps the search box
         # node when its list opens): scan the whole page, chips excluded.
         try:
-            count = int(browser.target(page).evaluate(f"(id) => ({ROWS_JS})(null, id)", listbox) or 0)
+            count = int(browser.target(page).evaluate(f"(id) => ({ROWS_JS})(null, id)", "") or 0)
+        except Exception:
+            count = 0
+    if not count and live:
+        # No row marked as one: the list the box opened, read by where it is.
+        try:
+            count = int(locator.evaluate(POPUP_ROWS_JS, timeout=OPTION_READ_MS) or 0)
         except Exception:
             count = 0
     options = browser.target(page).locator("[data-oea-row='1']")
@@ -6664,12 +7479,22 @@ ROWS_JS = """
   // A grid's rows too: Oracle Recruiting's dropdowns declare
   // aria-haspopup=grid (Adani, Oct 2026), and with no option rows read the
   // agent said "its list never opened" about a list that was open.
+  // And react-select's rows before it gave them a role: Infor's (Oct 2026)
+  // are div.react-select__option#react-select-2-option-N with no role at
+  // all, so "India" typed at its Country box showed two rows - "British
+  // Indian Ocean Territory", "India" - that read as no list, and Enter took
+  // the first.
   const ROW = '[role=option], [data-automation-id=promptOption], [role=listbox] li, '
-            + '[role=grid] [role=row], [role=grid] [role=gridcell]';
+            + '[role=grid] [role=row], [role=grid] [role=gridcell], '
+            + '[class*="select__option"], [id^="react-select-"][id*="-option-"]';
   const CHIP = '[data-automation-id=selectedItemList], [data-automation-id=selectedItem], '
              + '[aria-label*="items selected" i], [aria-label*="press delete" i]';
+  if (listboxId == null) {
+    listboxId = el ? (el.getAttribute('aria-controls') || el.getAttribute('aria-owns') || '').trim() : '';
+  }
   const clear = (n) => {
     for (const old of n.querySelectorAll('[data-oea-row]')) old.removeAttribute('data-oea-row');
+    for (const old of n.querySelectorAll('[data-oea-loose]')) old.removeAttribute('data-oea-loose');
     for (const h of n.querySelectorAll('*')) if (h.shadowRoot) clear(h.shadowRoot);
   };
   clear(document);
@@ -6721,6 +7546,83 @@ ROWS_JS = """
 }
 """
 
+# The rows of a list nothing marks as one, read by where it is: when ROWS_JS
+# finds none, the popup the box opened is the list of short, alike, plain
+# items (no form controls) sitting just below or above it, in something
+# positioned or named like a menu. Infor's Country rows (Oct 2026) were read
+# by neither role nor class until ROWS_JS learned react-select's; the next
+# widget nobody has seen yet lands here instead of on Enter, which takes
+# whatever is first. With text typed, a row must name it: a list that does
+# not is not this box's answer to it. Marks the rows as ROWS_JS does, and as
+# loose (data-oea-loose): a click on one is only taken when the box then
+# shows it. Never the widget's chips, never real links (a nav bar), never
+# anything over the box itself; inside the list the box names, when it names
+# one that is on screen. Cheap tests first: this runs on every poll.
+POPUP_ROWS_JS = """
+(el) => {
+  const me = el.getBoundingClientRect();
+  const typed = String(el.value || '').trim().toLowerCase();
+  const CONTROL = 'input, select, textarea, button, [role=combobox]';
+  const CHIP = '[data-automation-id=selectedItemList], [data-automation-id=selectedItem], ' +
+               '[aria-label*="items selected" i], [aria-label*="press delete" i], ' +
+               '[class*="multi-value" i], [class*="multiValue"], [class*="chip" i], [class*="tag-list" i]';
+  const HINT = /menu|list|popup|popover|dropdown|suggest|option|result|autocomplete|overlay/i;
+  const shown = (n) => n.getClientRects().length && getComputedStyle(n).visibility !== 'hidden';
+  const text = (n) => (n.innerText || '').replace(/\\s+/g, ' ').trim();
+  const realLink = (n) => {
+    const a = n.matches('a[href]') ? n : n.querySelector('a[href]');
+    if (!a) return false;
+    const href = (a.getAttribute('href') || '').trim();
+    return !!href && !href.startsWith('#') && !/^javascript:/i.test(href);
+  };
+  const popupLike = (n) => {
+    for (let a = n, i = 0; a && a !== document.body && i < 5; a = a.parentElement, i++) {
+      const pos = getComputedStyle(a).position;
+      if (pos === 'absolute' || pos === 'fixed') return true;
+      if (HINT.test(String(a.getAttribute('class') || '') + ' ' + (a.id || '') + ' '
+                    + (a.getAttribute('role') || ''))) return true;
+    }
+    return false;
+  };
+  for (const old of document.querySelectorAll('[data-oea-loose]')) old.removeAttribute('data-oea-loose');
+  const named = (el.getAttribute('aria-controls') || el.getAttribute('aria-owns') || '').trim();
+  const own = named ? document.getElementById(named) : null;
+  const scope = own && shown(own) ? own : document;
+  const found = [];
+  for (const c of scope.querySelectorAll('div, ul, ol')) {
+    if (c.contains(el)) continue;
+    const r = c.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    // Below the box or above it - never over it - and close.
+    const below = r.top >= me.bottom - 4, above = r.bottom <= me.top + 4;
+    if (!below && !above) continue;
+    const dy = below ? r.top - me.bottom : me.top - r.bottom;
+    const dx = Math.max(0, r.left - me.right, me.left - r.right);
+    if (dx > 40 || Math.max(0, dy) + dx > 320) continue;
+    if (c.closest(CHIP) || getComputedStyle(c).visibility === 'hidden') continue;
+    const kids = Array.from(c.children).filter(shown);
+    if (!kids.length || kids.length > 300) continue;
+    const tag = kids[0].tagName;
+    if (kids.some(k => k.tagName !== tag || k.matches(CONTROL) || k.querySelector(CONTROL) || realLink(k))) continue;
+    const texts = kids.map(text);
+    if (texts.some(t => !t || t.length > 150)) continue;
+    const names = typed.length >= 2 && texts.some(t => t.toLowerCase().includes(typed));
+    if (typed.length >= 2 ? !names : kids.length < 2) continue;
+    if (scope === document && !popupLike(c)) continue;
+    found.push({c, kids, dist: Math.max(0, dy) + dx});
+  }
+  // A wrapper around one list is not the list, and the parts inside one row
+  // are not rows.
+  const lists = found.filter(x => !found.some(y => y !== x && (
+      (x.kids.length === 1 && x.c.contains(y.c)) ||
+      (y.kids.length >= 2 && y.kids.some(k => k.contains(x.c))))));
+  lists.sort((a, b) => a.dist - b.dist || b.kids.length - a.kids.length);
+  if (!lists.length) return 0;
+  for (const k of lists[0].kids) { k.setAttribute('data-oea-row', '1'); k.setAttribute('data-oea-loose', '1'); }
+  return lists[0].kids.length;
+}
+"""
+
 # The values a chip-style widget already holds (Workday's selectedItem
 # pills next to the search box), read from the widget around the input.
 CHIPS_JS = """
@@ -6752,14 +7654,16 @@ ENTER_MAY_SUBMIT_JS = """
 
 def _enter_may_submit(locator) -> bool:
     try:
-        return bool(locator.evaluate(ENTER_MAY_SUBMIT_JS))
+        # A second, not Playwright's 30: a box the page has swapped out
+        # never answers, and this is asked inside polling loops.
+        return bool(locator.evaluate(ENTER_MAY_SUBMIT_JS, timeout=OPTION_READ_MS))
     except Exception:
         return True   # unknown: do not risk a submission
 
 
 def _chips(locator) -> list[str]:
     try:
-        return [str(t).strip() for t in (locator.evaluate(CHIPS_JS) or [])]
+        return [str(t).strip() for t in (locator.evaluate(CHIPS_JS, timeout=OPTION_READ_MS) or [])]
     except Exception:
         return []
 
@@ -6962,12 +7866,10 @@ def _wait_for_change(page, locator, baseline: list[str], timeout: int = 2500, st
     list it had before it typed and said the value matched nothing, while the
     error it printed a second later listed the very rows it had wanted.
     """
+    deadline = time.monotonic() + timeout / 1000     # see _wait_for_options
     visible, shown = _visible_options(page, locator)
-    waited = 0
-    while shown == baseline and waited < timeout:
-        pause = min(step, timeout - waited)
-        page.wait_for_timeout(pause)
-        waited += pause
+    while shown == baseline and time.monotonic() < deadline:
+        page.wait_for_timeout(max(1, min(step, int((deadline - time.monotonic()) * 1000))))
         visible, shown = _visible_options(page, locator)
     return visible, shown
 
@@ -7095,15 +7997,14 @@ def _settled_filter(page, locator, baseline: list[str], text: str):
     visible, shown = _wait_for_change(page, locator, baseline)
     if shown == baseline:
         return visible, shown
-    waited = 0
-    while waited < 2500:
+    started = time.monotonic()               # a deadline: see _wait_for_options
+    while (waited := (time.monotonic() - started) * 1000) < 2500:
         rows = [s for s in shown if s and not _PLACEHOLDER_ROW_RE.match(s)]
         if rows and _filtered_on(shown, text):
             break
         if not rows and waited >= 1200:
             break        # a real "no hits", most likely
         page.wait_for_timeout(150)
-        waited += 150
         visible, shown = _visible_options(page, locator)
     return visible, shown
 
@@ -7190,13 +8091,27 @@ _SCHOOL_BOX_RE = re.compile(r"\b(school|university|college|institut\w*)\b", re.I
 def _click_row(page, locator, rows, index: int, text: str) -> bool:
     """Click one row of an open list and check the box took it. False (and
     nothing raised) when it did not: the caller goes on as if untouched."""
+    loose = _is_loose_row(rows, index)
     try:
         rows.nth(index).click(timeout=2500)
     except Exception:
         return False
     page.wait_for_timeout(100)
     taken = _combobox_shows(locator)
-    return not taken or _same_answer(taken, text)
+    if not taken:
+        # A row read by position only (POPUP_ROWS_JS) is not taken on trust:
+        # the box must show it.
+        return not loose
+    return _same_answer(taken, text)
+
+
+def _is_loose_row(rows, index: int) -> bool:
+    """Was this row read by its place under the box (POPUP_ROWS_JS) rather
+    than marked as an option by the page?"""
+    try:
+        return rows.nth(index).get_attribute("data-oea-loose", timeout=OPTION_READ_MS) == "1"
+    except Exception:
+        return False
 
 
 def _open_via_control(locator) -> bool:
@@ -7251,6 +8166,9 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         was = locator.input_value(timeout=2000)   # to put back if we refuse
     except Exception:
         was = ""
+    # The choice the widget showed before this pick: one that is there now
+    # and was not then, and is not the answer, was put there by us.
+    shown_before = _combobox_shows(locator)
     if _real_suggestions(opening) and not prefer:
         # The answer is already on show: take it, without typing. Typing at
         # SuccessFactors' lists cost 3-4 s a box and, for "No" in a list
@@ -7369,6 +8287,7 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         # fragment's, and its nearest row is the fragment's.
         index, best_why = matching.best_option(shown, value, _choose_option)
     if index >= 0:
+        loose = _is_loose_row(visible, index)
         try:
             visible.nth(index).click(timeout=2500)
             clicked = True
@@ -7377,13 +8296,20 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         if clicked:
             # What the box shows now is the evidence, not the row we clicked.
             # A widget that shows nothing in its own box (a chip list) cannot
-            # be checked this way and is taken at its word, as before.
+            # be checked this way and is taken at its word, as before - but
+            # not when the row was only read by its place under the box.
             page.wait_for_timeout(100)
             taken = _combobox_shows(locator)
+            if not taken and loose:
+                _dismiss(page, locator)
+                raise ValueError(
+                    f"clicked '{_brief(shown[index], 40)}', read off the list by its place under "
+                    "the box, but the box shows nothing - not taken as chosen")
             if taken and not _same_answer(taken, shown[index]):
+                undone = _undo_wrong_choice(page, locator, taken, shown_before, sess, prefix, label)
                 raise ValueError(
                     f"picked '{_brief(shown[index], 40)}' but the box shows "
-                    f"'{_brief(taken, 40)}' - not entered")
+                    f"'{_brief(taken, 40)}' - not entered" + undone)
             if best_why:
                 _log_best_match(sess, prefix, label, value, shown[index], best_why)
             else:
@@ -7425,8 +8351,17 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
             f"could not read this dropdown's options, so '{value}' was not entered",
             rows,
         )
-    # One option or an invisible list: the widget highlights it; Enter takes it.
-    locator.press("Enter")
+    # One option or an invisible list: the widget highlights it; Enter takes
+    # it - with the form held off, in case nothing was highlighted after all.
+    try:
+        _press_enter(locator)
+    except ValueError:
+        try:
+            locator.fill(was, timeout=3000)
+        except Exception:
+            pass
+        _dismiss(page, locator)
+        raise
     # And then CHECK, because Enter at a widget that never opened does
     # nothing at all. This logged "Selected 'Immediate Joiner'" - a value that
     # is not one of the four options - for a box the form had received nothing
@@ -7443,6 +8378,15 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         # costs an application that goes in with the box empty. A code
         # review changed this to log-and-continue in Oct 2026 and the check
         # caught it.
+        # And the box put back as it was found, the list closed: the search
+        # term left in it read as Country's answer on the next pass, once
+        # nothing moved the focus away to make the widget clear it (Infor's
+        # radios are ticked without a real click, Oct 2026).
+        try:
+            locator.fill(was, timeout=3000)
+        except Exception:
+            pass
+        _dismiss(page, locator)
         raise ValueError(
             f"'{value}' was typed at this dropdown but it took nothing; "
             "its list never opened"
@@ -7452,12 +8396,61 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         # 'India: Chennai' for Total Professional Experience" - the box the
         # keys went to was the job page's location box behind the popup, and
         # its own value was read back as the answer.
+        undone = _undo_wrong_choice(page, locator, taken, shown_before, sess, prefix, label)
         raise ValueError(
             f"'{value}' was typed at this dropdown but it now shows "
-            f"'{_brief(taken, 40)}' - not entered")
+            f"'{_brief(taken, 40)}' - not entered" + undone)
     sess.log(f"{prefix}Selected '{_brief(taken, 40)}' for "
              f"{_brief(label, LOG_LABEL)} (dropdown, keyboard)")
     return "picked"
+
+
+# The widget's own "clear" control (react-select's clear indicator, a
+# button labelled clear), marked so a real click can reach it: react-select
+# listens for mousedown, which a scripted .click() does not send.
+MARK_CLEAR_JS = """
+(el) => {
+  for (const old of document.querySelectorAll('[data-oea-clear]')) old.removeAttribute('data-oea-clear');
+  let n = el.parentElement;
+  for (let d = 0; n && d < 5; d++, n = n.parentElement) {
+    const x = n.querySelector('[class*="clear-indicator"], [class*="clearIndicator"], ' +
+                              'button[aria-label*="clear" i]');
+    if (x && x.getClientRects().length) { x.setAttribute('data-oea-clear', '1'); return true; }
+  }
+  return false;
+}
+"""
+
+
+def _undo_wrong_choice(page, locator, taken: str, shown_before: str, sess, prefix: str,
+                       label: str) -> str:
+    """Take back a choice the widget made that is not the answer - Enter on
+    Infor's Country box (Oct 2026) committed "British Indian Ocean Territory",
+    the first row for "India", and the refusal left it standing on the form.
+    Only what this pick put there: a choice the box already held is left
+    alone. Returns a note for the refusal message."""
+    if not taken or (shown_before and resolver.plain(shown_before) == resolver.plain(taken)):
+        return ""
+    try:
+        if locator.evaluate(MARK_CLEAR_JS, timeout=OPTION_READ_MS):
+            browser.target(page).locator('[data-oea-clear="1"]').first.click(timeout=2000)
+    except Exception:
+        pass
+    if _combobox_shows(locator):
+        try:
+            locator.focus(timeout=2000)
+            locator.fill("", timeout=2000)
+            locator.press("Backspace")
+        except Exception:
+            pass
+    _dismiss(page, locator)
+    left = _combobox_shows(locator)
+    if left and resolver.plain(left) == resolver.plain(taken):
+        sess.log(f"{prefix}{_brief(label, LOG_LABEL)} still shows '{_brief(taken, 40)}', which is "
+                 "wrong - clear it in the browser.")
+        return "; it could not be cleared, so clear it on the page"
+    sess.log(f"{prefix}{_brief(label, LOG_LABEL)}: took '{_brief(taken, 40)}' back out.")
+    return "; it was taken back out"
 
 
 def _same_answer(shown: str, wanted: str) -> bool:
@@ -7582,18 +8575,28 @@ def _group_options(fields: list[dict[str, Any]], field: dict[str, Any]) -> list[
     """The options of the question `field` belongs to, itself included, in
     page order: same type, same group (by name or by question) and section."""
     kind = (field.get("type") or "").lower()
-    group = profile.fingerprint(str(field.get("group") or ""))
-    name = str(field.get("name") or "").strip().lower()
     section = str(field.get("section") or "")
     out = []
     for other in fields:
         if (other.get("type") or "").lower() != kind or str(other.get("section") or "") != section:
             continue
-        if other is field or other.get("id") == field.get("id") or (
-                (name and str(other.get("name") or "").strip().lower() == name)
-                or (group and profile.fingerprint(str(other.get("group") or "")) == group)):
+        if other is field or other.get("id") == field.get("id") or _same_question(field, other):
             out.append(other)
     return out
+
+
+def _same_question(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Two options of one question. Their input names decide when both have
+    one: Infor's five Yes/No questions (Oct 2026) shared one group, the
+    section heading, and only their names told them apart - "either the name
+    or the group" made them one ten-option question. The group decides only
+    when a name is missing."""
+    name_a = str(a.get("name") or "").strip().lower()
+    name_b = str(b.get("name") or "").strip().lower()
+    if name_a and name_b:
+        return name_a == name_b
+    group = profile.fingerprint(str(a.get("group") or ""))
+    return bool(group) and profile.fingerprint(str(b.get("group") or "")) == group
 
 
 def _group_choice(fields: list[dict[str, Any]], field: dict[str, Any], answer: str):
@@ -7615,19 +8618,13 @@ def _group_choice(fields: list[dict[str, Any]], field: dict[str, Any], answer: s
 def _sibling_option(fields: list[dict[str, Any]], field: dict[str, Any], answer: str):
     """The radio in the SAME group whose label matches the answer: "no" to a
     Yes/No question ticks that group's No."""
-    group = profile.fingerprint(str(field.get("group") or ""))
-    name = str(field.get("name") or "").strip().lower()
     section = str(field.get("section") or "")
     for other in fields:
         if other is field or (other.get("type") or "").lower() != "radio":
             continue
         if other.get("id") == field.get("id"):
             continue
-        same_group = (
-            (name and str(other.get("name") or "").strip().lower() == name)
-            or (group and profile.fingerprint(str(other.get("group") or "")) == group)
-        )
-        if not same_group or str(other.get("section") or "") != section:
+        if not _same_question(field, other) or str(other.get("section") or "") != section:
             continue
         if _option_agrees(other, answer):
             return other
@@ -7737,7 +8734,7 @@ def _needs_user(action: ApplyAction, field: dict[str, Any] | None, label: str) -
     # submit clicks are refused outright in _execute.
     if action.action == "upload":
         return not is_resume_field(field or {})
-    if action.action in ("wait", "done", "ask"):
+    if action.action in ("wait", "done", "ask", "look"):
         return False
     if action.action == "click" and field is not None and _is_section_add(field):
         return False  # adding a resume entry is what the candidate asked for
@@ -7896,7 +8893,7 @@ def _entry_remove_button(fields, entry) -> dict[str, Any] | None:
 def _excluded_entry_removals(fields: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
     """(project, remove-button) for each Work Experience entry that holds a
     flagged project. A site that parses the uploaded resume adds one by
-    itself - Esko put "Applied AI & LLM Agents" at the top of the list."""
+    itself - Esko put "Weekend AI Projects" at the top of the list."""
     if not not_employment():
         return []
     starts = [
@@ -8117,9 +9114,29 @@ def _accepts_value(field: dict[str, Any]) -> bool:
 
 # The button on a job's own page that opens its application.
 APPLY_OPENER_RE = re.compile(
-    r"^\s*(?:apply|apply now|apply online|apply for (?:this )?(?:job|position|role|vacancy))\s*$",
+    # "Apply for this job online": iCIMS's own button (Planview, Oct 2026).
+    r"^\s*(?:apply(?: now| online| here)?|apply (?:for|to) (?:this |the )?(?:job|position|role|vacancy)"
+    r"(?: online| now)?)\s*$",
     re.IGNORECASE,
 )
+
+# The same opener as a link in a child frame the scan is not reading: an
+# iCIMS job page is a frame of the employer's site, and a frame holding only
+# a link has no controls to win the scan with. Visible, outside any form,
+# a real address. Returns [text, absolute href] or null.
+FRAME_APPLY_LINK_JS = """
+(pattern) => {
+  const re = new RegExp(pattern, 'i');
+  for (const a of document.querySelectorAll('a[href]')) {
+    if (!a.getClientRects().length || a.closest('form')) continue;
+    const text = (a.innerText || a.getAttribute('title') || '').replace(/\\s+/g, ' ').trim();
+    const href = (a.getAttribute('href') || '').trim();
+    if (!re.test(text) || !href || href.startsWith('#') || /^(javascript|mailto|tel):/i.test(href)) continue;
+    return [text, a.href];
+  }
+  return null;
+}
+"""
 
 
 def _opens_the_application(field: dict[str, Any], history: list) -> bool:
@@ -8130,8 +9147,87 @@ def _opens_the_application(field: dict[str, Any], history: list) -> bool:
     'APPLY' yourself" - about a page with no application on it. A submit
     button outside any form has nothing to send. Only before anything has
     been done in the session: a final step is never the first page."""
-    return (not history and field.get("tag") == "button" and field.get("form") == -1
+    # A link too: Indeed's "Apply now" became one (Oct 14 2026), and with no
+    # opener the agent told the candidate to submit a job page.
+    return (not history and field.get("tag") in ("button", "a") and field.get("form") == -1
             and APPLY_OPENER_RE.match(_field_label(field) or "") is not None)
+
+
+def _apply_link(page, fields: list[dict[str, Any]], history: list):
+    """The job page's "Apply Now" when it is a plain LINK to the form, and
+    where it goes: Infor's (Oct 2026) is <a href=".../applications/new">.
+    Left alone, the agent spent a 21-second model call on a page with nothing
+    to fill, and the model's click on it was refused as submit-worded, so
+    only the candidate could open the form.
+
+    Followed by going to its address, never by a click: a page load cannot
+    send anything, and no script of the page's runs. Only before anything
+    has been done in the session, only a link outside any form, named only
+    as an opener, and only a real address - never "#" or javascript:, which
+    are buttons by another name. An Apply BUTTON (one-click apply on a job
+    board) is never touched here.
+
+    Returns (field, address, where) - `where` the page or the frame the link
+    is in, which is what goes to the address - or None."""
+    if history:
+        return None
+    doc = browser.target(page)
+    here = _safe_url(doc)
+
+    def usable(address: str) -> bool:
+        scheme = urlparse(address).scheme
+        # A saved page's link to another saved page (the test fixtures).
+        return scheme in ("http", "https") or (scheme == "file" and here.startswith("file:"))
+
+    for field in fields:
+        if not _opens_the_application(field, history) or field.get("tag") != "a":
+            continue
+        try:
+            locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
+            href = (locator.get_attribute("href", timeout=1000) or "").strip()
+        except Exception:
+            continue
+        if not href or href.startswith("#") or re.match(r"(?i)\s*(javascript|mailto|tel):", href):
+            continue
+        address = urljoin(here, href)
+        if usable(address):
+            return field, address, doc
+    # In a big frame of the page the scan is not reading (an iCIMS job page).
+    try:
+        frames = list(page.frames)
+    except Exception:
+        frames = []
+    for frame in frames:
+        if frame is doc or frame == getattr(page, "main_frame", None):
+            continue
+        try:
+            if browser.NOT_A_FORM_RE.search(frame.url or "") or not browser._frame_is_a_panel(page, frame):
+                continue
+            found = frame.evaluate(FRAME_APPLY_LINK_JS, APPLY_OPENER_RE.pattern)
+        except Exception:
+            continue
+        if found and usable(found[1]):
+            return {"tag": "a", "label": found[0], "form": -1, "id": 0}, found[1], frame
+    return None
+
+
+def _open_apply_link(page, fields: list[dict[str, Any]], history: list, sess) -> bool:
+    """Follow the job page's Apply link (see _apply_link). True if it went."""
+    found = _apply_link(page, fields, history)
+    if found is None:
+        return False
+    field, address, where = found
+    label = _field_label(field)
+    try:
+        # In its own frame when it is in one: the employer's page around an
+        # iCIMS frame stays as it is, and the form loads where the job was.
+        where.goto(address, wait_until="domcontentloaded", timeout=60000)
+    except Exception as exc:
+        sess.log(f"'{label}' links to the application form, but it would not open: {_short(exc)}")
+        return False
+    sess.log(f"This is the job's page; '{label}' is a link to the application form - opened it.")
+    history.append(f"opened the application form ({label})")
+    return True
 
 
 def _is_submit(field: dict[str, Any]) -> bool:
@@ -8163,8 +9259,13 @@ def _field_label(field: dict[str, Any]) -> str:
     """What to call this field in the transcript. The group is the last
     resort before an id: a consent checkbox often has no label of its own and
     its question lives in the legend above it, and "Checked #16" in the log
-    tells the candidate nothing about what they just agreed to."""
-    return (field.get("label") or field.get("text") or field.get("name")
+    tells the candidate nothing about what they just agreed to.
+    A button input's words are its value: iCIMS's <input type=submit
+    value="Next"> was "#4" to the candidate (Planview, Oct 2026)."""
+    shown = ""
+    if field.get("tag") == "input" and (field.get("type") or "").lower() in ("submit", "button", "reset"):
+        shown = str(field.get("value") or "").strip()
+    return (field.get("label") or field.get("text") or shown or field.get("name")
             or field.get("group") or f"#{field.get('id')}")
 
 

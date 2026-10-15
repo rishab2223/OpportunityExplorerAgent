@@ -43,7 +43,7 @@ Engineer.
 \section*{Certifications}
 \begin{itemize}
   \item AWS Solutions Architect
-  \item CCNA
+  \item Scrum
 \end{itemize}
 \end{document}
 """
@@ -57,7 +57,7 @@ RUN = runs.OUTPUT_DIR / STAMP
 RUN.mkdir(parents=True)
 (RUN / "run.json").write_text(json.dumps({"status": "ok", "match_count": 2}), encoding="utf-8")
 (RUN / "long.tex").write_text(
-    fit_policy.apply_step(RESUME, fit_policy.FitStep.model_validate(fit_policy.DEFAULT_STEPS[1])),
+    fit_policy.apply_step(RESUME, fit_policy.FitStep.model_validate(fit_policy.DEFAULT_STEPS[0])),
     encoding="utf-8")
 (RUN / "short.tex").write_text(RESUME, encoding="utf-8")
 (RUN / "shortlisted.json").write_text(json.dumps([
@@ -90,7 +90,7 @@ def fake_invoker(_cfg, _env, _purpose):
         time.sleep(0.3)   # long enough to see the thinking bubble
         return schema(reply="Let's tighten the margins first and keep both certifications.",
                       steps=[{"kind": "layout", "setting": "margin", "value": 0.6},
-                             {"kind": "drop_item", "section": "Certifications", "match": "CCNA"}],
+                             {"kind": "drop_item", "section": "Certifications", "match": "Scrum"}],
                       guidance="Never drop the AWS certification.", ready_to_save=True)
     return invoke
 
@@ -146,11 +146,11 @@ with sync_playwright() as pw:
     check("runs use the default rule until something is saved",
           page.text_content("#fitstate") == "Runs use the default rule")
     check("the draft starts from the default rule",
-          steps(page) == ["Drop the CCNA bullet", "Drop the Certifications section"], str(steps(page)))
+          steps(page) == ["Drop the Certifications section"], str(steps(page)))
     subject = page.input_value("#fitsubject")
     check("a resume that ran long is offered first", subject == f"{STAMP}/long", subject)
     page.wait_for_function("document.querySelector('#fitpdf').src.includes('/api/fit/preview.pdf')")
-    check("the preview is built on open", fits and fits[-1][0] == "Drop the CCNA bullet", str(fits[-1:]))
+    check("the preview is built on open", fits and fits[-1][0] == "Drop the Certifications section", str(fits[-1:]))
     check("the trail says what happened",
           "2 p" in (page.text_content("#fittrail") or "") and "1 p" in (page.text_content("#fittrail") or ""))
     check("the page count shows one page", page.text_content("#fitpages") == "1 page")
@@ -168,7 +168,7 @@ with sync_playwright() as pw:
           asked and r"\section*{Certifications}" in asked[-1] and "Keep my certifications" in asked[-1])
     check("the reply shows", "tighten the margins" in (page.text_content("#fitmessages") or ""))
     check("the policy is the model's revision",
-          steps(page) == ["Margins to 0.6in", "Drop the bullet mentioning 'CCNA' in Certifications"],
+          steps(page) == ["Margins to 0.6in", "Drop the bullet mentioning 'Scrum' in Certifications"],
           str(steps(page)))
     check("the guidance shows", "Never drop the AWS" in (page.text_content("#fitguidance") or ""))
     check("agreement is suggested, not assumed", page.locator("#fitready").is_visible()

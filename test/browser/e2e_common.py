@@ -63,7 +63,7 @@ profile.PROFILE_PATH.write_text(json.dumps({
     "current_title": "Software Engineer",
     "current_company": "Acme Corp",
     "current_ctc": "2500000",
-    "not_employment": "Applied AI & LLM Agents",
+    "not_employment": "Weekend AI Projects",
 }), encoding="utf-8")
 PDF = SCRATCH / "dummy_resume.pdf"
 PDF.write_bytes(b"%PDF-1.4 dummy resume for e2e\n%%EOF\n")

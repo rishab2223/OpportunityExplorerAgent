@@ -16,38 +16,67 @@ There is no email, Google Sheet, or Google Drive. The resume is always a local f
 3. **Score** — one cheap LLM call per scraped job (plain text from the resume)
 4. **Filter** — keep jobs with `relevance >= min_score` (default 7, so 7–10)
 5. **Enrich** — for `.tex` input, per-section tailored edits (summary, skills, bullet rewording) spliced into your original LaTeX source; for PDF, markdown suggestions. Interview prep is written on demand by default (**Job info → Write interview prep**), or with every resume when `interview_prep: run`. Postings with the same company and title share one tailoring call, and a posting an earlier run already tailored against the same resume and model reuses that result (`reuse_enrichment`). The model never rewrites the whole document: the preamble, section headings, and layout come through byte-identical, sections cannot be dropped, and edits that fail validation (unbalanced braces/environments, forbidden commands, big length changes) are rejected and retried once with the reasons named — a rejected section keeps its original text
-6. **Dump** — `outputs/{timestamp}/`, compiling each tailored `.tex` to a `.pdf` and keeping it to **one page** (also writes a run summary after a failure). The model writes LaTeX blind, so length is enforced by measurement, not by asking: the model may add genuinely useful content (up to a 1.15× overall cap that blocks runaway rewrites), knowing the declared cost — if the compiled PDF runs past one page, your **fit policy** is applied step by step, recompiling after each and stopping as soon as it fits. You agree that policy with the AI in the **Resume fit** tab (see [Web UI](#web-ui)); until you save one, it is the old fixed order: the CCNA certification bullet first, then the whole Certifications section. Every step is named in the run log, the resume as written is kept in `{stamp}/full/`, and a resume that is still too long keeps its content and is flagged on the row rather than gutted further. PDFs compile side by side (`pdf_concurrency`).
+6. **Dump** — `outputs/{timestamp}/`, compiling each tailored `.tex` to a `.pdf` and keeping it to **one page** (also writes a run summary after a failure). The model writes LaTeX blind, so length is enforced by measurement, not by asking: the model may add genuinely useful content (up to a 1.15× overall cap that blocks runaway rewrites), knowing the declared cost — if the compiled PDF runs past one page, your **fit policy** is applied step by step, recompiling after each and stopping as soon as it fits. You agree that policy with the AI in the **Resume fit** tab (see [Web UI](#web-ui)); until you save one, the default drops the whole Certifications section. Every step is named in the run log, the resume as written is kept in `{stamp}/full/`, and a resume that is still too long keeps its content and is flagged on the row rather than gutted further. PDFs compile side by side (`pdf_concurrency`).
 
 If a step fails, later steps do not run. A run summary is still written so you can see which step failed.
 
 ## Requirements
 
-- Python 3.11+
-- [OpenAI API key](https://platform.openai.com/api-keys) for scoring
-- For Claude enrichment: a Claude login (Pro/Max) for the `agent-sdk` backend, or an [Anthropic API key](https://platform.claude.com/) for the `api` backend
-- [Apify token](https://console.apify.com/settings/integrations)
-- A resume as `.tex` (for tailored LaTeX dumps) or PDF, DOCX, MD, or TXT
-- A LaTeX toolchain (MiKTeX or TeX Live) if you want PDFs. Without `latexmk`/`pdflatex` on `PATH` the run still succeeds and writes `.tex` only, recording the reason in `resume_pdf_error`.
-- Only for assisted apply: `playwright install chromium` (skip it if you apply manually)
+| What | Needed for | Notes |
+| --- | --- | --- |
+| Python 3.11+ | everything | |
+| [OpenAI API key](https://platform.openai.com/api-keys) | scoring, always | Scoring runs on OpenAI whichever provider tailors. Also tailoring and form filling when you choose `openai` for them |
+| [Claude Agent SDK](https://pypi.org/project/claude-agent-sdk/) + a Claude login (Pro/Max) | `claude` provider with `backend: agent-sdk` | Installed with the project. It drives a bundled Claude Code binary, which signs in the way Claude Code does: log in once with the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) (`claude`, then `/login`), or make a long-lived token with `claude setup-token` and put it in `.env` as `CLAUDE_CODE_OAUTH_TOKEN`. No API key |
+| [Anthropic API key](https://platform.claude.com/) | `claude` provider with `backend: api` | Pay as you go, instead of the login above |
+| [Apify token](https://console.apify.com/settings/integrations) | scraping | The two scrapers are third-party Apify actors ([Scrape](#scrape)); check their pricing on Apify before a large run |
+| SQLite | job history, saved answers, caches | Built into Python; `localData/job_history.db` is created on first use |
+| A resume | everything | `.tex` for tailored LaTeX and PDFs, or PDF, DOCX, MD or TXT for scoring and text suggestions. [`examples/resume_example.tex`](examples/resume_example.tex) shows the shape tailoring expects |
+| LaTeX (MiKTeX or TeX Live) | PDFs | `latexmk` or `pdflatex` on `PATH`, with the packages your resume uses (the example needs `geometry`, `lmodern`, `enumitem`, `hyperref`). Without it a run still succeeds and writes `.tex` only, recording the reason in `resume_pdf_error` |
+| `playwright install chromium` | assisted apply and the browser checks | Skip it if you only scrape and apply by hand. Apply uses your installed Google Chrome when there is one, else this Chromium |
 
 ## Setup
+
+Windows (PowerShell):
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
+playwright install chromium
 copy .env.example .env
+New-Item -ItemType Directory -Force localData
+copy examples\resume_example.tex localData\resume.tex
+```
+
+macOS / Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+playwright install chromium
+cp .env.example .env
+mkdir -p localData && cp examples/resume_example.tex localData/resume.tex
 ```
 
 Fill `.env`:
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | yes | Scoring (and enrichment when `enrich_provider: openai`) |
-| `ANTHROPIC_API_KEY` | only for `claude.backend: api` | Enrichment via the Anthropic API; the `agent-sdk` backend uses your Claude login instead |
+| `OPENAI_API_KEY` | yes | Scoring, and tailoring or form filling when their provider is `openai` |
 | `APIFY_TOKEN` | yes | Indeed and LinkedIn scrapes |
+| `CLAUDE_CODE_OAUTH_TOKEN` | only for `agent-sdk` without a Claude Code login | The token from `claude setup-token` |
+| `ANTHROPIC_API_KEY` | only for `claude.backend: api` | Claude through the Anthropic API |
+| `JOB_HISTORY_DB` | no | Another path for the SQLite database (default `localData/job_history.db`) |
 
-Edit [`config/settings.yaml`](config/settings.yaml) for search terms, lookback, models, and how many jobs to fetch.
+Then make it yours:
+
+1. **Resume.** Replace `localData/resume.tex` with your own (keep the `\section*{...}` headings and the `lmodern` / `fontenc` lines, see [Fonts](#fonts)), or point `resume.local_path` in `config/settings.yaml` at it.
+2. **Search.** [`config/settings.yaml`](config/settings.yaml) as shipped is the author's search: software engineering roles in India, LinkedIn's India `geoId`, 150 postings per source, the last 3 days. Change `scrape.keywords`, `scrape.location` and the LinkedIn `searchUrls` to yours.
+3. **Models.** The shipped settings tailor and fill forms with Claude through `agent-sdk` (`enrich_provider: claude`, `apply_provider: claude`). With an OpenAI key and nothing else, set both to `openai`. See [Models](#models).
+4. **Profile for assisted apply.** Fill it from the dashboard (user icon → **Profile**), or copy [`examples/apply_profile.example.json`](examples/apply_profile.example.json) to `localData/apply_profile.json` and edit it. See [Assisted apply](#assisted-apply).
+
+Everything personal lives in `localData/`, `outputs/`, `screenshots/` and `.env`, all gitignored: nothing you add there reaches the repository.
 
 ## Config
 
@@ -134,7 +163,7 @@ A 266-job run took an hour; nearly all of it was tailoring (46 min) and compilin
 | `pdf_concurrency` | `6` | Resumes compiled at once (1–16). |
 | `openai.enrich_concurrency` | `8` | Tailoring calls at once. |
 
-The same posting listed in several cities (same company and title, descriptions at least 97% alike) is scored and tailored once and shares the result; two different roles under one title are not merged. Each Claude call through `agent-sdk` starts a Claude Code process (about 20 s before the model sees the prompt), with no tool definitions in it and a working folder of its own, so it never reads this repo's `.claude/` settings. Assisted apply does not pay that per call: clicking Apply starts two Claude Code processes in the background while the job page loads (one for form decisions, one for dropdown picks) and keeps them until the session ends, each call in a fresh conversation, so a decision takes about 2 s. If a kept process fails, that call starts its own as before. Each run's `run.json` records seconds per step under `timings`, and the run settings popup shows the last run's figures.
+The same posting listed in several cities (same company and title, descriptions at least 97% alike) is scored and tailored once and shares the result; two different roles under one title are not merged. Each Claude call through `agent-sdk` starts a Claude Code process (about 20 s before the model sees the prompt), with no tool definitions in it and a working folder of its own, so it never reads this repo's `.claude/` settings. Assisted apply does not pay that per call: clicking Apply starts two Claude Code processes in the background while the job page loads (one for form decisions, one for dropdown picks) and keeps them until the session ends, so a decision takes about 2 s. Each process is cleared (`/clear`) after every answer: a fresh session id alone did not stop one call's conversation reaching the next. If a kept process fails, that call starts its own as before. Each run's `run.json` records seconds per step under `timings`, and the run settings popup shows the last run's figures.
 
 ## Run
 
@@ -290,7 +319,7 @@ The policy lives in `localData/resume_fit_policy.json` and the conversation in `
 
 Click **Start apply** on a row, or tick a few rows and use **Start queue** ([the queue](#the-queue)). Either way it is deliberately supervised and strictly one job at a time.
 
-Before the first run, fill in your profile: the user icon at the top right of the dashboard → **Profile**. It edits [`localData/apply_profile.json`](localData/) (gitignored; editing the file by hand works too), groups the keys into sections, marks the empty ones, checks numbers, emails, URLs and job dates before saving, and keeps any key it does not know. A save is used from the next box the agent fills, with no restart. Start with your name, email, phone, location, notice period and CTC expectations — every field filled there is a question the agent never has to ask, and a fact the model never has to be paid to re-derive from your resume. Several more keys each remove a whole class of question:
+Before the first run, fill in your profile: the user icon at the top right of the dashboard → **Profile**. It edits `localData/apply_profile.json` (gitignored; [`examples/apply_profile.example.json`](examples/apply_profile.example.json) shows a filled one; editing the file by hand works too), groups the keys into sections, marks the empty ones, checks numbers, emails, URLs and job dates before saving, and keeps any key it does not know. A save is used from the next box the agent fills, with no restart. Start with your name, email, phone, location, notice period and CTC expectations — every field filled there is a question the agent never has to ask, and a fact the model never has to be paid to re-derive from your resume. Several more keys each remove a whole class of question:
 
 | Key | What it fills |
 | --- | --- |
@@ -308,11 +337,12 @@ Before the first run, fill in your profile: the user icon at the top right of th
 | `education_start_date`, `education_end_date` | DD/MM/YYYY. For a form whose education boxes are full date pickers; without them the years are taken from `education` / `graduation_year` and a box that insists on a month is left to you |
 | `father_name` | for a "Father's name" box. A form's Family Details rows are never filled from the profile: their Name and Phone are someone else's |
 | `pronouns` | optional; goes only into a "Pronouns" box, and only what you write here. Left empty, the box is left alone |
-| `preferred_location`, `willing_to_travel`, `earliest_start_date`, `how_did_you_hear`, `relevant_experience_years` | asked by most forms, and constant across them. Leave `earliest_start_date` empty and it is **worked out from `notice_period`**: today plus the notice, moved off a weekend, as `YYYY-MM-DD` (logged as `[notice period]`). A start-date dropdown ("Within 30 days") is not answered this way, since a date matches none of its options |
+| `preferred_location` | cities, `Bengaluru, Pune`, or `Any` when location is no filter for you. A "which cities do you prefer?" list of tick boxes gets every city it offers under `Any` (never "None of the above" or "Other"), or the ones you name, with their other spellings (Bangalore is Bengaluru). A one-choice question gets "Any location" / "No preference" when it offers one, or your first city |
+| `willing_to_travel`, `earliest_start_date`, `how_did_you_hear`, `relevant_experience_years` | asked by most forms, and constant across them. Leave `earliest_start_date` empty and it is **worked out from `notice_period`**: today plus the notice, moved off a weekend, as `YYYY-MM-DD` (logged as `[notice period]`). A start-date dropdown ("Within 30 days") is not answered this way, since a date matches none of its options |
 | `linkedin`, `github`, `portfolio` | a box that names a site gets that link; a generic Websites/Portfolio section gets the remaining ones |
 | `phone_country_code`, `state`, `address_line1`, `current_company_location` | phone-code pickers, address blocks, and the location of your current employer's entries in a work-history section |
 | `salary_currency`, `salary_period` | the currency and period dropdowns that sit beside a salary amount (`INR`, `Annual`) |
-| `not_employment` | resume entries that are your own projects, not jobs (`Applied AI & LLM Agents`). They are never entered as a work experience, and an entry a site creates from your resume is removed again |
+| `not_employment` | resume entries that are your own projects, not jobs (`Weekend AI Projects`). They are never entered as a work experience, and an entry a site creates from your resume is removed again |
 
 Eligibility and demographic questions are deliberately **not** profile keys. Work authorisation, visa sponsorship, citizenship, gender, disability, veteran status and background checks are legal declarations: the agent asks you once, stores the answer only after you confirm it, and logs every reuse. No profile rule can answer one of them, whatever the profile happens to hold.
 
@@ -337,10 +367,33 @@ Each of these started as a real application that went wrong. They are listed so 
 | **A step that is still drawing** | Nothing left to fill and no Next or Submit on screen is what a page looks like mid-render, so before asking the model about it the agent gives the page 1.5 s. 15 of 58 real model calls were about zero fields, 7 s each; on Indeed's contact step the Continue button arrived while the model was being asked to find it. A page that really needs the model still gets it, 1.5 s later |
 | **A control that cannot take the action** | Before any click or fill, the agent gives the control 1.5 s to be there, enabled and visible, instead of the 10–15 s each action would otherwise wait. A box the page re-drew used to take **22 s** to fail — the click's 10 s and then four fallbacks at 3 s each, all looking for a node that no longer existed — and now fails in 2 s with *"the form re-drew it"*; the next pass reads the page again and finds it under its new id. A button under something the page left behind is clicked through in under 2 s instead of 10, and a click under an overlay the page raised on purpose is still refused, just as quickly |
 | **A form bigger than one model call** | Every control on the page is read — up to 250, a guard against pathological pages, where it used to be 60. The largest real forms met so far are SuccessFactors at 151 and UltiPro at 142, and past 60 the profile, the answer bank and the sweep could not see them either. The model is still shown at most 60 per call, but the ones it still has to decide come first: empty fields, then buttons, then — only if there is room — what is already filled. The rest follow in the next call |
-| **A dropdown that does not list your answer word for word** | The nearest honest option is taken, and every such pick is logged as `[best match]` with its reason. Rules first: a level is never overstated (Fluent becomes Advanced when that is the best on offer, never Native), the option that is your answer's first words is its broad heading (Computer Science becomes Computer), and short degree forms are read (B.Tech is a Bachelors). What the rules cannot settle goes to one call per page (`claude.pick_model`, Sonnet at medium effort by default), which must copy an option from the list word for word and rate it exact, close, loose or none. Only exact and close picks are entered, and each is remembered for the next form with the same answer and options. "Other", "No Selection" and "Prefer not to say" are never chosen this way, and legal or personal questions (gender, work authorisation, sponsorship) never reach it |
+| **A dropdown that does not list your answer word for word** | The nearest honest option is taken, and every such pick is logged as `[best match]` with its reason. Rules first: a level is never overstated (Fluent becomes Advanced when that is the best on offer, never Native), the option that is your answer's first words is its broad heading (Computer Science becomes Computer), and short degree forms are read (B.Tech is a Bachelors). What the rules cannot settle goes to one call per page (`claude.pick_model`, Sonnet at medium effort by default), which must copy an option from the list word for word and rate it exact, close, loose or none. Only exact and close picks are entered, and each is remembered for the next form with the same answer and options. "Other", "No Selection" and "Prefer not to say" are never chosen this way, and legal or personal questions (gender, work authorisation, sponsorship) never reach it. The call is never made with an empty list. A list whose rows carry no option markup is read by where it opened: short, alike items just under the box, one of which names what was typed. A list with no readable text at all goes with a picture instead (see *Pictures for the model*) |
 | **You answer on the page instead of in the chat** | When the agent asked about a choice and you picked it in the browser, the option you picked is saved for that question ("Saved your choice 'Yes' for ..."), so the next form asking it is answered for you. Never for sensitive topics (gender, citizenship, work authorisation), which are saved only when you say so |
+| **A job page whose "Apply Now" is a link to the form** | On the first page of a session, with nothing on it to fill, an "Apply" / "Apply Now" / "Apply for this job" link outside any form is followed to its address, with no model call. The agent goes to the address rather than clicking, so it is a plain page load and nothing can be sent. A link to `#` or `javascript:` is not followed, and neither is any Apply *button*: on some job boards that button is a one-click apply. On Infor's job page this replaced a 21-second model call whose click on the link was refused as submit-worded, which left only you able to open the form |
+| **An application inside the employer's page (iCIMS in an iframe)** | The agent stays with the form's frame while it holds a form at all. Before, a control appearing or disappearing (a dropdown's search box, the page's own header search) swapped it back to the employer's page, and you were told to click its "Submit a Ticket" help link. A site search box no longer counts as the page having a form. iCIMS's "Apply for this job online" link in the frame is followed in the frame, with no model call. A dropdown drawn as a link (`<a role="combobox">`) is read as a dropdown, and the search box inside its list is not a field of its own. A box marked `autocomplete="tel-national"` gets the number without its country code |
 | **Several ways to apply (Workday's Autofill with Resume / Apply Manually / Use My Last Application)** | Asked at once, without a model call. Type the option's name and it is remembered per form system (Answers tab: "Way to apply on Workday") and chosen for you from then on |
 | **A page that comes up with nothing on it** | The agent says which of five things it is, each with its own fix: the page could not be read, the tab is blank, the site is still on its loading spinner, the page's content never arrived, or it is a job description whose form sits behind an Apply button — named by what the button says, and only when there is one. For "never arrived" it names the data requests that were refused (`401 api.example.com/getJobDesc`): a site whose sign-in is stale in the agent's Chrome profile draws its header and none of the job. Signing out of that site and back in, in the agent's window, or clearing its data there, fixes it |
+
+#### Pictures for the model
+
+The model reads the form as text: each box's label, options and value. When that text falls short, or the page visibly says something went wrong, the next model call also gets a **cropped picture** of the boxes concerned. Each crop shows the box, its label, and the message under it, with a margin on every side. It is never the whole screen.
+
+| When | What is pictured |
+| --- | --- |
+| A box turns its value down with a message of its own ("25 LPA" into a digits-only CTC box became "25" with a red *Invalid input*) | the box and the message. The box is emptied, the refusal goes to the model with the message in words, and the model fills it again in the form the box wants. The same value is never typed again |
+| A dropdown refused the answer and is still empty | the dropdown, opened on the refused answer, so its options are in the picture. Not when the refusal already listed the options as text: the model has them word for word, and opening the list would only cost a second |
+| A dropdown's options could not be read as text at all | the list, opened on the refused answer, goes to the per-page dropdown call (below). It reads the options off the picture and names the row; the row is taken with the keyboard, and the box must then show exactly that option, or the choice is taken back out. If the rows turn out to be readable once the list is open, they go to that call as text and no picture is taken. If the call declines, or the row does not go in, the planning call gets the same picture |
+| A box with no question words of its own (an empty label, "Select One", a question drawn by the page's styling) | the box and what surrounds it |
+| Next did not move the form on | each box the page marks invalid, with its message. A box with an error message of its own is emptied and its value is not typed again. One without (the start date in "end date before start date") keeps its value. Either way it goes to the next model call before you are asked, even when it still holds a value; a second failed Next sends no second picture, and the model is told it is the same field |
+| The model is unsure what a field asks | the model plans a `look` at it and gets the picture in its next call |
+
+**One picture per question.** A Yes / No question is two fields, one per option, and each used to be pictured separately: the same question twice ("Are you located in Vadodara?" on Indeed). Now the question is one crop with all its options in it, named by the question, and its line in the prompt names every option's field id. The same goes for the model's `look`: a look at Yes and then at No is one picture.
+
+Nothing is pictured for boxes your profile or saved answers filled, a page where everything was resolved, or a native `<select>`. A native select's options are all in the text already, and its open list is drawn by the operating system, not the page. A call carries at most four pictures; any more wait for the next call, and pictures a failed call was to carry go with the retry. A picture of a field answered since it was taken is not sent. Each question is pictured once per session unless it refuses something new. A crop costs about 1,000 input tokens; in testing that added no measurable time to a call. The log says `Sending N picture(s) of the form with it`.
+
+**Enter in a dropdown never sends the form.** The agent sometimes presses Enter to commit a dropdown row. With no row highlighted, a browser passes that Enter to the form, by clicking the form's default button and sending it. For the length of each such keypress the agent holds both off, and if Enter tried to reach the form, the pick is refused instead.
+
+Every picture sent is kept under `screenshots/<company>/` (gitignored), so you can see what the model saw. Nothing deletes them yet: clear old folders by hand.
 
 #### The form catalogue
 
@@ -362,7 +415,7 @@ What happens:
 
 1. A visible Chrome opens on the apply URL, using the persistent profile at `localData/chrome-profile`. Log into the job site once yourself; the session is remembered. On an employer's own site the agent waits and asks you to type `done` when the page is ready, so you can clear a cookie wall or a region picker first.
 2. **On a LinkedIn job it does not ask.** LinkedIn builds the job card after the page reports itself loaded, so the agent watches for whichever of three things arrives first — an apply control, a sign-in wall, or a closed banner — and each one it then handles itself. A posting that stopped accepting applications is recorded as closed and the session ends **without asking you anything**, instead of making you press a key to be told a job is dead. Otherwise it opens the apply flow: **Easy Apply** jobs get the in-page modal; **Apply on company website** jobs open the employer's form in a new tab, which the agent follows (the log shows `Switched to <url>`). If none of the three appears — a consent wall on a fresh profile, or something LinkedIn has changed — it hands back and asks rather than guessing. LinkedIn's button is routinely on screen before it works: in 25 of 26 real openings the first click did nothing, so a click that opens nothing is retried after 1.5 s rather than 4, and an employer's tab is read as soon as it has loaded rather than after a fixed 3 s.
-   **An Indeed job does not ask either, and needs no model to start.** Asked instead, "Ready to start?" once sat unanswered for three minutes with the Apply button in plain view, and the model was then paid 9 s to find the button. The agent now presses the job's own button itself, found by the id Indeed gives it — **Apply with Indeed** opens Indeed's form, **Apply on company site** opens the employer's in a new tab — so an Apply belonging to some other job on the page is never the one pressed. If neither button shows within 10 s, the page is read as it stands. On Indeed's **Add a resume** step — two cards, *Build an Indeed Resume* and *Upload a resume*, whose radios and file input are all hidden behind them — the resume you choose goes straight into the hidden upload: no system file dialog, and *Build an Indeed Resume* is never touched. Any page that says "Upload a resume" / "Upload your CV" over a single hidden document input is handled the same way.
+   **An Indeed job does not ask either, and needs no model to start.** Asked instead, "Ready to start?" once sat unanswered for three minutes with the Apply button in plain view, and the model was then paid 9 s to find the button. The agent now presses the job's own button itself, found by the id Indeed gives it, or in Indeed's newer layout by the job header's apply block (an **Apply now** link) — **Apply with Indeed** opens Indeed's form, **Apply on company site** opens the employer's in a new tab — so an Apply belonging to some other job on the page is never the one pressed. If neither button shows within 10 s, the page is read as it stands. On Indeed's **Add a resume** step — two cards, *Build an Indeed Resume* and *Upload a resume*, whose radios and file input are all hidden behind them — the resume you choose goes straight into the hidden upload: no system file dialog, and *Build an Indeed Resume* is never touched. Any page that says "Upload a resume" / "Upload your CV" over a single hidden document input is handled the same way. So is the same step when your Indeed account already holds a CV from an earlier application: it shows that old CV pre-selected under **Add a resume**, and the resume you choose for this job replaces it, so the old one never goes out by default.
 
    **No other site asks either.** Most Indeed and many LinkedIn jobs link straight to the employer's own system (Workday, Phenom, Greenhouse…), and every one of those used to stop on "Ready to start? Type done" before anything happened. The agent now reads the page as soon as it loads: a page still drawing is waited for, a sign-in wall is named and handed to you, and a page that never shows a form is handed back with the reason.
 3. The resolver fills what it can, the model plans the rest, and the agent stops and asks in the chat pane for anything unknown: OTPs, captchas, consent and legal questions. Answer, or handle it in the browser yourself and type `done`. Type `skip` to leave a field alone, paste a URL to send the agent there, `abort` to stop.

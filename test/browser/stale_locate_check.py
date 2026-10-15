@@ -90,7 +90,7 @@ with sync_playwright() as pw:
     # of birth went into Last Name and "Male" ticked "Others".
     page.set_content("""
       <label for="firstName">First Name</label><input id="firstName" value="Test">
-      <label for="lastName">Last Name</label><input id="lastName" value="Arora">
+      <label for="lastName">Last Name</label><input id="lastName" value="User">
       <div id="extra"></div>
       <label for="dateOfBirth">*Date Of Birth</label><input id="dateOfBirth" bsdatepicker placeholder="Please Select your DOB">
       <label><input type="radio" name="gender" id="male"> Male</label>

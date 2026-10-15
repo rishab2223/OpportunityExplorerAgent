@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sr. Software Engineer - Planview</title>
+<style>
+  body { font-family: sans-serif; margin: 0; }
+  header { padding: 12px 24px; border-bottom: 1px solid #ccc; }
+  header a { margin-right: 18px; }
+  #search-keywords { display: none; }
+  iframe { width: 900px; height: 640px; border: 0; display: block; margin: 12px 24px; }
+</style></head>
+<body>
+<!--
+  Planview's careers page (Oct 15 2026): its own header links ("Submit a
+  Ticket" among them), a site search box that is drawn only some of the
+  time, and the iCIMS application in an iframe. The agent swapped its scan
+  between the frame and this page every time the frame's country list
+  opened or closed, and told the candidate to click "Submit a Ticket".
+-->
+<header>
+  <a class="btn" href="#ticket">Submit a Ticket</a>
+  <a class="btn" href="#reviews">Product Reviews and Testimonials</a>
+  <a class="button" href="#demos">Browse Demos</a>
+  <form><input type="text" name="s" id="search-keywords" placeholder="Search Planview" required></form>
+</header>
+<iframe id="icims_content_iframe" title="iCIMS Content iFrame" src="fixture_icims_phone.html"></iframe>
+<script>
+  // #job: the frame starts on iCIMS's job page, its Apply link to the form.
+  if (location.hash === "#job") document.getElementById("icims_content_iframe").src = "fixture_icims_job.html";
+  // The header search opens and closes on its own, as the real one did.
+  function toggleSearch(show) { document.getElementById("search-keywords").style.display = show ? "inline" : "none"; }
+</script>
+</body>
+</html>

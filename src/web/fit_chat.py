@@ -40,8 +40,8 @@ _PREVIEW_LOCK = threading.Lock()
 _previews: dict[str, dict[str, Any]] = {}
 
 OPENING = (
-    "When a tailored resume runs past one page, something has to give. Right now "
-    "that is your CCNA bullet first, then the whole Certifications section. Tell me "
+    "When a tailored resume runs past one page, something has to give. Without a "
+    "policy of your own, the whole Certifications section goes. Tell me "
     "what you would rather give up, and in what order - or ask what the options are. "
     "I can tighten the margins, font size or spacing, drop a particular bullet or "
     "section, or write a shorter version of a section for you to approve. The preview "
