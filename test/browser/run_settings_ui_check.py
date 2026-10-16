@@ -32,10 +32,10 @@ history.DB_PATH = SCRATCH / "history.db"
 runs.OUTPUT_DIR = SCRATCH / "outputs"
 run_options.PREFERENCES_PATH = SCRATCH / "run_preferences.json"
 _CFG = AppConfig.model_validate({
-    "min_score": 7, "enrich_provider": "claude",
+    "min_score": 70, "enrich_provider": "claude",
     "claude": {"enrich_model": "claude-opus-5", "effort": "medium"},
     "openai": {"score_model": "gpt-5.6-luna", "score_concurrency": 16, "enrich_concurrency": 8},
-    "experience": {"enabled": True, "mode": "review", "review_min_score": 9, "tolerance_years": 1},
+    "experience": {"enabled": True, "mode": "review", "review_min_score": 90, "tolerance_years": 1},
     "resume": {"local_path": "localData/resume.tex"},
     "scrape": {"max_detail_jobs": 150, "sources": ["indeed", "linkedin"], "posted_within": "3d"},
 })
@@ -142,11 +142,13 @@ with sync_playwright() as pw:
     page.click("[data-source-card=indeed] .switch")
     page.fill("input[type=number][data-cap=indeed]", "150")
 
-    page.fill("#rsminscore", "8")
+    page.fill("#rsminscore", "80")
     page.dispatch_event("#rsminscore", "input")
-    check("the score pill follows the slider", page.text_content("output.rs-out") == "8+")
+    check("the score pill follows the slider", page.text_content("output.rs-out") == "80+")
+    check("  and the hint says the score is out of 100",
+          "out of 100" in (page.text_content("#rsminhint") or ""), page.text_content("#rsminhint"))
     check("and the plain-words line says what it means",
-          "scoring 8 or more" in (page.text_content("#rsminhint") or ""))
+          "scoring 80 or more" in (page.text_content("#rsminhint") or ""))
     check("the experience line names the candidate's own years",
           "from your Profile" in (page.text_content("#rsexphint") or ""))
     check("the technical settings start folded away",

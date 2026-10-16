@@ -2,7 +2,7 @@
 
 Two separate features that share nothing but the files on disk:
 
-1. **Discover** — scrapes Indeed and LinkedIn through Apify, scores each job against your resume (1–10), enriches only the jobs that score **at or above** `min_score`, and writes a self-sufficient run folder under `outputs/`: the shortlist, a tailored `.tex` per job, and a compiled `.pdf` per job. Runs headless from the CLI; nothing else is required to use the results.
+1. **Discover** — scrapes Indeed and LinkedIn through Apify, scores each job against your resume (out of 100), enriches only the jobs that score **at or above** `min_score`, and writes a self-sufficient run folder under `outputs/`: the shortlist, a tailored `.tex` per job, and a compiled `.pdf` per job. Runs headless from the CLI; nothing else is required to use the results.
 2. **Assisted apply** — optional, one job at a time, started by hand from the web UI. Opens a visible Chrome, fills what it can, and stops to ask you whenever it is unsure.
 
 Applying yourself is a first-class path: the table gives you the apply URL and the local path of the tailored PDF, so you never have to use the apply feature at all.
@@ -13,8 +13,8 @@ There is no email, Google Sheet, or Google Drive. The resume is always a local f
 
 1. **Load resume** — local `.tex` (preferred) or PDF/DOCX/MD/TXT
 2. **Scrape** — Indeed and/or LinkedIn via Apify, then drop jobs already in your history and, when `experience.enabled`, jobs asking for more years than you allow
-3. **Score** — one cheap LLM call per scraped job (plain text from the resume)
-4. **Filter** — keep jobs with `relevance >= min_score` (default 7, so 7–10)
+3. **Score** — one cheap LLM call per scraped job (plain text from the resume), out of 100. The model marks six parts one at a time against fixed anchors, and the code adds them up: **skills 35, experience 20, role 15, stack 10, company 10, location 10**. A single 1–10 number put 96 of 104 shortlisted jobs at 7 or 8 and none at 10, so it did not rank. A job scoring just under the bar (`second_look_below`, 10 points by default) is scored again by a stronger model (`openai.second_look_model`) and kept if either look reaches it; only that band pays for the second call. A call that fails twice keeps the job at the bar, marked "check it yourself", rather than losing it. Re-scored this way, 70 of the 89 jobs you had applied to reached 70 (14 of them through the second look) in 80 s
+4. **Filter** — keep jobs with `relevance >= min_score` (default 70). A bar written on the old scale (1–10) is read as tens: 7 means 70. Runs saved before Oct 2026 keep their 1–10 scores and show as `8/10`
 5. **Enrich** — for `.tex` input, per-section tailored edits (summary, skills, bullet rewording) spliced into your original LaTeX source; for PDF, markdown suggestions. Interview prep is written on demand by default (**Job info → Write interview prep**), or with every resume when `interview_prep: run`. Postings with the same company and title share one tailoring call, and a posting an earlier run already tailored against the same resume and model reuses that result (`reuse_enrichment`). The model never rewrites the whole document: the preamble, section headings, and layout come through byte-identical, sections cannot be dropped, and edits that fail validation (unbalanced braces/environments, forbidden commands, big length changes) are rejected and retried once with the reasons named — a rejected section keeps its original text
 6. **Dump** — `outputs/{timestamp}/`, compiling each tailored `.tex` to a `.pdf` and keeping it to **one page** (also writes a run summary after a failure). The model writes LaTeX blind, so length is enforced by measurement, not by asking: the model may add genuinely useful content (up to a 1.15× overall cap that blocks runaway rewrites), knowing the declared cost — if the compiled PDF runs past one page, your **fit policy** is applied step by step, recompiling after each and stopping as soon as it fits. You agree that policy with the AI in the **Resume fit** tab (see [Web UI](#web-ui)); until you save one, the default drops the whole Certifications section. Every step is named in the run log, the resume as written is kept in `{stamp}/full/`, and a resume that is still too long keeps its content and is flagged on the row rather than gutted further. PDFs compile side by side (`pdf_concurrency`).
 
@@ -243,7 +243,7 @@ experience:
   enabled: true
   tolerance_years: 1     # 0 = strict; 1 keeps a 7+ job at 6 years and drops 8+, and drops a 1-4 range
   mode: review           # drop | review - required once enabled
-  review_min_score: 9    # review only: the score a held-back job needs to be shown
+  review_min_score: 90   # review only: the score (out of 100) a held-back job needs to be shown
   review_max: 5          # review only: at most this many per run
 ```
 

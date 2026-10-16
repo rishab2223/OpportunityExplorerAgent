@@ -1,5 +1,10 @@
-# Enrich (resume edits + interview prep) runs only when score >= min_score (7 keeps 7-10).
-min_score: 7
+# Scores are out of 100: skills 35, experience 20, role 15, stack 10, company 10,
+# location 10. Enrich (tailored resume) runs only when score >= min_score.
+# A value of 1-10 is read as the old 1-10 scale (7 means 70).
+min_score: 70
+# Jobs up to this many points under min_score are scored again by
+# openai.second_look_model, and kept if either look reaches the bar. 0 = off.
+second_look_below: 10
 
 # If true, Indeed or LinkedIn scrape errors fail the whole scrape step.
 strict_sources: false
@@ -41,9 +46,9 @@ experience:
   #         review_min_score or more appear in the Held back tab, strongest
   #         first, at most review_max per run. Required once enabled.
   mode: review
-  # The same bar as the shortlist: at 9, a run that held 36 jobs showed none
-  # (9 of 266 jobs scored 9 at all).
-  review_min_score: 7
+  # The same bar as the shortlist (out of 100): at 9 of 10, a run that held 36
+  # jobs showed none (9 of 266 jobs scored 9 at all).
+  review_min_score: 70
   review_max: 10
 
 # Which LLM writes the tailored resume + interview prep: openai | claude.

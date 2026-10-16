@@ -177,6 +177,12 @@ with sync_playwright() as pw:
     page.wait_for_selector("#jobs tbody tr[data-job-id=monday]")
     check("Show it opens Jobs on that run", page.locator("#view-jobs").is_visible()
           and page.input_value("#stamp") == "20261001T100000")
+    # The row is drawn when the run loads and picked out once loading ends:
+    # wait for that, rather than read the class the moment the row appears.
+    try:
+        page.wait_for_selector("#jobs tbody tr[data-job-id=monday].selected", timeout=5000)
+    except Exception:
+        pass
     check("with the row picked out", "selected" in (
         page.get_attribute("#jobs tbody tr[data-job-id=monday]", "class") or ""))
     page.click("#nav-held")

@@ -41,6 +41,8 @@ class OpenAIConfig(BaseModel):
     # Parallel LLM calls per step. Scoring is short and cheap; enrichment is
     # long and bursts more tokens, so keep it lower to stay under rate limits.
     score_concurrency: int = Field(default=8, ge=1, le=32)
+    # The stronger model for a job that scored just under the bar.
+    second_look_model: str = "gpt-5.6-sol"
     enrich_concurrency: int = Field(default=4, ge=1, le=16)
 
 
@@ -79,6 +81,15 @@ class HistoryConfig(BaseModel):
     match_similar: bool = True
 
 
+def out_of_100(score: int | None) -> int | None:
+    """A score bar on the 1-100 scale. Scores were 1-10 until Oct 2026, and a
+    settings file or a saved run setting written then says 7: that is 70 now,
+    not "keep nearly everything"."""
+    if score is None:
+        return None
+    return score * 10 if score <= 10 else score
+
+
 class ExperienceConfig(BaseModel):
     # Declares the `experience:` block of settings.yaml, which holds the
     # rule. The candidate's years are a fact about them and live in the
@@ -92,7 +103,7 @@ class ExperienceConfig(BaseModel):
     # whether a strong match over the limit should ever reach the candidate
     # is theirs to say, so an enabled filter without a mode is an error.
     mode: Literal["drop", "review"] | None = None
-    review_min_score: int | None = Field(default=None, ge=1, le=10)
+    review_min_score: int | None = Field(default=None, ge=1, le=100)
     review_max: int = Field(default=5, ge=1, le=50)
 
     @model_validator(mode="after")
@@ -101,7 +112,8 @@ class ExperienceConfig(BaseModel):
             raise ValueError("experience.mode must be set in settings.yaml: drop or review")
         if self.mode == "review" and self.review_min_score is None:
             raise ValueError("experience.review_min_score must be set in settings.yaml "
-                             "when mode is review (1-10)")
+                             "when mode is review (1-100)")
+        self.review_min_score = out_of_100(self.review_min_score)
         return self
 
 
@@ -143,7 +155,12 @@ class ScrapeConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    min_score: int = Field(default=7, ge=1, le=10)
+    # Out of 100 (src/agent/nodes/score.py). 1-10 is read as the old scale.
+    min_score: int = Field(default=70, ge=1, le=100)
+    # Jobs this far below min_score are scored again by openai.second_look_model
+    # and kept if either look reaches the bar: a good job is not lost to one
+    # cheap call's bad day. 0 turns the second look off.
+    second_look_below: int = Field(default=10, ge=0, le=50)
     strict_sources: bool = False
     compile_pdf: bool = True
     # Resumes compiled side by side; each compile is its own pdflatex process.

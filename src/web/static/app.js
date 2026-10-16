@@ -271,10 +271,41 @@ function runLabel(stamp) {
   return `${day}, ${time}`;
 }
 
-function scoreClass(score) {
-  if (score >= 9) return "score-high";
-  if (score >= 8) return "score-mid";
+// Scores are out of 100 since Oct 2026; a run saved before then scored 1-10
+// and its jobs carry no score_scale.
+function scoreOf(job) {
+  return Number(job.relevance || 0) * (100 / Number(job.score_scale || 10));
+}
+
+function scoreClass(job) {
+  const score = scoreOf(job);
+  if (score >= 90) return "score-high";
+  if (score >= 80) return "score-mid";
   return "";
+}
+
+// "84", or "8/10" for a job from an older run, or "?" when scoring failed.
+function scoreText(job) {
+  if (job.score_failed) return "?";
+  return Number(job.score_scale || 10) === 100 ? String(job.relevance) : `${job.relevance}/10`;
+}
+
+const SCORE_PART_NAMES = { skills: "Skills", experience: "Experience", role: "Role", stack: "Stack",
+                           company: "Company", location: "Location" };
+const SCORE_PART_MAX = { skills: 35, experience: 20, role: 15, stack: 10, company: 10, location: 10 };
+
+function scoreBreakdown(job) {
+  const parts = job.score_parts || {};
+  return Object.keys(SCORE_PART_NAMES).filter((k) => k in parts)
+    .map((k) => `${SCORE_PART_NAMES[k]} ${parts[k]}/${SCORE_PART_MAX[k]}`).join(" · ");
+}
+
+function scoreCell(add, job) {
+  const cell = add(scoreText(job), scoreClass(job));
+  const breakdown = scoreBreakdown(job);
+  cell.title = [job.score_failed ? "Could not be scored - check it yourself." : "",
+                breakdown, job.second_look || ""].filter(Boolean).join("\n");
+  return cell;
 }
 
 function link(url, label) {
@@ -720,7 +751,7 @@ function renderShortlist(allJobs) {
       titleCell.append(" ", Object.assign(document.createElement("span"),
         { className: "heldtag", textContent: "held back" }));
     }
-    add(job.relevance, scoreClass(job.relevance));
+    scoreCell(add, job);
     add(job.location);
     add(job.source || "-", "source");
     row.appendChild(linksCell(job));
@@ -861,7 +892,7 @@ function renderHeld(jobs) {
     const add = rowCellAdder(row);
     add(job.company);
     add(job.title);
-    add(job.relevance, scoreClass(job.relevance));
+    scoreCell(add, job);
     add(job.held_back, "heldreason");
     const found = add(runLabel(job.stamp), "heldfound");
     found.title = `Found by the run ${job.stamp}` + (job.posted_at ? `; posted ${job.posted_at}` : "");
@@ -938,8 +969,10 @@ function selectJob(jobId) {
 
   const parts = [
     `${job.company} - ${job.title}`,
-    `Relevance ${job.relevance}: ${job.why_score || ""}`,
+    `Relevance ${scoreText(job)}${Number(job.score_scale || 10) === 100 ? "/100" : ""}: ${job.why_score || ""}`,
   ];
+  if (scoreBreakdown(job)) parts.push(scoreBreakdown(job));
+  if (job.second_look) parts.push(job.second_look);
   if (job.held_back) parts.push(`Held back: ${job.held_back}. No tailored resume; Start apply uses your base resume.`);
   if (job.resume_pdf_error) parts.push(`PDF compile failed: ${job.resume_pdf_error}`);
   if (job.latex_skip_reason) parts.push(`LaTeX skipped: ${job.latex_skip_reason}`);

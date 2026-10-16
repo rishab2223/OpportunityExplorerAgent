@@ -79,8 +79,14 @@ def load_held_waiting() -> list[dict[str, Any]]:
                 continue
             row["stamp"] = stamp
             waiting.append(row)
-    waiting.sort(key=lambda row: -int(row.get("relevance") or 0))
+    waiting.sort(key=lambda row: -score_out_of_100(row))
     return waiting
+
+
+def score_out_of_100(row: dict[str, Any]) -> float:
+    """A job's score on today's scale: runs before Oct 2026 scored 1-10."""
+    scale = int(row.get("score_scale") or 10)
+    return int(row.get("relevance") or 0) * (100 / scale)
 
 
 def load_referrals() -> list[dict[str, Any]]:

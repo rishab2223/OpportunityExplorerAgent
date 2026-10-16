@@ -28,10 +28,21 @@ class JobPosting(BaseModel):
 
 
 class JobScore(BaseModel):
-    relevance: int = Field(ge=1, le=10)
+    # Out of score_scale: 100 since Oct 2026, the sum of score_parts. A run
+    # saved before then scored 1-10, and its records carry no scale - hence
+    # the default.
+    relevance: int = Field(ge=0, le=100)
     why_score: str = ""
     strengths: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
+    score_scale: int = 10
+    # Points per part of the rubric (score.PARTS), e.g. {"skills": 30, ...}.
+    score_parts: dict[str, int] = Field(default_factory=dict)
+    # What the stronger second look said, for a job just under the bar.
+    second_look: str = ""
+    # The scoring call failed twice: the job is kept, unscored, so a good
+    # one is not lost - and it says so.
+    score_failed: bool = False
 
 
 class ScoredJob(JobPosting, JobScore):

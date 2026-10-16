@@ -189,22 +189,28 @@ class HeldBackFilterTests(unittest.TestCase):
     def _filter(self, scored: list[dict], **experience) -> dict:
         from src.agent.nodes.score import node_filter
 
-        cfg = AppConfig.model_validate({"min_score": 7, "experience": {
-            "enabled": True, "mode": "review", "review_min_score": 9, **experience}})
+        cfg = AppConfig.model_validate({"min_score": 70, "experience": {
+            "enabled": True, "mode": "review", "review_min_score": 90, **experience}})
         return node_filter({"scored": scored}, cfg, None)
 
     def test_held_jobs_never_reach_the_shortlist(self) -> None:
-        state = self._filter([_scored("a", 8), _scored("b", 10, "asks for 8+ years")])
+        state = self._filter([_scored("a", 80), _scored("b", 100, "asks for 8+ years")])
         self.assertEqual([j["job_id"] for j in state["matches"]], ["a"])
         self.assertEqual([j["job_id"] for j in state["held_back"]], ["b"])
 
     def test_only_strong_ones_are_shown_strongest_first(self) -> None:
-        state = self._filter([_scored("weak", 8, "x"), _scored("nine", 9, "x"), _scored("ten", 10, "x")])
-        self.assertEqual([j["job_id"] for j in state["held_back"]], ["ten", "nine"])
+        state = self._filter([_scored("weak", 80, "x"), _scored("ninety", 90, "x"),
+                              _scored("hundred", 100, "x")])
+        self.assertEqual([j["job_id"] for j in state["held_back"]], ["hundred", "ninety"])
 
     def test_capped_per_run(self) -> None:
-        state = self._filter([_scored(str(i), 9, "x") for i in range(8)], review_max=3)
+        state = self._filter([_scored(str(i), 90, "x") for i in range(8)], review_max=3)
         self.assertEqual(len(state["held_back"]), 3)
+
+    def test_a_bar_written_on_the_old_scale_reads_as_out_of_100(self) -> None:
+        cfg = AppConfig.model_validate({"min_score": 7, "experience": {
+            "enabled": True, "mode": "review", "review_min_score": 9}})
+        self.assertEqual((cfg.min_score, cfg.experience.review_min_score), (70, 90))
 
     def test_nothing_held_without_review(self) -> None:
         from src.agent.nodes.score import node_filter
