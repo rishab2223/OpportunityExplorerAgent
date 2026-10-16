@@ -117,6 +117,23 @@ class ExperienceConfig(BaseModel):
         return self
 
 
+class DailyConfig(BaseModel):
+    # One batch a day, run by the server (src/daily.py): at `at` (local time),
+    # or as soon as the server is up after it if today's has not run yet.
+    enabled: bool = True
+    at: str = Field(default="11:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    # 1. Shortlisted jobs you have not acted on, every `check_every_days`
+    #    days, are opened to see whether they still take applications.
+    open_check: bool = True
+    check_every_days: int = Field(default=2, ge=1, le=14)
+    # Pages opened per batch, oldest-checked first; the rest wait a day.
+    max_checks: int = Field(default=60, ge=1, le=500)
+    # Seconds between two pages: slow on purpose, a person's pace.
+    check_gap_seconds: float = Field(default=4.0, ge=1.0, le=60.0)
+    # 2. A search run over the last 24 hours, with your saved run settings.
+    search_run: bool = True
+
+
 class ResumeConfig(BaseModel):
     local_path: str = ""
 
@@ -183,6 +200,12 @@ class AppConfig(BaseModel):
     experience: ExperienceConfig = Field(default_factory=ExperienceConfig)
     resume: ResumeConfig = Field(default_factory=ResumeConfig)
     scrape: ScrapeConfig = Field(default_factory=ScrapeConfig)
+    daily: DailyConfig = Field(default_factory=DailyConfig)
+
+    @model_validator(mode="after")
+    def _score_scale(self) -> "AppConfig":
+        self.min_score = out_of_100(self.min_score)
+        return self
 
 
 class EnvSettings(BaseSettings):

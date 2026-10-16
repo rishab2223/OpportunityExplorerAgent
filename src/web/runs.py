@@ -189,7 +189,15 @@ def load_jobs(stamp: str) -> list[dict[str, Any]]:
     backfill_history()
     decisions = load_decisions(stamp)
     history_by_id, history_by_fp = history.snapshot()
+    from src import open_check   # it reads runs too: imported here, not at the top
+
+    checks = open_check.last_checks()
     for row in rows:
+        # What the daily "still open?" check last saw on the job's page.
+        seen = checks.get(row.get("job_id") or "") or {}
+        row["open_check"] = seen.get("result", "")
+        row["open_check_detail"] = seen.get("detail", "") or ""
+        row["open_checked_at"] = seen.get("checked_at", "")
         entry = decisions.get(row.get("job_id") or "", {})
         row["decision"] = entry.get("decision", "")
         row["status"] = entry.get("status", "pending")

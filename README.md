@@ -502,13 +502,23 @@ OTPs and other secrets are held in memory for the session and never written to d
 
 ## Daily schedule
 
-Not wired up yet, deliberately. `python -m src.cli run` is fully non-interactive and reads keys from `.env`, so any scheduler can drive it. On Windows: Task Scheduler → Create Task → Daily trigger → Start in the project folder → action:
+The web server runs a batch once a day (`src/daily.py`), at `daily.at` (11:30 by default, your local time) — or, if the server was not running then, as soon as it starts later that day. The day it last ran is kept in the database's `properties` table, so a restart never runs it twice; a batch cut short by a stop picks up where it was.
 
-```text
-<project>\.venv\Scripts\python.exe -m src.cli run
+```yaml
+daily:
+  enabled: true
+  at: "11:30"
+  open_check: true        # 1. are waiting jobs still open?
+  check_every_days: 2
+  max_checks: 60          # pages per batch, oldest-checked first
+  check_gap_seconds: 4
+  search_run: true        # 2. a search over the last 24 hours
 ```
 
-Each run writes its own `outputs/{stamp}/`, so daily runs pile up as a history the UI dropdown can browse.
+1. **Still open?** Half the jobs acted on in the first two big runs had closed by the time Start apply opened them, most after a resume had been tailored for them. So every shortlisted job you have not acted on is opened again on day 2, 4, 6… while it waits, one page every few seconds, in a headless browser of its own (never the apply sessions' Chrome profile). LinkedIn's own "No longer accepting applications" marks the job **closed**, as Start apply does. Closed or not-found wording on any other page only marks the row **looks closed?** for you to confirm with its Closed button — an employer's page is worded a thousand ways, and a wrong guess would hide a live job. A sign-in wall or a "verify you are human" check is left alone and tried again next time; nothing is ever solved or worked around.
+2. **A search over the last 24 hours**, with your saved run settings, so new jobs are applied to while they are fresh. If a run of yours is already going, today's is skipped.
+
+The line beside the run picker says when it runs next or what it last did; its log is `dumps/daily_batch.log`. It starts only with the real server (`python -m src.web`, not `--reload`), never when a check imports the app. `python -m src.cli run` is still fully non-interactive, for any other scheduler.
 
 ## Out of scope
 

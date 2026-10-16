@@ -760,6 +760,15 @@ function renderShortlist(allJobs) {
     if (job.history_how === "similar") {
       statusCell.title = "Matched by company+title from your history";
     }
+    // The daily check (src/open_check.py) read closed wording on an
+    // employer's page: yours to confirm with the row's Closed button.
+    if (job.open_check === "looks_closed" && !job.history_status) {
+      statusCell.append(" ", Object.assign(document.createElement("span"), {
+        className: "heldtag looksclosed", textContent: "looks closed?",
+        title: `The daily check opened this job's page on ${String(job.open_checked_at || "").slice(0, 10)}: ` +
+          `${job.open_check_detail || "it reads as closed"}. Press Closed if it is.`,
+      }));
+    }
     row.appendChild(actionsCell(job));
 
     // Selecting is all a row click does: the details panel (and its 780px
@@ -1849,8 +1858,25 @@ $("redraft").addEventListener("click", () => {
 });
 $("restoredraft").addEventListener("click", () => fillChat(lastDraft));
 
+// The once-a-day batch (src/daily.py), in a few words beside the run picker.
+async function loadDaily() {
+  try {
+    const res = await fetch("/api/daily");
+    if (!res.ok) return;
+    const d = await res.json();
+    if (!d.enabled) { $("dailyinfo").textContent = "· daily batch off"; return; }
+    const today = new Date().toISOString().slice(0, 10);
+    const when = d.running ? "running now"
+      : d.last_done === today ? `done today${d.last_result ? ` (${d.last_result.replace(/^[^:]*:\d\d: /, "")})` : ""}`
+      : `next at ${d.at}`;
+    $("dailyinfo").textContent = `· daily batch ${when}`;
+  } catch (_err) { /* the line is a nicety; the page works without it */ }
+}
+
 loadStamps()
   .then(resumeActiveRun)
   .then(resumeActiveApply)
   .then(loadQueue)
   .then(resumeQueueFollow);
+loadDaily();
+setInterval(loadDaily, 60000);

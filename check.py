@@ -77,6 +77,7 @@ GROUPS: dict[str, list[str]] = {
         "buttons_check.py",           # which button moves on, which one sends
     ],
     "queue": ["queue_e2e.py"],
+    "daily": ["open_check_check.py"],   # the once-a-day "still open?" look
     "ui": ["ui_check.py", "queue_ui_check.py", "chat_ui_check.py",
            "pager_check.py", "profile_ui_check.py", "held_ui_check.py",
            "answers_ui_check.py", "readme_check.py", "run_settings_ui_check.py", "fit_ui_check.py"],

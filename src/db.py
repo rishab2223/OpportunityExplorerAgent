@@ -62,6 +62,56 @@ CREATE TABLE IF NOT EXISTS llm_cache (
   created_at TEXT NOT NULL,
   PRIMARY KEY (kind, key)
 );
+-- Small facts the app keeps about itself (src/properties.py): the day the
+-- daily batch last ran, and whatever else needs remembering across restarts.
+CREATE TABLE IF NOT EXISTS properties (
+  name       TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+-- The Applied page (src/tracker.py): where each application stands after it
+-- went in. A job is on that page because job_history says "applied"; this
+-- holds what happened next.
+CREATE TABLE IF NOT EXISTS applications (
+  job_id           TEXT PRIMARY KEY,
+  stage            TEXT NOT NULL,
+  stage_at         TEXT NOT NULL,
+  notes            TEXT,
+  contact_name     TEXT,
+  contact_role     TEXT,
+  contact_link     TEXT,
+  contact_relation TEXT,
+  follow_up_at     TEXT,
+  updated_at       TEXT NOT NULL
+);
+-- Its timeline: stage changes and messages sent, newest last.
+CREATE TABLE IF NOT EXISTS application_events (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL,
+  kind   TEXT NOT NULL,
+  text   TEXT,
+  at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_application_events_job ON application_events(job_id);
+-- Referral, outreach, follow-up and thank-you drafts (src/web/outreach.py).
+-- Drafts only: the candidate sends them, and says so with Mark sent.
+CREATE TABLE IF NOT EXISTS outreach_messages (
+  job_id     TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  text       TEXT NOT NULL,
+  sent_at    TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (job_id, kind)
+);
+-- The daily "still open?" check (src/open_check.py): when each waiting job
+-- was last looked at, and what its page said.
+CREATE TABLE IF NOT EXISTS open_checks (
+  job_id     TEXT PRIMARY KEY,
+  stamp      TEXT,
+  result     TEXT NOT NULL,
+  detail     TEXT,
+  checked_at TEXT NOT NULL
+);
 """
 
 _INIT_LOCK = threading.Lock()

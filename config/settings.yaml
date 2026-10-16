@@ -51,6 +51,24 @@ experience:
   review_min_score: 70
   review_max: 10
 
+# The once-a-day batch, run by the web server (python -m src.web): at `at`
+# (local time), or as soon as the server starts later that day if today's
+# has not run. Its log is dumps/daily_batch.log.
+daily:
+  # Off 15 Oct 2026: on hold while the earlier runs' jobs are worked through.
+  enabled: false
+  at: "11:30"
+  # 1. Shortlisted jobs you have not acted on are opened again every
+  #    check_every_days days. A LinkedIn job that says it is closed is marked
+  #    closed; any other page reading closed shows "looks closed?" for you to
+  #    confirm. Sign-in walls and human checks are left alone.
+  open_check: true
+  check_every_days: 2
+  max_checks: 60          # pages per batch, oldest-checked first
+  check_gap_seconds: 4    # between two pages
+  # 2. A search over the last 24 hours, with your saved run settings.
+  search_run: true
+
 # Which LLM writes the tailored resume + interview prep: openai | claude.
 # Scoring always uses openai.score_model (cheap, one call per scraped job).
 enrich_provider: claude
@@ -81,6 +99,8 @@ claude:
 openai:
   # gpt-5.6-luna (cheaper) | gpt-5.6-sol (stronger, better structured LaTeX) | gpt-5.6-terra
   score_model: gpt-5.6-luna
+  # The second look at a job scoring just under min_score (see second_look_below).
+  second_look_model: gpt-5.6-sol
   # Only used when enrich_provider is openai.
   enrich_model: gpt-5.6-sol
   # Only used when apply_provider is openai.

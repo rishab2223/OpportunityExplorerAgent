@@ -50,6 +50,13 @@ def main(argv: list[str] | None = None) -> int:
                 # Backstop only: streams end themselves on Ctrl+C now.
                 timeout_graceful_shutdown=3,
             )
+            # The daily batch (src/daily.py): here and only here, so a check
+            # that imports the app never sets off a real one. Not under
+            # --reload, whose watcher process is not the app's.
+            from src import daily
+            from src.web import run_options
+
+            daily.start_scheduler(lambda: run_options.effective_config(run_options.load_yaml_config()))
             Server(config).run()
     except KeyboardInterrupt:
         # uvicorn re-raises the captured Ctrl+C after a clean shutdown; without
