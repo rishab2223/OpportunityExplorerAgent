@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
 import uuid
+from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
@@ -32,6 +34,13 @@ APPLIED_COMMANDS = (
 # "dump" / "dump 10": save the page for offline inspection and keep waiting.
 # Not an answer, so it never reaches a field or the answer bank.
 DUMP_COMMAND_RE = re.compile(r"^(?:dump|dump page|dump dom|inspect)(?:\s+(\d{1,2}))?$", re.IGNORECASE)
+# A reply to one of these never reaches the log on disk: the emailed code a
+# site asks for after sign-in, or a password typed into the chat.
+SECRET_QUESTION_RE = re.compile(
+    r"\b(otp|one[- ]time|passcode|password|pass code|verification code|security code|"
+    r"\d-digit code|code (we|they|was) (sent|emailed)|enter the code)\b",
+    re.IGNORECASE,
+)
 
 
 class SessionBusy(Exception):
@@ -114,7 +123,8 @@ class ApplySession:
         # Called while a model call runs, so page events still arrive.
         self.pump = None
         # Called with a delay in seconds when the user types "dump [N]" at a
-        # prompt; the worker saves the live page under outputs/dom/.
+        # prompt; the worker saves the live page into the session's folder
+        # under dumps/apply_dumps/.
         self.on_dump = None
         # Dumps asked for while the worker was busy. Not answers - a dump at
         # a model call was refused as "the agent is busy" and the candidate
@@ -133,6 +143,73 @@ class ApplySession:
         # nearest-option call has already been asked about (worker._pick_refused).
         self.refused_options: dict[str, list[str]] = {}
         self.picks_asked: set[str] = set()
+        # dumps/apply_dumps/<company>/<when>_<title>/ once keep_log() is
+        # called (start_apply does); None keeps the session in memory only,
+        # as the checks' own sessions are.
+        self.folder: Path | None = None
+        # What the worker knows at the end (model calls, the system, the last
+        # page): goes into summary.json.
+        self.summary: dict[str, Any] = {}
+        self._secret_asked = False
+
+    def keep_log(self, folder: Path, about: dict[str, Any] | None = None) -> None:
+        """Write the transcript to folder/log.jsonl from now on, the lines
+        so far included. A disk that refuses only loses the file, never the
+        session."""
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            with self._lock:
+                self.folder = folder
+                self.summary.update(about or {})
+                lines = [self._for_disk(e) for e in self._events]
+            with open(folder / "log.jsonl", "a", encoding="utf-8") as fh:
+                for line in lines:
+                    fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+        except OSError:
+            self.folder = None
+
+    def _for_disk(self, event: dict[str, Any]) -> dict[str, Any]:
+        """The event as the log file keeps it: wall-clock time added, and the
+        reply to a code or password question hidden."""
+        out = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), **event}
+        if event.get("type") in ("question", "choice"):
+            self._secret_asked = bool(SECRET_QUESTION_RE.search(str(event.get("text") or "")))
+        elif event.get("type") == "answer" and self._secret_asked:
+            out["text"] = "[hidden]"
+            self._secret_asked = False
+        return out
+
+    def _write(self, event: dict[str, Any]) -> None:
+        folder = self.folder
+        if folder is None:
+            return
+        try:
+            with open(folder / "log.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(self._for_disk(event), ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def _write_summary(self) -> None:
+        folder = self.folder
+        if folder is None:
+            return
+        with self._lock:
+            events = list(self._events)
+        summary = {
+            **self.summary,
+            "session_id": self.id,
+            "job_id": self.job_id,
+            "label": self.label,
+            "outcome": self.status,
+            "seconds": round(time.monotonic() - self.started, 1),
+            "questions_asked": sum(1 for e in events if e.get("type") in ("question", "choice")),
+            "ended": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        try:
+            (folder / "summary.json").write_text(json.dumps(summary, indent=1, ensure_ascii=False),
+                                                 encoding="utf-8")
+        except OSError:
+            pass
 
     def emit(self, event_type: str, text: str, **extra: Any) -> None:
         # extra may itself carry a "kind" key (choice events), so the event
@@ -142,6 +219,7 @@ class ApplySession:
         with self._lock:
             self._events.append(event)
             targets = list(self._subscribers)
+            self._write(event)
         for queue in targets:
             queue.put(event)
 
@@ -266,6 +344,7 @@ class ApplySession:
             except Exception:
                 pass
         self.emit("done", text or status)
+        self._write_summary()
 
     def subscribe(self) -> tuple[Queue, list[dict[str, Any]]]:
         queue: Queue = Queue()

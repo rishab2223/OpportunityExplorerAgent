@@ -12,7 +12,8 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 
 from src.apply import browser, worker  # noqa: E402
 
-DOM = ROOT / "outputs" / "dom"
+# The page dumps saved before sessions had folders of their own (src/dumps.py).
+DOM = ROOT / "dumps" / "apply_dumps" / "_before_15_Oct"
 d = next(p for p in DOM.iterdir() if p.name.endswith("225211"))
 with sync_playwright() as pw:
     b = pw.chromium.launch()

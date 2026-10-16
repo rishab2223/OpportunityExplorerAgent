@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -138,10 +139,15 @@ def groups_for(paths: list[str]) -> list[str]:
     return [g for g in GROUPS if g in wanted]
 
 
+# Pictures, session logs and page dumps from a check go to a temp folder,
+# never beside your real sessions' (src/dumps.py).
+CHECK_ENV = {**os.environ, "OEA_DUMPS_DIR": tempfile.mkdtemp(prefix="oea_check_dumps_")}
+
+
 def run_unit() -> tuple[bool, float, str]:
     started = time.time()
     done = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "test", "-q"],
-                          cwd=ROOT, capture_output=True, text=True)
+                          cwd=ROOT, capture_output=True, text=True, env=CHECK_ENV)
     # The count comes from the run, not from a number typed in here: a
     # hardcoded one goes stale the first time a test is added.
     found = re.search(r"Ran (\d+) test", done.stderr or "")
@@ -151,7 +157,7 @@ def run_unit() -> tuple[bool, float, str]:
 def run_script(name: str) -> tuple[bool, float, str]:
     started = time.time()
     done = subprocess.run([sys.executable, str(BROWSER / name)], cwd=str(BROWSER),
-                          capture_output=True)
+                          capture_output=True, env=CHECK_ENV)
     text = (done.stdout or b"").decode("utf-8", "replace").strip().splitlines()
     errs = (done.stderr or b"").decode("utf-8", "replace").strip().splitlines()
     last = (text[-1] if text else (errs[-1] if errs else ""))[:64]

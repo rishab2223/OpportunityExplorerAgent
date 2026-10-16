@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlparse
 
 from pydantic import BaseModel, Field
 
-from src import answers
+from src import answers, dumps
 from src.apply import (browser, catalogue, cover_letter, matching, profile, resolver, salary,
                        session, shots, sites)
 from src.apply.session import (TERMINAL_STATUSES, Aborted, ApplySession, Parked,
@@ -838,6 +838,12 @@ def start_apply(
     """
     label = f"{job.get('company', '')} {job.get('title', '')}".strip()
     sess = session.start(stamp, str(job.get("job_id") or ""), label)
+    # The transcript is kept on disk, beside the session's page dumps.
+    url = str(job.get("apply_url") or job.get("listing_url") or "")
+    sess.keep_log(dumps.session_dir(str(job.get("company") or ""), str(job.get("title") or "")),
+                  {"company": job.get("company") or "", "title": job.get("title") or "",
+                   "run": stamp, "url": url, "ats": sites.ats(url),
+                   "started": time.strftime("%Y-%m-%d %H:%M:%S")})
     # Recording happens inside finish(), before the done event, so the UI's
     # reload already sees the outcome in the table.
     sess.on_outcome = on_finish
@@ -884,7 +890,26 @@ def run_session(
     pw = context = None
     claude = None
     llm_calls = 0
-    # Pictures sent to the model are kept under screenshots/<company>/.
+    attach = None
+    page = None
+
+    def count_calls() -> None:
+        """Every model call this session, the attachment ones included, on
+        every way out: an abort, park or "I submitted it" used to count only
+        the plan calls."""
+        total = (llm_calls + (attach.calls if attach is not None else 0)
+                 + getattr(sess, "button_calls", 0))
+        sess.log(f"Model calls this session: {total}")
+        sess.summary["model_calls"] = total
+        try:
+            last = page.url if page is not None else ""
+        except Exception:
+            last = ""
+        if last:
+            sess.summary["last_page"] = last
+            sess.summary["ats"] = sites.ats(last) or sess.summary.get("ats", "")
+
+    # Pictures sent to the model are kept under dumps/screenshots/<company>/.
     sess.company = str(job.get("company") or "")
     try:
         if not url:
@@ -2111,7 +2136,7 @@ def run_session(
         else:
             outcome, outcome_text = "failed", f"gave up after {MAX_STEPS} steps"
 
-        sess.log(f"Model calls this session: {llm_calls + attach.calls}")
+        count_calls()
         # Record and close the chat IMMEDIATELY - waiting for a "close" reply
         # here meant an applied outcome was never recorded if the user walked
         # away. And the browser with it: the confirmation is already in the
@@ -2121,13 +2146,13 @@ def run_session(
             sess.log("Recorded as applied. Closing the browser.")
         sess.finish(outcome, outcome_text)
     except Aborted:
-        sess.log(f"Model calls this session: {llm_calls}")
+        count_calls()
         sess.log("Aborted.")
         sess.finish("aborted", "aborted by user")
     except Parked:
         # Nothing is recorded: the job keeps its place in the shortlist and
         # stays eligible for a later scrape. A queue moves on to the next.
-        sess.log(f"Model calls this session: {llm_calls}")
+        count_calls()
         sess.log("Parked for later. Nothing was submitted or recorded.")
         sess.finish("parked", "parked for later")
     except Submitted:
@@ -2137,7 +2162,7 @@ def run_session(
         # typed into that box. A real session submitted an application, was
         # then asked for the emailed six-digit code, and had no way to say so:
         # abort was the only exit, and it records nothing.
-        sess.log(f"Model calls this session: {llm_calls}")
+        count_calls()
         if not headless:
             sess.log("Recorded as applied. Closing the browser.")
         sess.finish("applied", "submitted by you")
@@ -3673,7 +3698,7 @@ def _look_at(page, field: dict[str, Any], open_list: bool = False, typed: str = 
 def _pictures_for_call(page, fields, handled, sess, unresolved) -> list[tuple[str, str, bytes, str]]:
     """(label, why, png, key) for the next model call: pictures already
     taken first, then the refused dropdowns and the unclear fields still
-    open. Each one sent is kept under screenshots/<company>/. `key` is what
+    open. Each one sent is kept under dumps/screenshots/<company>/. `key` is what
     the picture is filed under, to queue it again if the call fails."""
     out: list[tuple[str, str, bytes, str]] = []
     ready = _looks(sess)
@@ -8763,7 +8788,9 @@ SECTION_ADD_RE = re.compile(
 )
 
 
-DUMP_DIR = Path(__file__).resolve().parents[2] / "outputs" / "dom"
+# Where a dump goes when the session keeps no folder of its own (the checks'
+# sessions). A real session dumps into its folder: dumps/apply_dumps/...
+DUMP_DIR = dumps.APPLY_DIR / "_no_session"
 # Serialises the page including open shadow roots (as declarative
 # <template shadowrootmode>), live input values, and which element has focus.
 DUMP_HTML_JS = """() => {
@@ -8798,12 +8825,20 @@ def _dump_page(page, sess: ApplySession, delay: int = 0) -> None:
     """The 'dump [N]' chat command: after N seconds (time to switch back to
     the form and open the widget), save the page as it is right now - DOM
     with shadow roots and live values, the field snapshot, the page's data
-    requests, a screenshot - under outputs/dom/ so a misbehaving widget can
-    be inspected offline."""
+    requests, a screenshot - into the session's folder under
+    dumps/apply_dumps/ so a misbehaving widget can be inspected offline."""
     if delay > 0:
         sess.log(f"Dumping the page in {delay}s - switch back to the form and open the widget.")
         page.wait_for_timeout(min(delay, 60) * 1000)
-    out = DUMP_DIR / f"{sess.stamp}_{time.strftime('%Y%m%d-%H%M%S')}"
+    folder = getattr(sess, "folder", None)
+    if folder is not None:
+        out = folder / f"dom_{time.strftime('%Y%m%d-%H%M%S')}"
+        n = 2
+        while out.exists():
+            out = folder / f"dom_{time.strftime('%Y%m%d-%H%M%S')}_{n}"
+            n += 1
+    else:
+        out = DUMP_DIR / f"{sess.stamp}_{time.strftime('%Y%m%d-%H%M%S')}"
     out.mkdir(parents=True, exist_ok=True)
     (out / "page.html").write_text(page.evaluate(DUMP_HTML_JS), encoding="utf-8")
     # Embedded forms (an iframe from another origin) get their own files.

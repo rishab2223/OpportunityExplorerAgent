@@ -7,8 +7,8 @@ Next, or one the model asked to look at. Never the whole screen: a crop of
 four questions cost ~900 input tokens and was read correctly, where a
 viewport shot missed the questions entirely (tested Oct 2026).
 
-Every picture sent is kept under screenshots/<company>/ (gitignored) so a
-session can be checked afterwards.
+Every picture sent is kept under dumps/screenshots/<company>/ (gitignored)
+so a session can be checked afterwards.
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from src.config import ROOT
+from src import dumps
 
-SHOTS_DIR = ROOT / "screenshots"
+SHOTS_DIR = dumps.SHOTS_DIR
 
 # Room around what is pictured - the box, its label, wrapper and message
 # (SURROUNDINGS_JS) - so nothing at an edge is cut. Generous on purpose:
@@ -173,12 +173,11 @@ def size(png: bytes) -> tuple[int, int]:
 
 def folder_name(company: str) -> str:
     """screenshots/<this>: the company, safe as a folder name."""
-    name = re.sub(r"[^A-Za-z0-9]+", "-", company or "").strip("-")
-    return name[:60] or "unknown-company"
+    return dumps.folder_name(company)
 
 
 def save(png: bytes, company: str, label: str) -> Path | None:
-    """Keep a picture under screenshots/<company>/; its path, or None."""
+    """Keep a picture under dumps/screenshots/<company>/; its path, or None."""
     try:
         folder = SHOTS_DIR / folder_name(company)
         folder.mkdir(parents=True, exist_ok=True)

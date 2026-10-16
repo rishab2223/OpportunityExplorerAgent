@@ -32,7 +32,7 @@ from src.apply.worker import _looks_submitted  # noqa: E402
 
 pages = [("synthetic long form", (E2E / "fixture_submitted_tail.html").as_uri())]
 dump = Path(sys.argv[1]) if len(sys.argv) > 1 else \
-    ROOT / "outputs" / "dom" / "20260830T161516_20260914-012836"
+    ROOT / "dumps" / "apply_dumps" / "_before_15_Oct" / "20260830T161516_20260914-012836"
 if (dump / "page.html").exists():
     pages.append(("the candidate's dumped page", (dump / "page.html").as_uri()))
 else:

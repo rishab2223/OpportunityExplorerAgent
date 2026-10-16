@@ -20,3 +20,4 @@ test/output/
 test/browser/_work/
 # Pictures of form fields sent to the model, one folder per company.
 screenshots/
+dumps/

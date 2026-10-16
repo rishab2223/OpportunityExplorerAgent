@@ -76,7 +76,7 @@ Then make it yours:
 3. **Models.** The shipped settings tailor and fill forms with Claude through `agent-sdk` (`enrich_provider: claude`, `apply_provider: claude`). With an OpenAI key and nothing else, set both to `openai`. See [Models](#models).
 4. **Profile for assisted apply.** Fill it from the dashboard (user icon → **Profile**), or copy [`examples/apply_profile.example.json`](examples/apply_profile.example.json) to `localData/apply_profile.json` and edit it. See [Assisted apply](#assisted-apply).
 
-Everything personal lives in `localData/`, `outputs/`, `screenshots/` and `.env`, all gitignored: nothing you add there reaches the repository.
+Everything personal lives in `localData/`, `outputs/`, `dumps/` and `.env`, all gitignored: nothing you add there reaches the repository.
 
 ## Config
 
@@ -393,7 +393,19 @@ Nothing is pictured for boxes your profile or saved answers filled, a page where
 
 **Enter in a dropdown never sends the form.** The agent sometimes presses Enter to commit a dropdown row. With no row highlighted, a browser passes that Enter to the form, by clicking the form's default button and sending it. For the length of each such keypress the agent holds both off, and if Enter tried to reach the form, the pick is refused instead.
 
-Every picture sent is kept under `screenshots/<company>/` (gitignored), so you can see what the model saw. Nothing deletes them yet: clear old folders by hand.
+Every picture sent is kept under `dumps/screenshots/<company>/` (gitignored), so you can see what the model saw. Nothing deletes them yet: clear old folders by hand.
+
+#### What a session leaves behind
+
+Each apply session gets its own folder, `dumps/apply_dumps/<company>/<date-time>_<job title>/` (gitignored):
+
+| File | What it holds |
+|---|---|
+| `log.jsonl` | every line of the chat transcript as it happened, with the time. Your reply to a question about a code, OTP or password is written as `[hidden]` |
+| `summary.json` | written when the session ends: outcome, seconds taken, model calls (attachments included), questions you were asked, the system (Workday, Greenhouse…) and the last page |
+| `dom_<date-time>/` | one per `dump` (below) |
+
+The transcript used to live only in memory and was lost when the server restarted. Nothing deletes these folders yet.
 
 #### The form catalogue
 
@@ -468,7 +480,7 @@ Two limits: `redo` only reaches boxes still on the step in front of you (once yo
 | `llm: <instruction>` | draft or redraft the answer to the question being asked; at either review prompt ("This step is filled in" or "click Submit yourself"), `llm: <question>` drafts an answer to a question the form asked — into the box when it can be found, otherwise handed back for you to paste |
 | `redo` / `redo <words>` | reopen an answer you already gave, pre-filled, to edit or redraft |
 | `attach resume` / `cover letter` | start either attachment flow by hand (same as the buttons) |
-| `dump` / `dump 10` | save the page as it is (DOM with shadow roots and live values, every frame, the field snapshot, the page's data requests with their status codes, a screenshot) under `outputs/dom/` and keep waiting; `dump 10` waits ten seconds first so you can open a widget. The **Dump** button does the same and copies the folder path to your clipboard. Both work while the agent is busy too — during a model call the page is saved within a second, as it was when you asked |
+| `dump` / `dump 10` | save the page as it is (DOM with shadow roots and live values, every frame, the field snapshot, the page's data requests with their status codes, a screenshot) into the session's folder under `dumps/apply_dumps/` and keep waiting; `dump 10` waits ten seconds first so you can open a widget. The **Dump** button does the same and copies the folder path to your clipboard. Both work while the agent is busy too — during a model call the page is saved within a second, as it was when you asked |
 | a URL | open that page when the agent is stuck |
 | `retry` | try the model again after an outage (`try again`) |
 | `closed` | record that the posting no longer accepts applications and stop |
