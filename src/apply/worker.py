@@ -2054,6 +2054,17 @@ def run_session(
                         list_refused = True
                 elif result == "stale":
                     notes.append("the page changed mid-plan; re-reading it")
+                    # What the plan had still to do waits for the next one.
+                    # Retired instead, as fields the model passed over, a
+                    # LinkedIn Yes / No with only a star to say it was
+                    # required (Voice of Healthcare, Oct 2026) was left
+                    # unanswered and the step called filled in.
+                    replan = True
+                    for held in ordered[ordered.index(action):]:
+                        held_field = _field_by_id(fields, held.field_id)
+                        if held_field is not None:
+                            held_keys.add(_field_key(held_field, _field_label(held_field)))
+                            held_keys.add(_choice_group(held_field))
                     break
                 elif result == "done":
                     outcome, outcome_text = "applied", "application submitted"
@@ -4390,7 +4401,10 @@ def _sweep(
                 _remember_answered(holder, field, label, value)
         except Exception as exc:
             sess.log(f"Could not fill {_brief(label, LOG_LABEL)}: {_short(exc)}")
-            if source != "resume" and not isinstance(exc, browser.Unreachable):
+            # A box the page re-drew did not refuse anything: recorded as a
+            # refusal, LinkedIn's re-drawn Yes reached the model as "'Yes'
+            # refused 'yes'" (Voice of Healthcare, Oct 2026).
+            if source != "resume" and not isinstance(exc, (browser.Unreachable, StaleField)):
                 _remember_refusal(sess, key, value, exc)
             if _gone_error(exc) and _page_moved_on(page, start_url):
                 # Every box left in this pass belonged to the page that went:
@@ -6442,10 +6456,33 @@ def _set_checked(page, locator, field: dict[str, Any], on: bool) -> None:
                 f"clicked '{_field_label(field)}' but it is still "
                 f"{'unticked' if on else 'ticked'}")
         return
+    def gone() -> bool:
+        """Redrawn under us: LinkedIn rebuilt a Yes / No question while it
+        was being ticked (Axionix, Oct 2026), and every rung below then waited
+        out its own timeout on an element that was no longer there - sixteen
+        seconds, then "could not inspect it". Counting is instant.
+
+        And it rebuilds the option it has just ticked (Voice of Healthcare,
+        Oct 2026): the tick took, the element that took it was gone, and the
+        agent called it a failure - "Could not fill Yes", the answer recorded
+        as refused, and the model's next tick abandoned. The replacement, the
+        same option of the same group, is what is read from then on."""
+        nonlocal locator
+        try:
+            if locator.count():
+                return False
+        except Exception:
+            return False
+        again = _replacement(page, field)
+        if again is None:
+            return True
+        locator = again
+        return False
+
     # Gone from the page: say so at once, so the loop reads the page again,
     # rather than spending every rung's timeout on an element that is not
     # there (fourteen seconds per Yes on LinkedIn, Oct 2026).
-    if browser._control_state(locator) is None:
+    if browser._control_state(locator) is None and gone():
         raise StaleField(_field_label(field))
     # LinkedIn's redesigned Easy Apply draws its questions in a lazy column:
     # a row below the fold may not be laid out until it is scrolled to.
@@ -6468,17 +6505,22 @@ def _set_checked(page, locator, field: dict[str, Any], on: bool) -> None:
         shown = False
     if shown:
         try:
-            # 4 s, not 8: a box that is actionable ticks at once, and one a
-            # label sits over only burns the whole wait before the rungs below.
+            # 2.5 s, not 8: a box that is actionable ticks at once, and one a
+            # label sits over - or one rebuilt by the press itself - only
+            # burns the whole wait before the rungs below.
             if on:
-                locator.check(timeout=4000)
+                locator.check(timeout=2500)
             else:
-                locator.uncheck(timeout=4000)
+                locator.uncheck(timeout=2500)
             return
         except Exception as exc:
             first = exc
+            if gone():
+                raise StaleField(_field_label(field)) from None
 
     def state() -> bool | None:
+        if gone():
+            raise StaleField(_field_label(field))
         try:
             return locator.is_checked(timeout=2000)
         except Exception:
@@ -6491,7 +6533,7 @@ def _set_checked(page, locator, field: dict[str, Any], on: bool) -> None:
     # keyboard user does (the input carries tabindex=0 for exactly that), and
     # a real mouse press on the drawn control is what everyone else does.
     for attempt in ("input", "keyboard", "label", "mouse"):
-        if state() == on:
+        if state() == on:          # raises StaleField when it has gone
             return
         try:
             if attempt == "input":
@@ -6518,6 +6560,44 @@ def _set_checked(page, locator, field: dict[str, Any], on: bool) -> None:
     if state() != on:
         raise first or RuntimeError(f"'{_field_label(field)}' could not be ticked ({_tick_why(locator)})")
     return
+
+
+# The option standing where a rebuilt one stood: the same group name, type
+# and label, and only one of it (preferring ones on screen - Recrew draws a
+# hidden twin of its form). Marked so a locator can hold on to it.
+REPLACEMENT_JS = """
+([name, type, label, mark]) => {
+  const flat = s => (s || '').replace(/\\s+/g, ' ').replace(/\\*$/, '').trim().toLowerCase();
+  const want = flat(label);
+  const own = el => flat((el.labels && el.labels[0] && el.labels[0].innerText)
+                         || el.getAttribute('aria-label') || '');
+  let hits = Array.from(document.querySelectorAll('input')).filter(el =>
+    el.name === name && (el.type || '').toLowerCase() === type && own(el) === want);
+  if (hits.length > 1) hits = hits.filter(el => el.getClientRects().length);
+  if (hits.length !== 1) return false;
+  document.querySelectorAll('[data-oea-again]').forEach(el => el.removeAttribute('data-oea-again'));
+  hits[0].setAttribute('data-oea-again', mark);
+  return true;
+}
+"""
+
+
+def _replacement(page, field: dict[str, Any]):
+    """A tick box or radio re-drawn under the same name and label, or None.
+    No name, no label: nothing ties a new element to the old one."""
+    name = str(field.get("name") or "")
+    kind = (field.get("type") or "").lower()
+    label = str(field.get("label") or "")
+    if not name or not label or kind not in ("radio", "checkbox"):
+        return None
+    mark = f"again{field.get('id', '')}"
+    try:
+        frame = browser.target(page)
+        if not frame.evaluate(REPLACEMENT_JS, [name, kind, label, mark]):
+            return None
+        return frame.locator(f'[data-oea-again="{mark}"]').first
+    except Exception:
+        return None
 
 
 # Is the box drawn over by one of its own labels (an absolutely placed label

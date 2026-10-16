@@ -1,0 +1,40 @@
+﻿<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>LinkedIn apply page replica</title></head>
+<body>
+<!--
+  #job       the job page: "Easy Apply" navigates to #apply (another path in
+             real life; the check gives each mode its own file URL)
+  #apply     LinkedIn's apply page as Axionix showed it (Oct 2026): its own
+             "Easy Apply to this job" button, and only then the form dialog
+  #direct    an apply page that shows the form straight away
+-->
+<header><input type="text" placeholder="Search" aria-label="Search"></header>
+<main id="main"></main>
+<script>
+const mode = (location.hash || '#job').slice(1);
+const main = document.getElementById('main');
+function form() {
+  const d = document.createElement('div');
+  d.setAttribute('role', 'dialog');
+  d.setAttribute('aria-label', 'Apply to DummyCo');
+  d.innerHTML = '<h2>Apply to DummyCo</h2><label>Mobile phone number <input id="phone" type="tel"></label>' +
+    '<footer><button type="button">Next</button></footer>';
+  document.body.appendChild(d);
+}
+if (mode === 'job' || mode === 'jobdirect') {
+  main.innerHTML = '<h1>Backend Developer</h1><button id="ea">Easy Apply</button>';
+  document.getElementById('ea').addEventListener('click', () => {
+    location.href = location.href.replace(/fixture_li_apply_page\.html.*$/, 'fixture_li_apply_page_2.html#' + (mode === 'job' ? 'apply' : 'direct'));
+  });
+}
+if (mode === 'apply') {
+  setTimeout(() => {
+    main.innerHTML = '<h1>Backend Developer at DummyCo</h1><button id="ea2">Easy Apply to this job</button>';
+    document.getElementById('ea2').addEventListener('click', () => setTimeout(form, 300));
+  }, 400);
+}
+if (mode === 'direct') setTimeout(form, 300);
+</script>
+</body>
+</html>

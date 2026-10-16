@@ -770,7 +770,11 @@ SNAPSHOT_JS = """
         (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'image'))),
       footer: !!el.closest('footer, [role=contentinfo]'),
       elid: el.id || '',  // Greenhouse names its file inputs by id ("resume", "cover_letter")
-      required: el.required === true || el.getAttribute('aria-required') === 'true',
+      // LinkedIn's Yes / No questions carry no required attribute, only the
+      // star in their question ("Are you currently based in Gurgaon?*"), and
+      // one read as optional was dropped unanswered (Oct 2026).
+      required: el.required === true || el.getAttribute('aria-required') === 'true' ||
+        ((el.type || '').toLowerCase() === 'radio' && /\\*\\s*$/.test(group || '')),
       value: value.slice(0, 200),
       text: (el.innerText || '').replace(/[\\uE000-\\uF8FF]/g, '').trim().slice(0, 80),
       maxlength: el.maxLength > 0 ? el.maxLength : 0,

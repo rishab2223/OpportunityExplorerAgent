@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Additional Questions</title></head>
+<body>
+<!-- LinkedIn's Easy Apply "Additional Questions" (Voice of Healthcare, Oct
+     2026): Yes / No radios with no required attribute - only the star in the
+     question says so - and the option ticked is swapped for a new element
+     under a new id, so the element that took the tick is gone at once. -->
+<div role="dialog" aria-label="Apply to Example">
+  <h3>Additional Questions</h3>
+  <form id="f"></form>
+  <footer><button type="button">Back</button><button type="button" id="review">Review</button></footer>
+</div>
+<script>
+const QUESTIONS = [
+  ["q1", "Are you available to join immediately?*"],
+  ["q2", "Are you currently based in Gurgaon?*"],
+  ["q3", "If not from Gurgaon, are you willing to relocate to Gurgaon for this role?*"],
+];
+let next = 1;
+const fresh = () => "_r_" + (next++).toString(36) + "_";
+function option(group, label, checked) {
+  const id = fresh();
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `<input type="radio" name="radio-group-${group}" id="${id}" value="on"${checked ? " checked" : ""}>` +
+                   `<label for="${id}">${label}</label>`;
+  return wrap;
+}
+for (const [group, question] of QUESTIONS) {
+  const set = document.createElement("fieldset");
+  set.innerHTML = `<legend>${question}</legend>`;
+  set.append(option(group, "Yes", false), option(group, "No", false));
+  document.getElementById("f").append(set);
+}
+// The swap: a tick re-renders the ticked option as a new node.
+document.getElementById("f").addEventListener("change", (e) => {
+  const input = e.target;
+  if (input.type !== "radio" || !input.checked) return;
+  const group = input.name.replace("radio-group-", "");
+  const label = input.labels[0].textContent;
+  const old = input.parentElement;
+  old.replaceWith(option(group, label, true));
+});
+</script>
+</body>
+</html>

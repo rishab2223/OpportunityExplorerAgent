@@ -339,6 +339,50 @@ def pick_apply(buttons: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, st
     return None, ""
 
 
+# How long LinkedIn's apply page gets to show either its form or its own
+# "Easy Apply to this job" button after the job page navigated to it.
+INTERSTITIAL_WAIT = 4000
+INTERSTITIAL_STEP = 250
+
+
+def _form_on_page(fields: list[dict[str, Any]]) -> bool:
+    """Something to fill: a box that is not the site's own search."""
+    for f in fields:
+        if f.get("tag") not in ("input", "select", "textarea"):
+            continue
+        kind = str(f.get("type") or "").lower()
+        words = f"{f.get('label') or ''} {f.get('placeholder') or ''}".lower()
+        if kind in ("search", "hidden", "submit", "button") or "search" in words:
+            continue
+        return True
+    return False
+
+
+def _past_the_apply_page(page, sess) -> str:
+    """Easy Apply can navigate to LinkedIn's own apply page, which first
+    shows an "Easy Apply to this job" button and only then the form (Axionix,
+    Oct 2026). The agent announced the form as open, the loop found one button
+    and nothing to fill, and the planning model took 17 s to say "click it".
+    Pressed here instead, like the first one. Returns how the form opened,
+    or '' when the form was already there or no second button came."""
+    waited = 0
+    while waited <= INTERSTITIAL_WAIT:
+        try:
+            fields = browser.snapshot(page)
+        except Exception:
+            fields = []
+        if _form_on_page(fields):
+            return ""
+        second = [f for f in fields if _clickable(f) and EASY_APPLY_RE.search(_text(f))]
+        if second:
+            sess.log("[linkedin] LinkedIn's apply page has its own Easy Apply button; pressing it.")
+            _target, _kind, opened = click_apply(page, sess)
+            return opened
+        page.wait_for_timeout(INTERSTITIAL_STEP)
+        waited += INTERSTITIAL_STEP
+    return ""
+
+
 def start(page, sess) -> str:
     """Open the apply flow for the LinkedIn job page. Returns
     'easy_apply', 'external', 'login', 'closed' or '' (nothing recognized)."""
@@ -374,6 +418,8 @@ def start(page, sess) -> str:
         # job page BEHIND the modal - so wait for the fields, but ONLY when
         # there is a modal to wait for. Hunting a dialog that was never there
         # cost eight seconds and taught us nothing.
+        if opened == "navigated":
+            opened = _past_the_apply_page(page, sess) or opened
         if opened == "dialog":
             try:
                 page.wait_for_selector(

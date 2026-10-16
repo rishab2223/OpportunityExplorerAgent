@@ -68,7 +68,9 @@ GROUPS: dict[str, list[str]] = {
     "attach": ["chooser_check.py", "jobvite_upload_check.py", "taleo_check.py",
                "photo_picker_check.py"],
     "linkedin": ["li_ready_e2e.py", "li_noisy_repro.py", "li_rerender_repro.py",
-                 "li_unwired_check.py"],
+                 "li_unwired_check.py",
+                 "li_apply_page_check.py",    # LinkedIn's own apply page; a radio rebuilt mid-tick
+                 "li_swapped_radio_check.py"],   # the ticked option swapped for a new element
     "indeed": ["indeed_check.py"],
     "submit": [                       # "was it sent?", every shape of it
         "sent_no_model_repro.py", "sent_dialog_repro.py", "prefilled_sent_repro.py",
