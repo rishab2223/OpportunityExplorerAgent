@@ -51,6 +51,21 @@ class UnitTests(unittest.TestCase):
         self.assertEqual(salary.unit_of(field("Annual salary (INR)")), "annual")
         self.assertEqual(salary.unit_of(field("Current CTC")), "")
 
+    def test_a_bare_L_is_lakhs(self) -> None:
+        # JuiceLabs' Easy Apply (Oct 2026): "Current CTC (in Rs L)" read its
+        # "Rs" as annual rupees, and 2500000 went in for 25.
+        for label in ("Current CTC (in Rs L)", "Current CTC (in Rs. L)", "Expected CTC (L)",
+                      "Current CTC in L", "Current CTC (INR L)", "Current CTC (₹ L)",
+                      "Current CTC (in L.P.A.)", "Current CTC (Rs L per annum)"):
+            self.assertEqual(salary.unit_of(field(label)), "lpa", label)
+        box = field("Current CTC (in Rs L)")
+        self.assertEqual(salary.for_field("2500000", box), "25")
+        self.assertEqual(salary.for_field("25 LPA", box), "25")
+        # Not a unit: rupees stay rupees, and L&T is a company.
+        self.assertEqual(salary.unit_of(field("Current CTC (in Rs)")), "annual")
+        self.assertEqual(salary.unit_of(field("Current salary at L&T (INR)")), "annual")
+        self.assertEqual(salary.unit_of(field("Last drawn salary (INR)")), "annual")
+
     def test_the_unit_beside_the_box_and_the_box_itself_count(self) -> None:
         # Hunting Cube (Oct 2026): label "Your Current CTC?", "LPA" drawn
         # after the box, maxlength 3, placeholder "e.g. 15". Read as unitless

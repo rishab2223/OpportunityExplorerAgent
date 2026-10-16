@@ -30,8 +30,15 @@ _AMOUNT_RE = re.compile(
     re.IGNORECASE,
 )
 _MONTHLY_RE = re.compile(r"\b(per month|monthly|a month|p\.?m\.?)\b", re.IGNORECASE)
-# Field text that fixes the unit. "in LPA", "(lakhs)", "in lacs per annum".
-_LPA_FIELD_RE = re.compile(r"\blpa\b|\blakh|\blacs?\b|\blac\b", re.IGNORECASE)
+# Field text that fixes the unit. "in LPA", "(lakhs)", "in lacs per annum",
+# "L.P.A.", and a bare L: "Current CTC (in Rs L)" on JuiceLabs' Easy Apply
+# (Oct 2026) missed this, read its "Rs" as annual rupees, and 2500000 went in
+# for 25. A bare L counts only as a unit - after "in", "Rs", "INR", "₹" or an
+# opening bracket - and never as the L of L&T.
+_LPA_FIELD_RE = re.compile(
+    r"\blpa\b|\bl\.p\.a\b|\blakh|\blacs?\b|\blac\b"
+    r"|(?:\(|\bin\b|\brs\b\.?|\binr\b|₹)\s*(?:(?:rs|inr)\b\.?\s*|₹\s*)?\bl\b(?![&'\-]\w)",
+    re.IGNORECASE)
 _MONTHLY_FIELD_RE = re.compile(r"\b(per month|monthly|a month|p\.?m\.?)\b", re.IGNORECASE)
 _ANNUAL_FIELD_RE = re.compile(
     r"\b(per annum|annual|annually|yearly|per year|p\.?a\.?|inr|rupees|rs\.?)\b|₹",
