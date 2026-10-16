@@ -1569,3 +1569,81 @@ td.heldfound { white-space: nowrap; color: var(--muted); }
   0%, 40% { background: var(--accent-soft); }
   100% { background: transparent; }
 }
+
+/* ------------------------------------------------------------ Applied page */
+
+.aplduelabel { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; white-space: nowrap; }
+.aplseg { display: inline-flex; gap: 4px; }
+.aplseg button { padding: 4px 12px; }
+.aplseg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.aplstages { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.aplstage .aplbar { height: 6px; border-radius: 3px; background: var(--accent-line); }
+.aplstage.on .aplbar { background: var(--accent); }
+.aplstage .aplname { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.aplstage .aplcount { font-size: 20px; font-weight: 650; }
+.aplends { margin-top: 10px; font-size: 12px; }
+
+.aplboard { display: grid; grid-template-columns: repeat(7, minmax(170px, 1fr)); gap: 10px; overflow-x: auto; }
+.aplcol { background: #eceff3; border-radius: var(--radius); padding: 8px; min-height: 160px; }
+.aplcol h3 {
+  font-size: 12px; margin: 2px 4px 8px; display: flex; justify-content: space-between;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.aplcard {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; margin-bottom: 8px; cursor: pointer;
+}
+.aplcard:hover, .aplcard:focus { border-color: var(--accent); outline: none; }
+.aplco { font-weight: 600; }
+.aplti { font-size: 12px; color: var(--muted); }
+.aplmeta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.aplchip { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.aplchip.score { background: var(--good-soft); color: var(--good); }
+.aplchip.due { background: var(--warn-soft); color: var(--warn); }
+
+.aplfilters { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.aplfilters input { min-width: 220px; }
+#apltable th[data-sort] { cursor: pointer; }
+#apltable tbody tr { cursor: pointer; }
+#apltable tbody tr:hover { background: var(--accent-soft); }
+
+.apldrawer {
+  position: fixed; top: 0; right: 0; width: min(460px, 100%); height: 100%; z-index: 40;
+  background: var(--surface); border-left: 1px solid var(--border);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.08); padding: 18px; overflow: auto;
+}
+.apldrawer h2 { font-size: 16px; }
+.apldrawer h4 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.04em; }
+.aplclose { float: right; border: 0; background: none; font-size: 22px; line-height: 1; cursor: pointer; }
+.aplrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.aplbanner {
+  margin-top: 12px; padding: 6px 10px; font-size: 12px; border-radius: 6px;
+  background: var(--warn-soft); color: var(--warn); border: 1px solid #f0dca8;
+}
+.apltl { border-left: 2px solid var(--accent-line); margin-left: 4px; padding-left: 12px; }
+.apltl div { margin-bottom: 6px; }
+.apltl small { color: var(--muted); }
+.aplcontact { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+.aplfield { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); }
+.aplfield input { font: inherit; color: var(--text); }
+.apltabs { display: flex; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; }
+.apltabs button { font-size: 12px; padding: 3px 10px; border-radius: 12px; }
+.apltabs button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.apldraft, .aplnotes { width: 100%; font: inherit; }
+.aplbtns { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.aplsent { font-size: 12px; }
+.aplchat {
+  border: 1px solid var(--border); border-radius: 6px; padding: 8px; height: 150px; overflow: auto;
+  background: #fafbfc; display: flex; flex-direction: column; gap: 6px;
+}
+.aplchat .b { max-width: 85%; padding: 5px 9px; border-radius: 10px; font-size: 13px; white-space: pre-wrap; }
+.aplchat .ai { background: var(--surface); border: 1px solid var(--border); align-self: flex-start; }
+.aplchat .me { background: var(--accent); color: #fff; align-self: flex-end; }
+.aplchatin { display: flex; gap: 6px; margin-top: 6px; }
+.aplchatin input { flex: 1; font: inherit; }
+
+@media (max-width: 700px) {
+  .aplstages { grid-template-columns: repeat(3, 1fr); }
+  .aplcontact { grid-template-columns: 1fr; }
+}

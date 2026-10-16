@@ -282,7 +282,7 @@ python -m src.web              # then open http://127.0.0.1:8000
 opportunity-explorer-web       # same thing after pip install -e .
 ```
 
-One page, three cards, plus a **Referrals** tab that appears once a job is waiting on a contact:
+One page, three cards, plus the **Applied**, **Referrals**, **Held back** and **Resume fit** tabs:
 
 - **Run** — **Start run…** opens the run settings popup, then the live log. Logs stream over server-sent events, so you watch `[score] 12/40 …` as it happens instead of guessing. One run at a time.
 - **Shortlist** — pick any past run from the dropdown; the table shows company, title, relevance, location, apply and listing links, the local PDF path with a copy button, status, and per-row actions. Long runs page at 15 rows: `‹ Prev  1 2 3 … [box] … 29 30  Next ›`, where the box takes a page number directly, so run 200 of a 400-job scrape is one keystroke away instead of thirty clicks. An identical toolbar sits **above and below** the table — tick boxes and **Start queue**, plus **Job info** — so a long page never has to be scrolled back up to act on it.
@@ -303,6 +303,21 @@ The UI never downloads files. Copy the path from the table and open the PDF wher
 **Advanced**, folded away, holds the speed and file settings most runs never touch: the scoring model, how many jobs are scored / tailored / turned into PDFs at once, whether to make PDFs, and your resume file. A problem in one of them opens it.
 
 The footer shows how many jobs the run will fetch and how long the last run took, step by step. A value out of range says so and keeps **Start run** disabled; a control in a switched-off section is not read at all, and the server checks everything again and shows its answer in the popup, which stays open. **Use these next time too** saves only what differs from `settings.yaml` to `localData/run_preferences.json`, for the next run started here (the CLI reads only `settings.yaml`); a notice at the top says when saved choices are in effect, with a link back to the standard settings. **Standard settings** puts the file's values back in the form. Each run's choices are written to `{stamp}/run_settings.json`, summed up on the first lines of its log, and used again for work on that run's jobs afterwards (interview prep is written against the resume the run tailored from).
+
+### Applied
+
+Every job marked applied (by hand, or when an apply session ends), and what happened next. History used to stop at "applied", so nothing recorded replies, interviews or rejections, and nothing could say which channel, score or kind of company gets answers.
+
+- **The stage bar**: Applied → Screening → Interview → Assessment → Offer → Accepted, with a count under each, plus Rejected and Withdrawn and how many moved past Applied at all.
+- **One run at a time**: the **Run** menu lists *All runs* and each run that has applications, newest first, named by date with its count (an application recorded without a run is under *No run*). It opens on the newest run and remembers your choice; everything on the page — the stage bar, the board, the table, the counts — follows it. **Follow-up due only** narrows that to the applications waiting on you.
+- **Columns or Table** (remembered): a board with a card per application in its stage's column — score, source, days since applying, follow-up — or a table with search, stage and source filters, sortable columns and a stage menu on each row.
+- **Click any application** for its panel: the stage, a timeline of stage changes and messages sent, the contact (name, role, profile link, and **how you know them**), notes, and the messages:
+  - **Referral, Outreach, Follow-up, Thank you** — **Draft it** writes one from the posting, your profile and resume; **Copy**, **Mark sent** (records the date and sets a follow-up a week later), **Redraft**. You send every message yourself: they are drafts only.
+  - **Edit with AI** — a small chat that knows the job and your profile: "make it shorter", "drop the college line". It rewrites the draft above. The connection line (a shared employer or college) is used only when *how you know them* says so, and no fact is invented; your own AI project work is called projects, never a job.
+  - The message model starts when the page opens and is kept for the server's life, so a draft takes a few seconds, not twenty.
+- **Follow up?** — an open application with no change for 10 days, or a sent message's follow-up date passed, is flagged amber.
+
+Stages are yours to set; nothing guesses a stage from silence. Referrals stay on their own tab. The data is in `localData/job_history.db` (`applications`, `application_events`, `outreach_messages`).
 
 ### Resume fit
 

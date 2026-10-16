@@ -28,6 +28,8 @@
 
   <nav id="nav">
     <button data-view="jobs" class="active">Jobs</button>
+    <button data-view="applied" id="nav-applied"
+            title="Every application you sent, and where it stands now">Applied</button>
     <button data-view="referrals" id="nav-referrals">Referrals</button>
     <button data-view="held" id="nav-held"
             title="Strong matches a filter in review mode kept out of the shortlist">Held back</button>
@@ -192,6 +194,58 @@
       </table>
     </details>
   </div>
+  </section>
+
+  <section id="view-applied" hidden>
+  <div class="card">
+    <div class="card-head">
+      <h2>Applied</h2>
+      <div class="card-head-tools">
+        <label for="aplrun">Run</label>
+        <select id="aplrun" title="Show the applications from one run, or from all of them"></select>
+        <label class="aplduelabel" title="Only the applications waiting on you for a follow-up">
+          <input type="checkbox" id="apldue"> Follow-up due only</label>
+        <span class="muted">Layout</span>
+        <div class="aplseg" role="group" aria-label="Layout">
+          <button type="button" id="apllayoutboard" aria-pressed="true">Columns</button>
+          <button type="button" id="apllayouttable" aria-pressed="false">Table</button>
+        </div>
+        <span id="aplinfo" class="muted"></span>
+      </div>
+    </div>
+    <div id="aplstages" class="aplstages"></div>
+    <div id="aplends" class="muted aplends"></div>
+  </div>
+  <div class="card" id="aplboardview">
+    <p id="aplboardempty" class="muted" hidden></p>
+    <div id="aplboard" class="aplboard"></div>
+  </div>
+  <div class="card" id="apltableview" hidden>
+    <div class="aplfilters">
+      <input id="aplsearch" type="search" placeholder="Search company or role" aria-label="Search company or role">
+      <select id="aplstagefilter" aria-label="Stage"></select>
+      <select id="aplsourcefilter" aria-label="Source"></select>
+    </div>
+    <div class="tablewrap">
+    <table id="apltable">
+      <thead>
+        <tr>
+          <th data-sort="company">Company</th>
+          <th data-sort="title">Role</th>
+          <th data-sort="stage">Stage</th>
+          <th data-sort="applied_at">Applied</th>
+          <th data-sort="days_since_applied">Days</th>
+          <th data-sort="source">Source</th>
+          <th data-sort="score">Score</th>
+          <th data-sort="follow_up">Follow up</th>
+          <th data-sort="last_update">Last update</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    </div>
+  </div>
+  <aside id="apldrawer" class="apldrawer" aria-label="Application details" hidden></aside>
   </section>
 
   <section id="view-referrals" hidden>
@@ -553,5 +607,6 @@
 <script src="/static/fit.js"></script>
 <script src="/static/profile.js"></script>
 <script src="/static/answers.js"></script>
+<script src="/static/applied.js"></script>
 </body>
 </html>

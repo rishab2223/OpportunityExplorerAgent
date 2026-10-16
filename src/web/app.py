@@ -82,6 +82,121 @@ def api_start_run(payload: dict = Body(default={})) -> dict:
     return {"stamp": stamp}
 
 
+# ------------------------------------------------------------- Applied page
+
+def _applied_or_404(call, *args):
+    from src import tracker
+
+    try:
+        return call(*args)
+    except tracker.NotApplied as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/applied")
+def api_applied() -> dict:
+    """Every application and where it stands (src/tracker.py)."""
+    from src import tracker
+
+    apps = tracker.applications()
+    return {"applications": apps, "summary": tracker.summary(apps),
+            "stages": list(tracker.STAGES), "ends": list(tracker.ENDS),
+            "kinds": list(tracker.MESSAGE_KINDS)}
+
+
+@app.post("/api/applied/warm")
+def api_applied_warm() -> dict:
+    """The Applied page opened: start the message model now, not at the
+    first Draft it."""
+    from src.web import outreach
+
+    return {"warming": outreach.warm()}
+
+
+@app.get("/api/applied/{job_id}")
+def api_applied_one(job_id: str) -> dict:
+    from src import tracker
+
+    return _applied_or_404(tracker.detail, job_id)
+
+
+@app.post("/api/applied/{job_id}/stage")
+def api_applied_stage(job_id: str, payload: dict = Body(...)) -> dict:
+    from src import tracker
+
+    _applied_or_404(tracker.set_stage, job_id, str(payload.get("stage") or ""), str(payload.get("note") or ""))
+    return tracker.detail(job_id)
+
+
+@app.post("/api/applied/{job_id}/notes")
+def api_applied_notes(job_id: str, payload: dict = Body(...)) -> dict:
+    from src import tracker
+
+    _applied_or_404(tracker.set_notes, job_id, str(payload.get("notes") or ""))
+    return {"ok": True}
+
+
+@app.post("/api/applied/{job_id}/contact")
+def api_applied_contact(job_id: str, payload: dict = Body(...)) -> dict:
+    from src import tracker
+
+    _applied_or_404(tracker.set_contact, job_id, *(str(payload.get(k) or "")
+                                                   for k in ("name", "role", "link", "relation")))
+    return tracker.detail(job_id)
+
+
+@app.post("/api/applied/{job_id}/messages/{kind}")
+def api_applied_message(job_id: str, kind: str, payload: dict = Body(...)) -> dict:
+    """Save the candidate's own edit of a draft."""
+    from src import tracker
+
+    _applied_or_404(tracker.save_message, job_id, kind, str(payload.get("text") or ""))
+    return {"ok": True}
+
+
+@app.post("/api/applied/{job_id}/messages/{kind}/draft")
+def api_applied_draft(job_id: str, kind: str) -> dict:
+    from src.web import outreach
+
+    try:
+        return _applied_or_404(outreach.draft, job_id, kind)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"the model could not write it: {exc}") from exc
+
+
+@app.post("/api/applied/{job_id}/messages/{kind}/chat")
+def api_applied_chat(job_id: str, kind: str, payload: dict = Body(...)) -> dict:
+    from src.web import outreach
+
+    try:
+        return _applied_or_404(outreach.chat, job_id, kind, str(payload.get("text") or ""),
+                               str(payload.get("draft") or ""), payload.get("history") or [])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"the model could not answer: {exc}") from exc
+
+
+@app.post("/api/applied/{job_id}/messages/{kind}/sent")
+def api_applied_sent(job_id: str, kind: str) -> dict:
+    from src import tracker
+
+    follow = _applied_or_404(tracker.mark_sent, job_id, kind)
+    return {"follow_up_at": follow, "detail": tracker.detail(job_id)}
+
+
+@app.get("/api/daily")
+def api_daily() -> dict:
+    """The once-a-day batch: when it runs, when it last did, what it found."""
+    from src import daily
+
+    return daily.status(run_options.effective_config(run_options.load_yaml_config()))
+
+
 @app.get("/api/run-options")
 def api_run_options() -> dict:
     """What the run settings popup shows: values, choices, limits."""

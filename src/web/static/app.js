@@ -1732,13 +1732,14 @@ async function resumeActiveApply() {
 
 // Profile is not a tab: it opens from the user menu, and no tab is marked
 // active while it is showing.
-const VIEWS = ["jobs", "referrals", "held", "fit", "answers", "profile"];
+const VIEWS = ["jobs", "applied", "referrals", "held", "fit", "answers", "profile"];
 
 function showView(name) {
   VIEWS.forEach((view) => { $("view-" + view).hidden = name !== view; });
   document.querySelectorAll("#nav button").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === name);
   });
+  if (name === "applied" && typeof loadApplied === "function") loadApplied();
   if (name === "profile" && typeof loadProfile === "function") loadProfile();
   if (name === "answers" && typeof loadAnswers === "function") loadAnswers();
   if (name === "held") loadHeldInsight();
