@@ -59,6 +59,10 @@ class ClaudeConfig(BaseModel):
     # current Sonnet.
     pick_model: str = "sonnet"
     pick_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    # Labelling a step's buttons (src/apply/buttons.py): once per step end,
+    # while you wait to review it, so speed matters most.
+    buttons_model: str = "sonnet"
+    buttons_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
 
 
 class HistoryConfig(BaseModel):

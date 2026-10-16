@@ -433,6 +433,17 @@ What happens:
 3. The resolver fills what it can, the model plans the rest, and the agent stops and asks in the chat pane for anything unknown: OTPs, captchas, consent and legal questions. Answer, or handle it in the browser yourself and type `done`. Type `skip` to leave a field alone, paste a URL to send the agent there, `abort` to stop.
 4. **The agent never clicks submit — you do.** When everything is filled it says so and waits; you review the form, click Submit in the browser yourself, and type `done`. This is enforced in code (a submit click raises), not just prompted.
 
+   **Which button is which.** Words alone cannot tell a step's Continue from the one that sends everything, or a job page's Apply from the Apply at the end of a form. So at the end of each step, when a Next-like button or a submit-type step button is on screen, one quick model call labels the page's buttons — *next*, *final*, *opens the form*, or *other* — looking at the page around them: a step counter ("Step 4 of 4"), the headings ("Review your application"), a declaration, how much of the form is filled. The log says what it decided: `[buttons] 'Continue' next; 'Back' other (1.8s)`. The model can only make a click **safer**:
+   - words that send an application — **Submit, Send, Complete, Finish** — stay yours whatever the model says;
+   - a button the model calls *final* is never clicked, even a plain Continue; you are told why and asked to click it;
+   - a submit-type step button (iCIMS's Continue, EPAM's Next) the model is sure is *next* is clicked like any Next, after you have reviewed the step;
+   - when the model is unsure, or the call fails, the old rules stand.
+   A plain Submit with nothing unclear beside it costs no call. Your review of every step is unchanged: the agent still stops at each filled step until you type `next` or click it yourself.
+
+   The call has its own model (`claude.buttons_model`, Sonnet at low effort): on ten saved pages with known answers it took 3.9 s typically and 9 s at most, got 7 right and was unsure — so changed nothing — on the other 3. Haiku was slower and called a single-page form's final Apply "next" at 0.95, so it is not used. To click a submit-type step button the model must be at least 0.85 sure, and never on what it reads as the last page or a page mentioning a review, declaration or signature.
+
+   **Add, Remove and Upload never send the form.** A `<button>` with no type inside a form submits it when clicked — "Add another" written that way could have sent an application. The page reader now records whether a button would send its form, and when the agent clicks one that is not the step's Next (Add, Remove, an upload tile, a Yes/No toggle) the form's submission is held off for the click: the page's own Add still adds and Upload still opens its picker. Every Enter the agent presses in a typeahead goes through the same hold.
+
 ### The queue
 
 Tick the box on any number of shortlist rows and press **Start queue**: the agent works down them in order, opening the next as soon as the previous one is finished with.

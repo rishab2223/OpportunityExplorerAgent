@@ -13,8 +13,8 @@ from urllib.parse import urljoin, urlparse
 from pydantic import BaseModel, Field
 
 from src import answers, dumps
-from src.apply import (browser, catalogue, cover_letter, matching, profile, resolver, salary,
-                       session, shots, sites)
+from src.apply import (browser, buttons, catalogue, cover_letter, matching, profile, resolver,
+                       salary, session, shots, sites)
 from src.apply.session import (TERMINAL_STATUSES, Aborted, ApplySession, Parked,
                                Submitted)
 from src.apply.sites import indeed, linkedin
@@ -921,8 +921,12 @@ def run_session(
         kept = {"claude_session": claude} if claude is not None else {}
         invoke = make_invoker(cfg, env, "apply", **kept)
         pick_invoke = make_invoker(cfg, env, "pick", **kept)
+        # The end-of-step button labels: their own quick model (low effort),
+        # since you are waiting to review the step while it answers.
+        buttons_invoke = make_invoker(cfg, env, "buttons", **kept)
         for invoker, system, schema in ((invoke, SYSTEM, ApplyPlan),
-                                        (pick_invoke, matching.PICK_SYSTEM, matching.OptionPicks)):
+                                        (pick_invoke, matching.PICK_SYSTEM, matching.OptionPicks),
+                                        (buttons_invoke, buttons.SYSTEM, buttons.ButtonKinds)):
             if hasattr(invoker, "warm"):
                 invoker.warm(system, schema)
         sess.log(f"Model: {describe_provider(cfg, 'apply')}"
@@ -1547,6 +1551,37 @@ def run_session(
                 if _is_section_add(f) and _field_key(f, _field_label(f)) not in handled
             ]
 
+            final_by_model = False
+            # Only where a label could change what happens: a Next that may be
+            # the final send, or a submit-type step button that may be a Next.
+            # A plain Submit stays the candidate's whatever is said about it.
+            # A plain Next or Review never sends anything: no call for it.
+            unclear_end = ((advance_field is not None and not buttons.clearly_a_step(advance_field)) or (
+                advance_field is None and submit_field is not None
+                and not _opens_the_application(submit_field, history)
+                and _is_step_only(_field_label(submit_field))))
+            if not unresolved and not pending_adds and unclear_end:
+                # The step is done: which button moves on, and which one would
+                # send the application? Asked once per page (_label_buttons).
+                verdicts = _label_buttons(page, fields, sess, buttons_invoke, history)
+                if advance_field is not None and buttons.kind_of(advance_field, verdicts) == "final":
+                    # A Continue that sends the application is the candidate's
+                    # to click, like any Submit.
+                    sess.log(f"'{_field_label(advance_field)}' looks like it sends the application "
+                             f"({_verdict_reason(advance_field, verdicts)}): I will not click it.")
+                    submit_field, advance_field = advance_field, None
+                    final_by_model = True
+                elif (advance_field is None and submit_field is not None
+                      and not _opens_the_application(submit_field, history)
+                      and _is_step_only(_field_label(submit_field))
+                      and buttons.kind_of(submit_field, verdicts) == "next"):
+                    # iCIMS's Continue, EPAM's Next: submit-type buttons that
+                    # move to the next step. Clicked like any Next - after you
+                    # have reviewed the step - once the page shows it is not
+                    # the end.
+                    sess.log(f"'{_field_label(submit_field)}' moves to the next step "
+                             f"({_verdict_reason(submit_field, verdicts)}).")
+                    advance_field, submit_field = submit_field, None
             if not unresolved and not pending_adds:
                 if advance_field is not None:
                     key = _field_key(advance_field, _field_label(advance_field))
@@ -1722,7 +1757,8 @@ def run_session(
                     # Continue): still never clicked, but it is not the end of
                     # the application, and "done" typed at it recorded step 1
                     # of 7 as applied.
-                    step_only = not opener and _is_step_only(_field_label(submit_field))
+                    step_only = (not opener and not final_by_model
+                                 and _is_step_only(_field_label(submit_field)))
                     if opener:
                         # Nothing filled, nothing clicked: this is the job's
                         # page, and its button only opens the form. Still
@@ -3217,8 +3253,11 @@ def _click_upload_tile(page, field, attach, sess, wants: str, label: str, path: 
         pass
     dialogs = _visible_dialogs(page)
     try:
-        browser.click(
+        # An upload button written as <button> inside the form would also
+        # send it; the click is held so it only opens the picker.
+        _click_holding_submit(
             browser.locate(page, field["id"], str(field.get("elid") or "")),
+            field, sess,
             timeout=5000,
             fallback_timeout=2000,
         )
@@ -4094,6 +4133,60 @@ SUBMIT_GUARD_JS = """
   return !!window.__oeaSubmitTried;
 }
 """
+
+
+# The same hold for a CLICK on a button that is not the step's Next: "Add
+# another", "Remove", "Upload", a Yes/No toggle written as a <button> in a
+# form. A <button> with no type submits its form, so a click on one of these
+# could send the application. Only the form's submission is stopped - the
+# click itself reaches the page, so Add still adds and Upload still opens its
+# picker. Kept a moment past the click, for a handler that submits a tick
+# later. A page script calling form.submit() fires no event and cannot be
+# held this way; nothing here claims it can.
+SUBMIT_EVENT_GUARD_JS = """
+(el, on) => {
+  if (on) {
+    window.__oeaHeld = false;
+    window.__oeaHold = (e) => { e.preventDefault(); e.stopImmediatePropagation(); window.__oeaHeld = true; };
+    window.addEventListener('submit', window.__oeaHold, true);
+    return true;
+  }
+  if (window.__oeaHold) window.removeEventListener('submit', window.__oeaHold, true);
+  window.__oeaHold = null;
+  return !!window.__oeaHeld;
+}
+"""
+HOLD_AFTER_CLICK_MS = 300
+
+
+def _click_holding_submit(locator, field: dict[str, Any], sess: ApplySession | None,
+                          timeout: int = 15000, **click_options: Any) -> str:
+    """Click a button; if it would send its form (field['submits']) and it is
+    not the step's Next, hold the form's submission off while it acts.
+    Returns what browser.click returns."""
+    if not field.get("submits") or _is_advance_button(field):
+        return browser.click(locator, timeout=timeout, **click_options)
+    try:
+        held = bool(locator.evaluate(SUBMIT_EVENT_GUARD_JS, True, timeout=OPTION_READ_MS))
+    except Exception:
+        held = False
+    tried = False
+    try:
+        how = browser.click(locator, timeout=timeout, **click_options)
+    finally:
+        if held:
+            try:
+                locator.page.wait_for_timeout(HOLD_AFTER_CLICK_MS)
+            except Exception:
+                pass
+            try:
+                tried = bool(locator.evaluate(SUBMIT_EVENT_GUARD_JS, False, timeout=OPTION_READ_MS))
+            except Exception:
+                # The click took the page elsewhere: the guard went with it.
+                tried = False
+    if tried and sess is not None:
+        sess.log(f"'{_field_label(field)}' tried to send the form as well; that was held off.")
+    return how
 
 
 def _press_enter(locator) -> None:
@@ -5110,7 +5203,7 @@ def _run_action(
         # Sent, and marked as looked at, by _pictures_for_call.
         _add_look(sess, question, name, f"'{name}' (field id {field['id']}), as you asked to see it", png)
         return "refused"
-    if action.action == "click" and _is_submit(field):
+    if action.action == "click" and _never_click(field, sess):
         notes.append(
             f"'{_field_label(field)}' is the submit button; the candidate clicks it, not you"
         )
@@ -5473,6 +5566,70 @@ def _is_step_only(label: str) -> bool:
     return _ADVANCE_RE.match(text) is not None and not re.search(r"\bsubmit\b", text)
 
 
+def _label_buttons(page, fields: list[dict[str, Any]], sess: ApplySession, invoke,
+                   history: list[str]) -> dict[int, "buttons.ButtonVerdict"]:
+    """The model's label for each button on this page (buttons.py), by field
+    id. One call per page: the answer is kept against the page's questions
+    and buttons, so a reply typed at the prompt does not ask again. Nothing
+    (an empty dict) when there is no model or the call fails - the code's
+    own rules then decide, exactly as before."""
+    if invoke is None:
+        return {}
+    found = buttons.candidates(fields)
+    if not found:
+        return {}
+    cache: dict[str, dict[int, Any]] = sess.__dict__.setdefault("button_cache", {})
+    sig = _safe_url(page) + "|" + "|".join(
+        f"{f.get('tag')}:{f.get('type')}:{f.get('label') or f.get('text')}" for f in fields)
+    if sig in cache:
+        return cache[sig]
+    context = buttons.read_context(browser.target(page))
+    steps_done = sum(1 for h in history if h.startswith("clicked "))
+    started = time.monotonic()
+    try:
+        result = _while_model_thinks(
+            sess, lambda: buttons.classify(invoke, fields, context, steps_done, _safe_url(page)))
+    except (Aborted, Parked):
+        raise
+    except Exception as exc:
+        sess.log(f"Could not label this page's buttons ({_short(exc)}); using the usual rules.")
+        cache[sig] = {}
+        return {}
+    sess.button_calls = getattr(sess, "button_calls", 0) + 1
+    verdicts = {v.id: v for v in (result.buttons if result else [])}
+    cache[sig] = verdicts
+    # A button the model calls final stays unclicked for the session, even
+    # when a later plan asks for it.
+    finals: set[str] = sess.__dict__.setdefault("final_buttons", set())
+    finals.update(_field_key(f, _field_label(f)) for f in found
+                  if buttons.kind_of(f, verdicts) == "final")
+    if verdicts:
+        shown = "; ".join(
+            f"'{buttons.words(f)}' {buttons.kind_of(f, verdicts) or 'unsure'}"
+            for f in found if f.get("id") in verdicts)
+        sess.log(f"[buttons] {shown}"
+                 + (" - this looks like the last page" if result and result.last_page else "")
+                 + f" ({time.monotonic() - started:.1f}s)")
+    return verdicts
+
+
+def _never_click(field: dict[str, Any], sess: ApplySession | None = None) -> bool:
+    """The agent's hands stay off it: a submit button, words that send an
+    application (Submit, Send, Complete, Finish), or a button the model
+    named final on this session's pages. The final click is the candidate's."""
+    if _is_submit(field) or (buttons.is_button(field) and buttons.plainly_final(field)):
+        return True
+    finals = getattr(sess, "final_buttons", None) if sess is not None else None
+    return bool(finals) and _field_key(field, _field_label(field)) in finals
+
+
+def _verdict_reason(field: dict[str, Any], verdicts: dict[int, Any]) -> str:
+    verdict = verdicts.get(field.get("id"))
+    if buttons.plainly_final(field):
+        return "its words send the application"
+    return _brief(verdict.reason, 90) if verdict is not None and verdict.reason else "the page says so"
+
+
 def _find_advance(fields: list[dict[str, Any]], handled: set[str]) -> dict[str, Any] | None:
     """The wizard's next/continue/review button, if any - never a submit."""
     for field in fields:
@@ -5815,7 +5972,7 @@ def _execute(
     sess: ApplySession,
     value: str | None = None,
 ) -> None:
-    if action.action == "click" and _is_submit(field):
+    if action.action == "click" and _never_click(field, sess):
         raise SubmitBlocked(_field_label(field))
     if action.action in ("fill", "type") and _is_site_search(field):
         # An application is never advanced by searching the site. On an iCIMS
@@ -5843,7 +6000,7 @@ def _execute(
             pass
 
     if action.action == "click":
-        how = browser.click(locator, timeout=15000)
+        how = _click_holding_submit(locator, field, sess, timeout=15000)
         # Name the rung. Anything but a plain click means the normal one could
         # not land, which is worth seeing in the transcript when the form then
         # behaves oddly - and "(direct)" in particular fires only 'click', so
@@ -6860,7 +7017,9 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
                 if _enter_may_submit(locator):
                     break
                 try:
-                    locator.press("Enter")
+                    # Held like every other Enter: a page with no <form>
+                    # (Workday) can still turn a keypress into a send.
+                    _press_enter(locator)
                 except Exception:
                     pass
         if not _real_suggestions(texts):
@@ -6873,7 +7032,7 @@ def _commit_typeahead(page, locator, value: str, label: str, prefix: str, sess,
         if index < 0 and not pressed_enter and not _enter_may_submit(locator):
             # The list may be the unfiltered catalogue; ask for the search.
             try:
-                locator.press("Enter")
+                _press_enter(locator)
                 for _ in range(8):
                     page.wait_for_timeout(400)
                     options, texts = _visible_options(page, locator)
@@ -8973,7 +9132,8 @@ def _remove_excluded_entries(page, fields, handled, sess) -> bool:
         handled.add(f"__removed__:{project}:{tries}")
         shape = browser.page_shape(page)
         try:
-            browser.click(browser.locate(page, button["id"], str(button.get("elid") or "")), timeout=10000)
+            _click_holding_submit(browser.locate(page, button["id"], str(button.get("elid") or "")),
+                                  button, sess, timeout=10000)
         except Exception as exc:
             sess.log(f"Could not remove the '{project}' work-experience entry: {_short(exc)}")
             handled.add(key)
@@ -9066,7 +9226,8 @@ def _open_profile_sections(page, fields, handled, sess) -> bool:
         handled.add(f"__added__:{what}:{clicks}")
         try:
             shape = browser.page_shape(page)
-            browser.click(browser.locate(page, field["id"], str(field.get("elid") or "")), timeout=10000)
+            _click_holding_submit(browser.locate(page, field["id"], str(field.get("elid") or "")),
+                                  field, sess, timeout=10000)
             sess.log(f"Clicked {_field_label(field)} ({what}: entry {present + 1} of {needed})")
             # Until the entry is there: SuccessFactors draws one in over a
             # second, and the next pass, finding none, clicked Add again.
@@ -9098,7 +9259,8 @@ def _expand_all_sections(page, fields, handled, sess) -> bool:
         handled.update((key, "__expanded__"))
         try:
             shape = browser.page_shape(page)
-            browser.click(browser.locate(page, field["id"], str(field.get("elid") or "")), timeout=5000)
+            _click_holding_submit(browser.locate(page, field["id"], str(field.get("elid") or "")),
+                                  field, sess, timeout=5000)
         except Exception as exc:
             sess.log(f"Could not click {_field_label(field)}: {_short(exc)}")
             return False

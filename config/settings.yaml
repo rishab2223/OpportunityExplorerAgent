@@ -68,6 +68,10 @@ claude:
   # "sonnet" is Claude Code's alias for the current Sonnet.
   pick_model: sonnet
   pick_effort: medium
+  # At the end of each step, one call labels the buttons (next / final / opens
+  # / other) while you wait to review it. Sonnet at low effort: ~4 s.
+  buttons_model: sonnet
+  buttons_effort: low
 
 openai:
   # gpt-5.6-luna (cheaper) | gpt-5.6-sol (stronger, better structured LaTeX) | gpt-5.6-terra

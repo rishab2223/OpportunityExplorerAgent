@@ -16,7 +16,7 @@ from src.config import AppConfig, EnvSettings
 
 T = TypeVar("T", bound=BaseModel)
 Invoker = Callable[[str, str, type[T]], T]
-Purpose = Literal["enrich", "apply", "pick"]
+Purpose = Literal["enrich", "apply", "pick", "buttons"]
 
 
 def _settings(cfg: AppConfig, purpose: Purpose) -> tuple[str, str, str, float]:
@@ -30,6 +30,8 @@ def _settings(cfg: AppConfig, purpose: Purpose) -> tuple[str, str, str, float]:
     if provider == "claude":
         if purpose == "pick":
             return provider, cfg.claude.pick_model, cfg.claude.pick_effort, 0.0
+        if purpose == "buttons":
+            return provider, cfg.claude.buttons_model, cfg.claude.buttons_effort, 0.0
         return provider, cfg.claude.apply_model, cfg.claude.apply_effort, 0.0
     return provider, cfg.openai.apply_model, "", 0.0
 

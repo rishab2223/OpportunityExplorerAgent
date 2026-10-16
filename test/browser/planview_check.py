@@ -111,8 +111,13 @@ print("\n== part 2: a whole session ==")
 CALLS: list[str] = []
 
 
+BUTTON_CALLS: list[str] = []
+
+
 def model(system, user, schema, images=None):
-    CALLS.append(user)
+    # The end-of-step button labels (buttons.py) are counted on their own:
+    # answered with nothing, so iCIMS's submit-type Next stays the candidate's.
+    (BUTTON_CALLS if schema.__name__ == "ButtonKinds" else CALLS).append(user)
     return schema()
 
 
@@ -135,6 +140,8 @@ check("the candidate is pointed at Next, a submit-type button, once",
       "'Next'" in asked and "Submit a Ticket" not in asked and "#4" not in asked and len(sess.asked) == 1,
       sess.asked)
 check("no model call was needed", CALLS == [], len(CALLS))
+check("  only the one button call, about the submit-type Next", len(BUTTON_CALLS) == 1
+      and "'Next'" in BUTTON_CALLS[0] and "sends its form when clicked" in BUTTON_CALLS[0], len(BUTTON_CALLS))
 
 print("\n-- from the job's page, framed --")
 CALLS.clear()

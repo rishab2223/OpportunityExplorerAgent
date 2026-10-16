@@ -18,6 +18,7 @@ history DB. Nothing real is opened, filled, stored or submitted.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 import time
@@ -71,10 +72,30 @@ DEFAULT_PDF = SCRATCH / "default_resume.pdf"
 DEFAULT_PDF.write_bytes(b"%PDF-1.4 default resume\n%%EOF\n")
 
 LLM_CALLS: list[str] = []
+# The end-of-step button call (src/apply/buttons.py) is counted apart from
+# the plan calls the scenarios were written against. BUTTON_ANSWER, when a
+# scenario sets it, maps a button's words to (kind, confidence); unset, the
+# call names nothing and the code's own rules decide, as before the call.
+BUTTON_CALLS: list[str] = []
+BUTTON_ANSWER: dict[str, tuple[str, float]] = {}
 
 
-def fake_invoke(system: str, user: str, schema):
+def _fake_buttons(user: str, schema):
+    BUTTON_CALLS.append(user)
+    verdicts = []
+    for line in user.splitlines():
+        found = re.match(r"- id (\d+), '([^']*)'", line)
+        if found and found.group(2).lower() in BUTTON_ANSWER:
+            kind, confidence = BUTTON_ANSWER[found.group(2).lower()]
+            verdicts.append({"id": int(found.group(1)), "kind": kind,
+                             "confidence": confidence, "reason": "scripted"})
+    return schema.model_validate({"buttons": verdicts})
+
+
+def fake_invoke(system: str, user: str, schema, images=None):
     """Deterministic stand-in for the model."""
+    if schema.__name__ == "ButtonKinds":
+        return _fake_buttons(user, schema)
     LLM_CALLS.append(system[:24])
     if schema.__name__ == "CoverLetter":
         if "revise" in system.lower():

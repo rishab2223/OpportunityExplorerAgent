@@ -32,6 +32,10 @@ calls = []
 
 
 def _no_model(system, user, schema):
+    # The end-of-step button labels (buttons.py) are not the form planner
+    # this check means: answered with nothing, so the usual rules decide.
+    if schema.__name__ == "ButtonKinds":
+        return schema()
     calls.append(user)
     raise RuntimeError("the model was called")
 

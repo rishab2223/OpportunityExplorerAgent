@@ -74,6 +74,7 @@ GROUPS: dict[str, list[str]] = {
         "sent_no_model_repro.py", "sent_dialog_repro.py", "prefilled_sent_repro.py",
         "submitted_at_any_prompt.py", "submitted_tail_check.py",
         "boilerplate_repro.py", "llm_at_submit_repro.py",
+        "buttons_check.py",           # which button moves on, which one sends
     ],
     "queue": ["queue_e2e.py"],
     "ui": ["ui_check.py", "queue_ui_check.py", "chat_ui_check.py",
@@ -107,6 +108,7 @@ TOUCHES: list[tuple[str, tuple[str, ...]]] = [
     ("src/apply/sites/indeed.py", ("indeed",)),
     ("src/apply/cover_letter.py", ("attach", "apply")),
     ("src/apply/session.py", ("queue", "apply", "submit")),
+    ("src/apply/buttons.py", ("submit", "apply", "sites")),
     ("src/apply/worker.py", ("apply", "sites", "attach", "submit", "queue", "indeed")),
     ("src/apply/browser.py", ("apply", "sites", "attach")),
     ("src/apply/resolver.py", ("apply", "sites")),

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Buttons that send a form</title>
+<style>body { font-family: sans-serif; margin: 24px; } label { display: block; margin: 8px 0; }</style>
+</head>
+<body>
+<!--
+  #add      a form whose "Add another" is <button> with no type: it adds an
+            entry AND (by default) submits the form
+  #step     an iCIMS-style step: <input type=submit value="Continue"> moves
+            to step 2, whose button is "Submit application"
+  #last     a review page whose Continue is type=button and sends the
+            application from its click handler
+  The form's own submit handler marks body[data-sent] - which only happens
+  when nothing held the submission off.
+-->
+<div id="root"></div>
+<script>
+const mode = (location.hash || '#add').slice(1);
+const root = document.getElementById('root');
+const sent = () => { document.body.dataset.sent = 'yes'; };
+
+if (mode === 'add') {
+  root.innerHTML = `
+    <h1>Work experience</h1>
+    <form id="f">
+      <div id="entries"><label>Job title 1 <input name="title1" value="Engineer"></label></div>
+      <button id="add">Add another</button>
+      <button type="button" id="plain">Just a button</button>
+    </form>
+    <button id="outside">Outside any form</button>`;
+  let n = 1;
+  document.getElementById('add').addEventListener('click', () => {
+    n += 1;
+    document.getElementById('entries').insertAdjacentHTML('beforeend',
+      `<label>Job title ${n} <input name="title${n}"></label>`);
+  });
+  document.getElementById('f').addEventListener('submit', (e) => { e.preventDefault(); sent(); });
+}
+
+if (mode === 'step') {
+  root.innerHTML = `
+    <h1>Step 1 of 3: Contact</h1>
+    <form id="f">
+      <label>Email <input type="email" name="email" required></label>
+      <input type="submit" value="Continue">
+    </form>`;
+  document.getElementById('f').addEventListener('submit', (e) => {
+    e.preventDefault();
+    root.innerHTML = `
+      <h1>Step 3 of 3: Review your application</h1>
+      <form id="f2"><p>Everything looks good.</p>
+        <button type="submit">Submit application</button></form>`;
+    document.getElementById('f2').addEventListener('submit', (ev) => { ev.preventDefault(); sent(); });
+  });
+}
+
+if (mode === 'last') {
+  root.innerHTML = `
+    <h1>Review your application</h1>
+    <p>Step 4 of 4. By continuing you certify that the information is true.</p>
+    <form id="f">
+      <label>Email <input type="email" name="email" required></label>
+      <button type="button" id="go">Continue</button>
+    </form>`;
+  document.getElementById('go').addEventListener('click', sent);
+}
+</script>
+</body>
+</html>

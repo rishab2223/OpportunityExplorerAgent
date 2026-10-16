@@ -761,6 +761,13 @@ SNAPSHOT_JS = """
       // unrelated form - a footer "Contact us" - can be told apart from the
       // application (worker._one_form).
       form: el.form ? Array.prototype.indexOf.call(document.forms, el.form) : -1,
+      // Would clicking it send its form? `type` above is the attribute, and a
+      // <button> with none submits by default: "Add another" written as
+      // <button>Add another</button> inside a form read as type "" and was
+      // clicked as harmless (overnight review, Oct 2026). el.type is what the
+      // browser will actually do.
+      submits: !!el.form && ((el.tagName === 'BUTTON' && el.type === 'submit') ||
+        (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'image'))),
       footer: !!el.closest('footer, [role=contentinfo]'),
       elid: el.id || '',  // Greenhouse names its file inputs by id ("resume", "cover_letter")
       required: el.required === true || el.getAttribute('aria-required') === 'true',
