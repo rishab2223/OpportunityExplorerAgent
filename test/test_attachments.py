@@ -160,6 +160,30 @@ class ResumeChoiceTests(unittest.TestCase):
         sess = ScriptedSession(["skip"])
         self.assertEqual(self._attach(sess).resume(), "")
 
+    def test_a_skip_holds_for_the_next_upload_box(self) -> None:
+        """CBTS (Oct 2026): 'skip', then the same question 0.1 s later."""
+        sess = ScriptedSession(["skip"])
+        attach = self._attach(sess)
+        self.assertEqual(attach.resume(), "")
+        self.assertEqual(attach.resume(), "")
+        self.assertEqual(len(sess.choices), 1)
+
+    def test_attach_resume_asks_again_after_a_skip(self) -> None:
+        from src.apply import worker
+
+        sess = ScriptedSession(["skip", "default"])
+        attach = self._attach(sess)
+        attach.resume()
+
+        class Page:                      # the file chooser is armed on it
+            def on(self, *_a, **_k):
+                pass
+
+        with unittest.mock.patch.object(worker, "_arm_file_chooser"):
+            worker._manual_attachment("attach resume", attach, Page(), sess, [])
+        self.assertEqual(attach.resume_path, str(self.default))
+        self.assertEqual(len(sess.choices), 2)
+
     def test_choice_is_remembered_for_later_fields(self) -> None:
         sess = ScriptedSession(["default"])
         attach = self._attach(sess)

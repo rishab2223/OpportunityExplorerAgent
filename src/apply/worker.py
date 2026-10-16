@@ -2255,6 +2255,10 @@ class Attachments:
         self._resume_options = resume_options
         self.out_dir = Path(out_dir) if out_dir else Path(".")
         self.resume_path = ""     # remembered: a second upload field reuses it
+        # "skip" at the resume question holds for the session: CBTS (Oct
+        # 2026) asked again 0.1 s later for the page's next upload box. The
+        # Attach resume button clears it and asks.
+        self.resume_skipped = False
         # Remembered across fields and revisions - and across sessions: a
         # letter drafted for this job before (the session aborted, say) is
         # reopened for review instead of drafted again.
@@ -2334,9 +2338,12 @@ class Attachments:
 
     # -- resume ---------------------------------------------------------
     def resume(self) -> str:
-        """The PDF path to upload, or '' when the user skipped."""
+        """The PDF path to upload, or '' when the user skipped (for the rest
+        of the session, until they press Attach resume)."""
         if self.resume_path:
             return self.resume_path
+        if self.resume_skipped:
+            return ""
         if self._resume_options is None:
             self.sess.log("No resume options available for this session.")
             return ""
@@ -2361,7 +2368,9 @@ class Attachments:
             )
             lowered = reply.strip().lower()
             if lowered in SKIP_WORDS or lowered == "skip":
-                self.sess.log("Resume upload skipped; attach it yourself if needed.")
+                self.sess.log("Resume upload skipped for this application; attach it yourself, "
+                              "or press Attach resume if you change your mind.")
+                self.resume_skipped = True
                 return ""
             if lowered == "default":
                 path = default.get("path", "")
@@ -3419,6 +3428,8 @@ def _manual_attachment(reply: str, attach, page, sess, notes) -> bool:
     the buttons) for forms where detection missed the field."""
     lowered = (reply or "").strip().lower()
     if lowered in RESUME_COMMANDS:
+        # Asked for by the candidate: a skip earlier in the session is no answer.
+        attach.resume_skipped = False
         path = attach.resume()
         if path:
             _arm_file_chooser(page, attach, sess)
@@ -3728,6 +3739,15 @@ def _look_at(page, field: dict[str, Any], open_list: bool = False, typed: str = 
             _dismiss(page, locator, toggle=_is_listbox_button(field))
             return None
     rows, texts = _wait_for_options(page, locator, timeout=500 if typed else 800)
+    if typed and not _real_suggestions(texts):
+        # The answer matched nothing: a picture of "No match found." under it
+        # shows the model nothing to choose from (CBTS, Oct 2026, three
+        # times). The whole list, with the box cleared, is what helps.
+        try:
+            locator.fill("", timeout=2000)
+        except Exception:
+            pass
+        rows, texts = _wait_for_options(page, locator, timeout=800)
     if rows_out is not None:
         rows_out.extend(t for t in texts if t)
     parts = [locator]
@@ -4350,10 +4370,14 @@ def _sweep(
             if where:
                 resolved = (where, "profile")
         corrected_from = ""
-        if resolved is None and key not in handled:
+        if resolved is None and key not in handled and key not in (holder or {}).get("wrote", ()):
             # What the site pre-filled from its own reading of the CV, where
             # the profile says otherwise (resolver.CORRECTABLE). Once per box:
             # it is then handled, so a value the candidate puts back stands.
+            # Never what this session wrote: Oolio's "What is your Notice
+            # Period? Option (1) -- 90 Days ... (7) - Immediate Joiner" (Oct
+            # 2026) took the model's 7, and the next sweep set out to
+            # "correct" it to Immediate Joiner as if the site had put it there.
             fix = resolver.correction(field)
             if fix is not None:
                 resolved = (fix[0], "profile")
@@ -5483,11 +5507,17 @@ def _run_action(
                 handled.add(key)
             if done == "executed":
                 _remember_answered(holder, field, label, answer)
+                if key and holder is not None:
+                    holder.setdefault("wrote", set()).add(key)
             return done
         notes.append(f"about '{label or question}': {answer}")
         return "asked"
 
-    return _guarded_execute(page, action, field, pdf_path, sess, history, notes)
+    done = _guarded_execute(page, action, field, pdf_path, sess, history, notes)
+    if done == "executed" and key and holder is not None and action.action in ("fill", "select", "type"):
+        # Ours, not the site's: see _sweep's correction.
+        holder.setdefault("wrote", set()).add(key)
+    return done
 
 
 def _guarded_execute(
@@ -7036,7 +7066,9 @@ def _same_number(shown: str, typed: str) -> bool:
 
 # Rows a suggestion list shows while it is still searching, never choices.
 _PLACEHOLDER_ROW_RE = re.compile(
-    r"^\s*(no items?|no results?|no matches|no options?|loading|searching|type to search)\b",
+    # "No match found." (CBTS, Oct 2026) was read as the list's one option.
+    r"^\s*(no items?|no results?|no match(es|ing)?|nothing (was )?found|no data|no records?|"
+    r"no options?|loading|searching|type to search)\b",
     re.IGNORECASE
 )
 
@@ -8450,6 +8482,32 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
             return "picked"
     fixed = _fixed_choice(opening)
     visible, shown = _type_to_filter(page, locator, value, opening, sess, label, prefix, fixed=fixed)
+    if not _real_suggestions(opening) and not _real_suggestions(shown):
+        # Nothing read before typing, and the value matched nothing - a list
+        # that opens only once it is focused or typed at. CBTS's notice period
+        # (Oct 2026) showed "No match found." under the typed answer, was
+        # reported as "its list never opened", and its options were never
+        # seen by anyone. With the box cleared, the whole list is what shows.
+        try:
+            locator.fill("", timeout=3000)
+        except Exception:
+            pass
+        full_rows, full = _wait_for_options(page, locator)
+        if not _real_suggestions(full) and _open_via_control(locator):
+            full_rows, full = _wait_for_options(page, locator)
+        if _real_suggestions(full):
+            opening_rows, opening = full_rows, full
+            sess.log(f"{prefix}{_brief(label, LOG_LABEL)}: '{_brief(value, 30)}' matched none of "
+                     f"its options; read the whole list ({len(full)} options) with the box cleared.")
+        else:
+            # Nothing readable either way (rows drawn without text, Infor's
+            # #drawn): the box goes back to the typed answer, so the last
+            # resort below works on the list that answer filtered.
+            try:
+                locator.fill(value, timeout=3000)
+            except Exception:
+                pass
+            visible, shown = _wait_for_options(page, locator)
     index = _choose_option(shown, value, prefer)
     if index < 0 and _real_suggestions(shown):
         # A list still showing rows, worded another way: "Available now" for
@@ -8579,7 +8637,9 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
             else:
                 sess.log(f"{prefix}Selected '{shown[index]}' for {_brief(label, LOG_LABEL)} (dropdown)")
             return "picked"
-    if len(shown) > 1 or narrowed_list or (opening and not shown):
+    # "No match found." is not an option: a list showing only that has
+    # emptied as surely as one showing nothing.
+    if len(shown) > 1 or narrowed_list or (_real_suggestions(opening) and not _real_suggestions(shown)):
         # Enter takes whatever the widget has highlighted, so it is never the
         # way out of a narrowed list: one wrong row left standing would be
         # committed as the answer. Nor out of a list that HAD rows and now has

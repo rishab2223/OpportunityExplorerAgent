@@ -64,11 +64,26 @@ def _is_total_experience(text: str) -> bool:
     return all(word in _TOTAL_EXPERIENCE_WORDS for word in words)
 
 
+# A question about notice that is not asking for the notice period: the last
+# working day, a date in a set shape, or what to enter when it does not apply.
+# "If you are serving notice period or your last working day is completed,
+# please share the details (... enter as 19112026, if not serving enter "0")"
+# (Oolio, Oct 2026) took the saved notice period, "join immediately", where
+# the model had read it right and answered 0. Over normalized text (no
+# punctuation); the profile's notice rule in resolver.py uses it too.
+NOT_NOTICE_PERIOD = (
+    r"\b(last|final) working (day|date)\b|\blwd\b|\breliev(ing|al) date\b"
+    r"|\bdate of (leaving|relieving|resignation)\b|\benter (it |the date )?as\b"
+    r"|\bif (not|none|no)\b.{0,40}\benter\b|\bdd ?mm ?yy(yy)?\b"
+)
+_NOT_NOTICE_PERIOD_RE = re.compile(NOT_NOTICE_PERIOD)
+
 # Curated topics: slug -> a pattern over the normalized question text, or a
 # predicate taking that text. Order matters only for readability; keys are
 # checked in definition order.
 TOPICS: dict[str, Any] = {
-    "notice_period": re.compile(r"\bnotice\b"),
+    "notice_period": lambda text: bool(
+        re.search(r"\bnotice\b", text) and not _NOT_NOTICE_PERIOD_RE.search(text)),
     # The abbreviations are how Indian forms label these: ECTC, CCTC, Exp CTC.
     # Without them a box labelled just "ECTC" was not an expected-pay box at
     # all, so the salary estimator - which quotes a band for the role and

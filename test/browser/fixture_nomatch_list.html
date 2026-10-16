@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>No match found</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  .box { position: relative; width: 420px; }
+  .box input { width: 100%; padding: 8px; }
+  .list { position: absolute; left: 0; right: 0; top: 40px; background: #fff; border: 1px solid #ccc; }
+  .list div { padding: 6px 10px; }
+</style></head>
+<body>
+<!-- CBTS's notice-period dropdown (Oct 2026), as far as its pictures show:
+     a search box whose list shows nothing until typed at, filters on what is
+     typed, and says "No match found." when nothing fits. -->
+<form>
+  <label for="notice">How much notice must you provide your current employer before leaving?</label>
+  <div class="box">
+    <input id="notice" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="notice-list"
+           autocomplete="off" placeholder="Select">
+    <div id="notice-list" class="list" role="listbox" hidden></div>
+  </div>
+</form>
+<script>
+const OPTIONS = ["Immediately", "Up to 15 days", "Up to 30 days", "Up to 60 days", "More than 60 days"];
+const input = document.getElementById('notice');
+const list = document.getElementById('notice-list');
+function draw() {
+  const q = input.value.trim().toLowerCase();
+  const hits = OPTIONS.filter(o => o.toLowerCase().includes(q));
+  list.innerHTML = hits.length
+    ? hits.map(o => `<div role="option" data-v="${o}">${o}</div>`).join('')
+    : '<div class="empty">No match found.</div>';
+  list.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+}
+input.addEventListener('input', draw);    // opens only once typed at
+list.addEventListener('mousedown', (e) => {
+  const row = e.target.closest('[role=option]');
+  if (!row) return;
+  e.preventDefault();
+  input.value = row.dataset.v;
+  document.body.dataset.chosen = row.dataset.v;
+  list.hidden = true;
+  input.setAttribute('aria-expanded', 'false');
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { list.hidden = true; } });
+</script>
+</body>
+</html>

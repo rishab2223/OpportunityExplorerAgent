@@ -1130,6 +1130,37 @@ class RefillTests(TempDbTestCase):
                           attempts, {}, "", Sess(), written=written)
         self.assertEqual(calls, [])
 
+    def test_what_this_session_wrote_is_never_corrected_as_the_sites(self) -> None:
+        # Oolio (Oct 2026): the model typed 7 ("(7) - Immediate Joiner") into
+        # a numbered notice-period box, and the next sweep set out to
+        # "correct" it to the profile's Immediate Joiner as if the site had
+        # pre-filled it.
+        from unittest import mock
+
+        from src.apply import worker
+
+        box = {"id": 5, "tag": "input", "type": "text", "group": "", "name": "", "value": "7",
+               "label": "What is your Notice Period? Option (1) -- 90 Days, (2) -- 60 Days, "
+                        "(7) - Immediate Joiner"}
+        key = worker._field_key(box, worker._field_label(box))
+        calls, lines = [], []
+
+        class Sess:
+            def log(self, t):
+                lines.append(t)
+
+        def fake_apply(page, f, value, pdf_path, sess, source=""):
+            calls.append((value, source))
+
+        with mock.patch.object(worker, "_apply_value", side_effect=fake_apply), \
+                mock.patch("src.apply.resolver.correction", return_value=("Immediate Joiner", "7")):
+            worker._sweep(None, [box], set(), {}, {}, "", Sess(), holder={"wrote": {key}})
+            self.assertEqual((calls, lines), ([], []))
+            # A value the site put there is still corrected.
+            worker._sweep(None, [box], set(), {}, {}, "", Sess(), holder={})
+        self.assertEqual(calls, [("Immediate Joiner", "profile")])
+        self.assertTrue(any(line.startswith("Correcting") for line in lines), lines)
+
 
 class RefusalMemoryTests(TempDbTestCase):
     """A value a box has refused is not sent to it again, by the sweep or by

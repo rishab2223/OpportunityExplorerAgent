@@ -315,7 +315,39 @@ with sync_playwright() as pw:
              for f in browser.snapshot(page)}["What is your notice period?"]
     loc3 = browser.locate(page, stuck["id"], str(stuck.get("elid") or ""))
     real_open = worker._open_via_control
+    worker._open_via_control = lambda _loc: False      # its own control will not open it
+    sess4 = Sess()
+    try:
+        worker._commit_combobox(page, loc3, "Immediate Joiner",
+                                "What is your notice period?", "", sess4, [])
+        read_whole = True
+    except Exception as exc:
+        read_whole = False
+        sess4.log(f"refused: {exc}")
+    finally:
+        worker._open_via_control = real_open
+    # Typing opens react-select's list, and an answer it does not hold leaves
+    # "No options" - so the box is cleared and the whole list read (CBTS,
+    # Oct 2026), and the option worded another way is taken and read back.
+    check("an answer the list words another way is taken from the whole list",
+          read_whole and "Immediate / Available to join" in page.locator("#log").inner_text(),
+          str(sess4.lines)[:200])
+
+    # And one whose list truly cannot be read is refused, never claimed.
+    page.goto((HERE / "fixture_reactselect.html").as_uri())
+    page.wait_for_timeout(200)
+    page.evaluate("() => { const box = document.querySelector('#q2')"
+                  ".closest('.select__value-container');"
+                  " box.querySelector('.select__single-value').outerHTML ="
+                  " '<div class=\"select__placeholder\">Select...</div>'; }")
+    page.wait_for_timeout(100)
+    stuck = {str(f.get("label") or "").split("*")[0].strip(): f
+             for f in browser.snapshot(page)}["What is your notice period?"]
+    loc3 = browser.locate(page, stuck["id"], str(stuck.get("elid") or ""))
+    real = (worker._open_via_control, worker._visible_options, worker._wait_for_options)
+    nothing = (lambda *_a, **_k: (page.locator("#no-such-list"), []))
     worker._open_via_control = lambda _loc: False      # the widget will not open
+    worker._visible_options = worker._wait_for_options = nothing   # nor show any row
     sess3 = Sess()
     try:
         worker._commit_combobox(page, loc3, "Immediate Joiner",
@@ -325,7 +357,7 @@ with sync_playwright() as pw:
         claimed = False
         sess3.log(f"refused: {exc}")
     finally:
-        worker._open_via_control = real_open
+        worker._open_via_control, worker._visible_options, worker._wait_for_options = real
     got = page.locator("#log").inner_text()
     check("it refuses rather than claiming a pick", claimed is False,
           str(sess3.lines)[:140])

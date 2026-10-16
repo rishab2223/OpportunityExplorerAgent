@@ -127,10 +127,13 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      re.compile(r"\b(portfolio|personal (web)?site)\b|^website( link| url)?$")),
     # EPAM (Oct 2026): "Most recent employer" and "Job Title at Recent
     # employer". Anchored, so the title's label is not taken for the company.
+    # Never a question about notice: "How much notice must you provide your
+    # current employer before leaving?" (CBTS, Oct 2026) got the employer's
+    # name typed into its notice-period list.
     ("current_company", ("organization",),
      re.compile(r"^(company|current[_ ]?company|employer|organization)$"),
-     re.compile(r"\b(current |present )(company|employer)\b"
-                r"|^(most |your )?(recent|last|latest|previous) (company|employer)( name)?$")),
+     re.compile(r"^(?!.*\bnotice\b)(?:.*\b(current |present )(company|employer)\b"
+                r"|(most |your )?(recent|last|latest|previous) (company|employer)( name)?$)")),
     ("current_title", ("organization-title",),
      re.compile(r"^(title|job[_ ]?title|current[_ ]?title|designation)$"),
      re.compile(r"\b(current |present )(title|designation|role)\b"
@@ -142,7 +145,13 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      re.compile(r"\b(years? of|total)( professional| work| industry| overall)? experience\b")),
     ("notice_period", (),
      re.compile(r"^notice([_ ]?period)?$"),
-     re.compile(r"\bnotice period\b")),
+     # "How much notice must you provide your current employer before
+     # leaving?" says notice without "period" (CBTS, Oct 2026).
+     # Not a last working day, or a question that says what to enter
+     # (answers.NOT_NOTICE_PERIOD, Oolio, Oct 2026).
+     re.compile(rf"^(?!.*(?:{answers.NOT_NOTICE_PERIOD}))"
+                r".*(?:\bnotice period\b|\bhow (much|long|many \w+) (of )?notice\b"
+                r"|\bnotice\b.*\b(provide|give|serve)\b|\b(provide|give|serve)\b.*\bnotice\b)")),
     # Salary boxes come in threes on some forms (ALTEN): currency, period,
     # amount. These two must be read BEFORE the amount rules below, or
     # "Expected Salary Currency" resolves to the expected pay itself.
