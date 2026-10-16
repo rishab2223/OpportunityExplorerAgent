@@ -1046,7 +1046,32 @@ code {
   transition: background 0.15s, opacity 0.15s;
 }
 .rs-source.off { background: #fafbfc; }
-.rs-source.off .rs-range { opacity: 0.45; }
+.rs-source.off .rs-range, .rs-source.off .rs-terms { opacity: 0.45; }
+/* The site's search words: a full-width row under its switch and slider. */
+.rs-terms { grid-column: 1 / -1; display: grid; grid-template-columns: 150px 1fr; gap: 4px 14px; align-items: center; }
+.rs-terms .rs-help { grid-column: 2; margin: 0; }
+.rs-terms-label { font-size: 13px; color: var(--muted); }
+
+/* An (i) whose explanation shows on hover or focus. */
+.infotip { position: relative; display: inline-flex; vertical-align: middle; margin-left: 6px; }
+.infotip > button {
+  width: 18px; height: 18px; padding: 0; border-radius: 50%; font-size: 11px; font-weight: 700;
+  line-height: 16px; text-align: center; color: var(--accent); background: var(--accent-soft);
+  border: 1px solid var(--accent-line); cursor: help;
+}
+/* Fixed to the screen and placed by script beside its (i) (runsettings.js),
+   so a scrolling popup never cuts it off. */
+.infotip .tipbox {
+  display: none; position: fixed; z-index: 200; width: min(420px, calc(100vw - 32px));
+  padding: 10px 12px; font-size: 12px; font-weight: 400; line-height: 1.45; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
+  box-shadow: 0 6px 18px rgba(16, 24, 40, 0.12);
+}
+.infotip:hover .tipbox, .infotip:focus-within .tipbox { display: block; }
+.tipparts { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; margin: 8px 0; }
+.tipparts .tipname { font-weight: 600; }
+.tipparts .tippts { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tipparts .tiptotal { font-weight: 600; border-top: 1px solid var(--border); padding-top: 4px; }
 
 .rs-range { display: flex; align-items: center; gap: 10px; }
 .rs-range input[type=range] { flex: 1; accent-color: var(--accent); min-width: 0; }
@@ -1165,6 +1190,8 @@ code {
   .rs-row { grid-template-columns: 1fr; gap: 6px; }
   .rs-sub-grid { grid-template-columns: 1fr; }
   .rs-source { grid-template-columns: 1fr; gap: 8px; }
+  .rs-terms { grid-template-columns: 1fr; }
+  .rs-terms .rs-help { grid-column: 1; }
   .rs-head, .rs-body, .rs-foot { padding-left: 16px; padding-right: 16px; }
 }
 

@@ -9,6 +9,7 @@ from apify_client import ApifyClient
 
 from src.config import ApifyActorsConfig, EnvSettings, ScrapeConfig
 from src.models import JobPosting
+from src.scrape import search_terms
 from src.scrape.filters import excluded
 
 WORKING_INDEED_INPUT: dict[str, Any] = {
@@ -202,6 +203,10 @@ def scrape_indeed_apify(
     if scrape.keywords:
         run_input["keyword"] = scrape.keywords
     run_input.update(apify.indeed_input)
+    # Terms chosen in the run settings popup, as a title query.
+    chosen = search_terms.clean((scrape.search_terms or {}).get("indeed") or [])
+    if chosen:
+        run_input["keyword"] = search_terms.indeed_query(chosen)
     run_input["fromDays"] = INDEED_FROM_DAYS.get(scrape.posted_within, "3")
     run_input["maxItems"] = scrape.cap("indeed")
     items = _run_actor(env.apify_token, apify.indeed_actor, run_input)
@@ -215,6 +220,13 @@ def scrape_linkedin_apify(
 ) -> list[JobPosting]:
     run_input: dict[str, Any] = dict(WORKING_LINKEDIN_INPUT)
     run_input.update(apify.linkedin_input)
+    # Terms chosen in the run settings popup go into each search URL's
+    # keywords=; its location, sort and the rest stay as configured.
+    chosen = search_terms.clean((scrape.search_terms or {}).get("linkedin") or [])
+    if chosen:
+        run_input["searchUrls"] = [search_terms.linkedin_url(url, chosen)
+                                   for url in run_input.get("searchUrls") or []]
+        run_input["keywords"] = ", ".join(chosen)
     # One recency knob for every source: scrape.posted_within. LinkedIn has no
     # 3-day preset, so the exact window goes into each searchUrls entry as
     # f_TPR seconds; datePosted only matters when searchUrls is empty.

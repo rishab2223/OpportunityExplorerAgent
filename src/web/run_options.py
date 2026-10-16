@@ -51,7 +51,7 @@ ALLOWED = frozenset({
     "claude.enrich_model", "claude.effort",
     "resume.local_path",
     "scrape.sources", "scrape.max_jobs", "scrape.posted_within",
-    "scrape.exclude_keywords",
+    "scrape.exclude_keywords", "scrape.search_terms",
 })
 
 
@@ -114,6 +114,24 @@ def apply(cfg: AppConfig, overrides: dict[str, Any] | None) -> AppConfig:
         if not isinstance(caps, dict):
             raise BadOptions("scrape.max_jobs must map each source to a number")
         scrape["max_jobs"] = {str(k).lower(): v for k, v in caps.items() if str(k).lower() in SOURCES}
+    if "scrape.search_terms" in flat:
+        from src.scrape import search_terms
+
+        chosen = scrape.get("search_terms")
+        if not isinstance(chosen, dict):
+            raise BadOptions("scrape.search_terms must map each source to a list of terms")
+        terms = {}
+        for key, value in chosen.items():
+            if str(key).lower() not in SOURCES:
+                continue
+            if not isinstance(value, list):
+                raise BadOptions(f"{SOURCES[str(key).lower()]}: search terms must be a list")
+            terms[str(key).lower()] = search_terms.clean(value)
+        # A site that is switched on needs something to search for.
+        for source in scrape.get("sources") or []:
+            if source in terms and not terms[source]:
+                raise BadOptions(f"{SOURCES.get(source, source)}: give it at least one search term")
+        scrape["search_terms"] = terms
     try:
         return AppConfig.model_validate(merged)
     except ValidationError as exc:
@@ -200,8 +218,18 @@ def values(cfg: AppConfig) -> dict[str, Any]:
             "max_jobs": {s: cfg.scrape.cap(s) for s in SOURCES},
             "posted_within": cfg.scrape.posted_within,
             "exclude_keywords": list(cfg.scrape.exclude_keywords),
+            # The words each site is searched for: chosen here, or read from
+            # the query settings.yaml already gives it.
+            "search_terms": _search_terms(cfg),
         },
     }
+
+
+def _search_terms(cfg: AppConfig) -> dict[str, list[str]]:
+    from src.scrape import apify_jobs, search_terms
+
+    defaults = apify_jobs.WORKING_LINKEDIN_INPUT.get("searchUrls") or []
+    return {s: search_terms.current(s, cfg.scrape, cfg.scrape.apify, defaults) for s in SOURCES}
 
 
 def _bounds(field: FieldInfo) -> list[float]:
@@ -229,7 +257,17 @@ def choices() -> dict[str, Any]:
         "review_min_score": _bounds(ExperienceConfig.model_fields["review_min_score"]),
         "review_max": _bounds(ExperienceConfig.model_fields["review_max"]),
         "tolerance_years": _bounds(ExperienceConfig.model_fields["tolerance_years"]),
+        "score_parts": _score_parts(),
     }
+
+
+def _score_parts() -> list[dict[str, Any]]:
+    """The 100 marks, part by part, from the scorer itself (the (i) beside
+    the score bar), so the popup can never describe another rubric."""
+    from src.agent.nodes import score
+
+    return [{"name": name, "points": most, "about": score.PART_SUMMARIES.get(name, "")}
+            for name, most, _anchors in score.PARTS]
 
 
 def describe() -> dict[str, Any]:
@@ -261,13 +299,17 @@ def _your_years() -> float | None:
 def summary_line(cfg: AppConfig) -> str:
     """One log line naming what this run will do."""
     caps = ", ".join(f"{SOURCES.get(s, s)} {cfg.scrape.cap(s)}" for s in cfg.scrape.sources)
+    terms = _search_terms(cfg)
+    searching = "; ".join(f"{SOURCES.get(s, s)} for {' / '.join(terms.get(s) or []) or 'its own query'}"
+                          for s in cfg.scrape.sources)
     model = (cfg.claude.enrich_model + f" ({cfg.claude.effort})"
              if cfg.enrich_provider == "claude" else cfg.openai.enrich_model)
     return (f"[run] settings: {caps} jobs, posted within {cfg.scrape.posted_within}, "
             f"min score {cfg.min_score}, scoring {cfg.openai.score_model} x{cfg.openai.score_concurrency}, "
             f"tailoring {model} x{cfg.openai.enrich_concurrency}, interview prep "
             f"{'during the run' if cfg.interview_prep == 'run' else 'on demand'}"
-            f"{', reusing earlier results' if cfg.reuse_enrichment else ''}")
+            f"{', reusing earlier results' if cfg.reuse_enrichment else ''}"
+            f"\n[run] searching {searching}")
 
 
 def last_run_summary() -> dict[str, Any]:

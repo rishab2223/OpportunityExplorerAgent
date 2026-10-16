@@ -48,16 +48,64 @@ function rsBuildSources() {
                                  "aria-label": `${label}: jobs to fetch, slider` });
     const number = el("input", { type: "number", min, max, step: 1, "data-cap": id,
                                  class: "rs-num", "aria-label": `${label}: jobs to fetch` });
+    // The words this site is searched for, sent to Apify as its own query
+    // (src/scrape/search_terms.py). Indeed matches them in the job title.
+    const terms = el("input", { type: "text", class: "rs-text", "data-field": `scrape.search_terms.${id}`,
+                                "data-kind": "list", "data-terms": id, "aria-label": `${label}: search for`,
+                                placeholder: "e.g. Software Engineer, Backend Engineer, NodeJS" });
     box.append(el("div", { class: "rs-source", "data-source-card": id },
       el("label", { class: "switch-row rs-source-name" },
         el("span", { class: "switch" }, toggle, el("span")),
         el("b", { text: label })),
       el("div", { class: "rs-range" }, slider, number),
-      el("span", { class: "rs-hint", text: `${min}–${max} jobs` })));
+      el("span", { class: "rs-hint", text: `${min}–${max} jobs` }),
+      el("label", { class: "rs-terms" },
+        el("span", { class: "rs-terms-label", text: "Search for" }), terms,
+        el("span", { class: "rs-help", text: id === "indeed"
+          ? "Comma separated. Indeed looks for each in the job title."
+          : "Comma separated. LinkedIn looks for any of them in the posting." }))));
   });
 }
 
+// The (i) beside the score bar: how the 100 marks are given, part by part,
+// as the server's scorer gives them.
+function rsBuildScoreTip() {
+  const parts = rsOptions.choices.score_parts || [];
+  const name = (p) => p.name.charAt(0).toUpperCase() + p.name.slice(1);
+  $("rsscoretip").replaceChildren(
+    el("b", { text: "How a job's score out of 100 is made" }),
+    el("div", { class: "tipparts" },
+      ...parts.flatMap((p) => [el("span", { class: "tipname", "data-part": p.name, text: name(p) }),
+                               el("span", { text: p.about }),
+                               el("span", { class: "tippts", text: String(p.points) })]),
+      el("span", { class: "tipname tiptotal", text: "Total" }), el("span", { class: "tiptotal" }),
+      el("span", { class: "tippts tiptotal", text: String(parts.reduce((n, p) => n + p.points, 0)) })),
+    el("div", { text: "The AI marks each part on its own; the score is their sum. A job a few points " +
+      "under the bar gets a second look from a stronger model, and is kept if either look reaches it." }));
+}
+
+// Puts an (i)'s explanation beside it on screen - below when there is room,
+// otherwise above - and inside the window either way.
+function placeTip(holder) {
+  const tip = holder.querySelector(".tipbox");
+  const anchor = holder.querySelector("button").getBoundingClientRect();
+  const gap = 8;
+  const width = tip.offsetWidth, height = tip.offsetHeight;
+  const left = Math.max(gap, Math.min(anchor.right - width, window.innerWidth - width - gap));
+  const below = anchor.bottom + gap;
+  const top = below + height <= window.innerHeight - gap ? below : Math.max(gap, anchor.top - gap - height);
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+}
+
+document.querySelectorAll(".infotip").forEach((holder) => {
+  const place = () => requestAnimationFrame(() => placeTip(holder));
+  holder.addEventListener("mouseenter", place);
+  holder.addEventListener("focusin", place);
+});
+
 function rsBuildChoices() {
+  rsBuildScoreTip();
   const seg = (path, ids) => {
     const holder = rsForm().querySelector(`.rs-seg[data-field="${path}"]`);
     holder.replaceChildren();
@@ -163,6 +211,12 @@ function rsProblem(values) {
   const range = ([lo, hi]) => `${lo ?? ""} to ${hi ?? ""}`;
   if (!values.scrape.sources.length) return ["Turn on at least one job source.", ""];
   for (const id of values.scrape.sources) {
+    const label = c.sources.find((s) => s.id === id)?.label || id;
+    if (!(values.scrape.search_terms?.[id] || []).length) {
+      return [`${label}: give it at least one search term.`, `scrape.search_terms.${id}`];
+    }
+  }
+  for (const id of values.scrape.sources) {
     const n = values.scrape.max_jobs[id];
     if (!Number.isInteger(n) || n < c.jobs_min || n > c.jobs_max) {
       const label = c.sources.find((s) => s.id === id)?.label || id;
@@ -203,7 +257,7 @@ function rsRefresh() {
   rsForm().querySelectorAll("[data-source-card]").forEach((card) => {
     const on = values.scrape.sources.includes(card.dataset.sourceCard);
     card.classList.toggle("off", !on);
-    card.querySelectorAll("[data-cap]").forEach((i) => { i.disabled = !on; });
+    card.querySelectorAll("[data-cap], [data-terms]").forEach((i) => { i.disabled = !on; });
   });
   rsForm().querySelector("output.rs-out").textContent = `${values.min_score}+`;
   rsExplain(values);
@@ -234,11 +288,13 @@ function rsRefresh() {
 // so a first-time user can read what a setting will actually do.
 function rsExplain(values) {
   const score = values.min_score;
-  let min = `The AI gives every job a score from 1 to 10 for how well it fits your resume. ` +
-    `Jobs scoring ${score} or more get a tailored resume and appear in your shortlist.`;
-  if (score <= 6) min += " A low bar means many more jobs and a much longer run.";
-  else if (score >= 9) min += " A high bar keeps only near-perfect fits; you may get very few.";
-  else min += " 7 is a good place to start.";
+  let min = `The AI scores every job out of 100 for how well it fits your resume: skills, ` +
+    `experience, the kind of role, stack, company and location, each marked on its own. ` +
+    `Jobs scoring ${score} or more get a tailored resume and appear in your shortlist; ` +
+    `ones just below get a second look from a stronger model.`;
+  if (score <= 55) min += " A low bar means many more jobs and a much longer run.";
+  else if (score >= 85) min += " A high bar keeps only near-perfect fits; you may get very few.";
+  else min += " 70 is a good place to start.";
   $("rsminhint").textContent = min;
 
   const years = rsOptions.your_years;

@@ -16,6 +16,9 @@ SOURCES: dict[str, str] = {"linkedin": "LinkedIn", "indeed": "Indeed"}
 # so the top of this range is an hour-long run.
 SOURCE_JOBS_MIN = 1
 SOURCE_JOBS_MAX = 500
+# Search terms per site (scrape.search_terms) and their length.
+SEARCH_TERMS_MAX = 15
+SEARCH_TERM_CHARS = 60
 
 # What the run settings offer. Free text in settings.yaml still works for a
 # model not listed here; these are the ones known to work.
@@ -156,6 +159,10 @@ class ScrapeConfig(BaseModel):
     # max_detail_jobs. Set from the run settings popup.
     max_jobs: dict[str, int] = Field(default_factory=dict)
     exclude_keywords: list[str] = Field(default_factory=list)
+    # What each site is searched for, as a list of terms, set from the run
+    # settings popup (src/scrape/search_terms.py). A site not named here
+    # searches what its own query above says (keywords, linkedin searchUrls).
+    search_terms: dict[str, list[str]] = Field(default_factory=dict)
     sources: list[str] = Field(default_factory=lambda: ["indeed", "linkedin"])
     apify: ApifyActorsConfig = Field(default_factory=ApifyActorsConfig)
 
@@ -164,6 +171,11 @@ class ScrapeConfig(BaseModel):
         for name, cap in self.max_jobs.items():
             if not SOURCE_JOBS_MIN <= int(cap) <= SOURCE_JOBS_MAX:
                 raise ValueError(f"{name}: jobs per source must be {SOURCE_JOBS_MIN}-{SOURCE_JOBS_MAX}")
+        for name, terms in self.search_terms.items():
+            if len(terms) > SEARCH_TERMS_MAX:
+                raise ValueError(f"{name}: at most {SEARCH_TERMS_MAX} search terms")
+            if any(len(str(t)) > SEARCH_TERM_CHARS for t in terms):
+                raise ValueError(f"{name}: a search term may be at most {SEARCH_TERM_CHARS} characters")
         return self
 
     def cap(self, source: str) -> int:

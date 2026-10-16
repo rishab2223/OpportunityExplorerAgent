@@ -114,6 +114,42 @@ with sync_playwright() as pw:
         page.screenshot(path=os.environ["OEA_SCREENSHOT"].replace(".png", "-2.png"), full_page=False)
         page.eval_on_selector(".rs-body", "b => b.scrollTop = 0")
 
+    print("== what each site is searched for ==")
+    li_terms = "input[data-field='scrape.search_terms.linkedin']"
+    check("each site shows the words it is searched for today",
+          page.input_value(li_terms) == "software engineer, software developer, nodejs, backend engineer"
+          and page.input_value("input[data-field='scrape.search_terms.indeed']") == "software engineer",
+          page.input_value(li_terms))
+    page.fill(li_terms, " ,  ")
+    page.dispatch_event(li_terms, "input")
+    check("a site with no words cannot start", page.is_disabled("#rsstart")
+          and "LinkedIn: give it at least one search term" in (page.text_content("#rserror") or ""),
+          page.text_content("#rserror") or "")
+    page.fill(li_terms, "software engineer, software developer, nodejs, backend engineer")
+    page.dispatch_event(li_terms, "input")
+    check("  and can once it has one", not page.is_disabled("#rsstart"), page.text_content("#rserror") or "")
+
+    print("== the (i) beside the score ==")
+    check("the breakdown is hidden until asked for", not page.locator("#rsscoretip").is_visible())
+    page.hover("#rsscoreinfo button")
+    page.wait_for_selector("#rsscoretip", state="visible", timeout=3000)
+    page.wait_for_timeout(100)        # placed on the next frame
+    names = page.eval_on_selector_all("#rsscoretip .tipname", "s => s.map(x => x.textContent)")
+    points = page.eval_on_selector_all("#rsscoretip .tippts", "s => s.map(x => x.textContent)")
+    check("hovering shows the six parts and their points, totalling 100",
+          names == ["Skills", "Experience", "Role", "Stack", "Company", "Location", "Total"]
+          and points == ["35", "20", "15", "10", "10", "10", "100"], f"{names} {points}")
+    if os.environ.get("OEA_SCREENSHOT"):
+        page.screenshot(path=os.environ["OEA_SCREENSHOT"].replace(".png", "-tip.png"), full_page=False)
+    box = page.locator("#rsscoretip").bounding_box() or {}
+    check("  all of it on screen, nothing cut off",
+          box and box["x"] >= 0 and box["y"] >= 0 and box["x"] + box["width"] <= 1360
+          and box["y"] + box["height"] <= 1000 and box["height"] < 400, str(box))
+    page.mouse.move(5, 5)
+    page.focus("#rsscoreinfo button")
+    check("  and so does keyboard focus", page.locator("#rsscoretip").is_visible())
+    page.focus("input[type=number][data-cap=linkedin]")
+
     print("== the controls ==")
     page.fill("input[type=number][data-cap=linkedin]", "40")
     check("number and slider move together",
@@ -211,6 +247,7 @@ with sync_playwright() as pw:
     page.click(".rs-seg[data-field=interview_prep] [data-value=run]")
     page.select_option("select[data-field='claude.enrich_model']", "claude-sonnet-5")
     page.fill("input[data-field='scrape.exclude_keywords']", "PHP,  Salesforce ,")
+    page.fill("input[data-field='scrape.search_terms.linkedin']", "platform engineer,  SRE ,")
     page.check("#rsremember")
     page.click("#rsstart")
     page.wait_for_selector("#rserror:not([hidden])")
@@ -230,6 +267,9 @@ with sync_playwright() as pw:
     check("interview prep during the run", settings.get("interview_prep") == "run")
     check("the keyword list is cleaned up",
           settings.get("scrape", {}).get("exclude_keywords") == ["PHP", "Salesforce"])
+    check("the new search words are sent, cleaned up",
+          settings.get("scrape", {}).get("search_terms", {}).get("linkedin") == ["platform engineer", "SRE"],
+          json.dumps(settings.get("scrape", {}).get("search_terms")))
     check("remember is passed on", body.get("remember") is True)
     try:
         run_options.apply(_CFG, settings)

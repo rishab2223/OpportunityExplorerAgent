@@ -15,8 +15,8 @@ from src.models import JobScore, TexEnrichment
 from src.web import run_options
 
 BASE = AppConfig.model_validate({
-    "min_score": 7,
-    "experience": {"enabled": True, "mode": "review", "review_min_score": 9},
+    "min_score": 70,
+    "experience": {"enabled": True, "mode": "review", "review_min_score": 90},
     "scrape": {"max_detail_jobs": 150, "sources": ["indeed", "linkedin"]},
 })
 
@@ -44,7 +44,7 @@ class ApplyOverridesTests(unittest.TestCase):
 
     def test_out_of_range_is_refused_whole(self) -> None:
         for bad in ({"scrape": {"max_jobs": {"linkedin": 900}}},
-                    {"min_score": 11},
+                    {"min_score": 101},
                     {"claude": {"effort": "extreme"}},
                     {"openai": {"enrich_concurrency": 99}},
                     {"scrape": {"sources": []}},
@@ -108,12 +108,17 @@ class ScrapeCapTests(TempDbCase):
 class PreferenceTests(TempDbCase):
     def test_saved_choices_are_the_next_defaults(self) -> None:
         with mock.patch.object(run_options, "load_yaml_config", return_value=BASE):
-            run_options.save_preferences({"min_score": 8})
-            self.assertEqual(run_options.effective_config().min_score, 8)
+            run_options.save_preferences({"min_score": 80})
+            self.assertEqual(run_options.effective_config().min_score, 80)
             self.assertTrue(run_options.describe()["saved"])
-            self.assertEqual(run_options.describe()["defaults"]["min_score"], 7)
+            self.assertEqual(run_options.describe()["defaults"]["min_score"], 70)
             run_options.clear_preferences()
-            self.assertEqual(run_options.effective_config().min_score, 7)
+            self.assertEqual(run_options.effective_config().min_score, 70)
+
+    def test_a_choice_saved_on_the_old_scale_reads_as_out_of_100(self) -> None:
+        run_options.PREFERENCES_PATH.write_text(json.dumps({"min_score": 8}), encoding="utf-8")
+        with mock.patch.object(run_options, "load_yaml_config", return_value=BASE):
+            self.assertEqual(run_options.effective_config().min_score, 80)
 
     def test_an_invalid_choice_is_never_saved(self) -> None:
         with mock.patch.object(run_options, "load_yaml_config", return_value=BASE):
@@ -122,9 +127,9 @@ class PreferenceTests(TempDbCase):
         self.assertFalse(run_options.PREFERENCES_PATH.exists())
 
     def test_a_stale_preference_file_does_not_block_runs(self) -> None:
-        run_options.PREFERENCES_PATH.write_text(json.dumps({"min_score": 99}), encoding="utf-8")
+        run_options.PREFERENCES_PATH.write_text(json.dumps({"min_score": 999}), encoding="utf-8")
         with mock.patch.object(run_options, "load_yaml_config", return_value=BASE):
-            self.assertEqual(run_options.effective_config().min_score, 7)
+            self.assertEqual(run_options.effective_config().min_score, 70)
 
 
 JD = ("We are looking for a backend engineer to build services on AWS with Node.js, "
@@ -217,7 +222,8 @@ class ScoreReuseTests(TempDbCase):
 
             def invoke(self, prompt):
                 calls.append(prompt)
-                return JobScore(relevance=8, why_score="fits")
+                return score.ScoreCard(skills=30, experience=15, role=15, stack=8, company=8,
+                                       location=10, why_score="fits")
 
         state = {"raw_jobs": [_job("a")], "resume_text": "resume"}
         env = EnvSettings(openai_api_key="x")
@@ -225,7 +231,19 @@ class ScoreReuseTests(TempDbCase):
             score.node_score(dict(state), AppConfig(), env)
             out = score.node_score(dict(state), AppConfig(), env)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(out["scored"][0]["relevance"], 8)
+        self.assertEqual(out["scored"][0]["relevance"], 86)
+
+    def test_a_score_from_the_old_scale_is_not_reused(self) -> None:
+        """A cached 1-10 score is the same prompt's answer only by accident."""
+        job = score.JobPosting.model_validate(_job("a"))
+        prompt = f"{score.SCORE_SYSTEM}\n\n{score.score_prompt(job, 'resume')}"
+        llm_cache.put("score", llm_cache.key("m", prompt), JobScore(relevance=8).model_dump())
+
+        class FakeLlm:
+            def invoke(self, prompt):
+                return score.ScoreCard(skills=35, experience=20, role=15, stack=10, company=10, location=10)
+
+        self.assertEqual(score.score_job(FakeLlm(), "m", job, "resume", True).relevance, 100)
 
 
 class ParallelPdfTests(unittest.TestCase):
