@@ -144,6 +144,12 @@ class ClaudeSessionTests(unittest.TestCase):
         sess.warm("sys", Answer, "opus", "low")
         sess.warm("pick", Other, "sonnet", "medium")
         sess.warm("sys", Answer, "opus", "low")
+        # warm() starts its process in the background: closing at once could
+        # beat both starts (0 != 2, about one run in six under load).
+        deadline = time.monotonic() + 3
+        while len(FakeClient.started) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.1)                  # and a third, wrong start would show
         sess.close()
         self.assertEqual(len(FakeClient.started), 2)
 
