@@ -230,6 +230,14 @@ Rules:
 - A button with haspopup "listbox" is a dropdown (its text is the current choice,
   "Select One" means empty): use action "select" with the option's text in value.
   If a note says the value matched none of the options, pick from the listed ones.
+- A field carrying "options" is a dropdown whose list was opened and read for you.
+  Answer it with action "select" and one of those options, written exactly as
+  listed: the one the candidate's background fits, even when worded differently -
+  a range that holds their years ("3-7 Years" for 6), the broad category their
+  degree belongs to ("Engineering" for a B.Tech), "Other"/"Others" for a school
+  or employer the list does not have. Never send a value that is not one of the
+  options. "more_options": true means the list is longer than shown, and a
+  value not shown may be sent. Ask only when no option fits; never "look" at it.
 - Repeating sections - fields whose "section" is Work Experience, Education,
   Languages or similar: click that section's "Add" button, then fill the revealed
   entry FROM THE RESUME: job title, employer, that job's location (the current job's
@@ -1915,6 +1923,15 @@ def run_session(
                 _ask_apply_choice(page, choices, attach.resume_path, sess, history, notes, handled, attach,
                                   site=_site_of(page))
                 continue
+            # Only a code left to type (sent to the candidate): theirs, in the
+            # browser - no model call to be told so.
+            if unresolved and not pending_adds and all(_wants_code(f) for f in unresolved):
+                if _wait_for_code(sess, holder, page, handled, fields, unresolved[0], notes) is None:
+                    last_llm_sig = ""
+                continue
+            # Every unanswered dropdown's options, as text, before the call:
+            # the model answers with one of them instead of guessing.
+            _read_lists(page, unresolved, sess)
             sess.log(
                 f"Asking the model about {len(unresolved) + len(pending_adds)} field(s)…"
                 # A kept process started at the click has paid that already.
@@ -2035,7 +2052,10 @@ def run_session(
                             # successful fill consumed the value (a chip-style
                             # typeahead). It would look unfilled forever and
                             # get the same skills added again every round.
-                            if action.action == "fill" and done_field.get("tag") in ("input", "textarea") \
+                            # A pick too: TurboHire's "Which College/s" (Oct
+                            # 2026) shows "Others" as a tag below an empty
+                            # box, and was asked about again as unanswered.
+                            if done_field.get("tag") in ("input", "textarea") \
                                     and not _live_value(page, done_field):
                                 consumed.add(done_key)  # after the plan: later skills in it still go in
                 elif result == "error":
@@ -3765,6 +3785,74 @@ def _look_at(page, field: dict[str, Any], open_list: bool = False, typed: str = 
     return png
 
 
+# How many of a dropdown's options go to the model, and how many dropdowns are
+# opened to read them before one call.
+LIST_OPTIONS_SHOWN = 80
+LIST_READS_PER_CALL = 12
+
+
+def _read_lists(page, unresolved: list[dict[str, Any]], sess) -> None:
+    """Open each unanswered dropdown, read its options, close it again, and
+    put them on the field as "options" - which is where the model reads them.
+
+    TurboHire (Oct 2026): eight dropdowns on one page, not one of them read.
+    The model was sent pictures of the closed boxes, guessed "B.Tech" for a
+    list holding "Engineering" and "6" for one holding "3-7 Years", and every
+    guess cost a failed search of the box and another call - minutes on one
+    page, and still wrong. Read once a session per question; a list that shows
+    nothing until typed at (a city search) is remembered as such."""
+    cache: dict[str, list[str]] = sess.__dict__.setdefault("list_options", {})
+    read: list[str] = []
+    for field in unresolved:
+        if field.get("options") or not _opens_a_list(field):
+            continue
+        key = _field_key(field, _field_label(field))
+        if key not in cache:
+            if len(read) >= LIST_READS_PER_CALL:
+                continue
+            cache[key] = _list_options(page, field)
+            if cache[key]:
+                read.append(f"{_brief(_question_of(field), 40)} ({len(cache[key])})")
+        if cache[key]:
+            field["options"] = cache[key][:LIST_OPTIONS_SHOWN]
+            if len(cache[key]) > LIST_OPTIONS_SHOWN:
+                field["more_options"] = True
+    if read:
+        sess.log(f"Read the options of {len(read)} dropdown(s) for the model: " + "; ".join(read))
+
+
+def _list_options(page, field: dict[str, Any]) -> list[str]:
+    """The option names a dropdown shows when opened with nothing typed, or []
+    when it shows none (it searches as you type, or it would not open). Never
+    picks anything: the list is closed the way _dismiss closes lists."""
+    try:
+        locator = browser.locate(page, field["id"], str(field.get("elid") or ""))
+        browser.click(locator, timeout=2000)
+    except Exception:
+        return []
+    rows, texts = _wait_for_options(page, locator, timeout=800)
+    if not _real_suggestions(texts) and _open_via_control(locator):
+        rows, texts = _wait_for_options(page, locator, timeout=800)
+    seen: list[str] = []
+    for text in texts:
+        text = " ".join((text or "").split())
+        if text and not _PLACEHOLDER_ROW_RE.match(text) and text not in seen:
+            seen.append(text)
+    toggle = _is_listbox_button(field)
+    _dismiss(page, locator, toggle=toggle)
+    if toggle and texts:
+        # Still open: a list that shuts only on its own button. Left open,
+        # the pick's click on that button closed it again, and the pick
+        # found "no options appeared" (Workday's device type, Oct 2026).
+        page.wait_for_timeout(100)
+        if _real_suggestions(_visible_options(page, locator)[1]):
+            try:
+                browser.click(locator, timeout=2000)
+            except Exception:
+                pass
+    return seen
+
+
 def _pictures_for_call(page, fields, handled, sess, unresolved) -> list[tuple[str, str, bytes, str]]:
     """(label, why, png, key) for the next model call: pictures already
     taken first, then the refused dropdowns and the unclear fields still
@@ -4515,6 +4603,33 @@ def _repair_written(page, fields, written, sess) -> int:
     return fixed
 
 
+def _wants_code(field: dict[str, Any]) -> bool:
+    """A box for a code sent to the candidate (or any other secret that is
+    not a password box): theirs to type in the browser."""
+    if (field.get("type") or "").lower() == "password":
+        return False
+    return profile.is_secret(f"{_field_label(field)} {field.get('name') or ''}")
+
+
+def _wait_for_code(sess, holder, page, handled, fields, field, notes) -> str | None:
+    """Tell the candidate to type the code in the browser, and wait for the
+    page to move on. A code sent to them (TurboHire's "Enter the 6 digit code
+    sent to your Email Id", Oct 2026) is typed by them, never asked for in the
+    chat - your call. None when the page moved on; their reply otherwise
+    ("submitted" there records the application, as at any prompt)."""
+    handled.add(_field_key(field, _field_label(field)))
+    reply = _ask_watching(
+        sess, holder, page, handled, fields,
+        f"'{_brief(_field_label(field), 80)}' wants the code that was sent to you. Type it "
+        "into the browser yourself and press the page's own button - I never ask for codes "
+        "or passwords. I will carry on as soon as the page moves on (type submitted if that "
+        "sent the application).",
+        fields_too=False, about=field)
+    if reply and reply.strip():
+        notes.append(f"guidance from the candidate: {reply}")
+    return reply
+
+
 def _ask_watching(sess, holder, page, handled, fields, question: str,
                   suggestion: str = "", fields_too: bool = True,
                   about: dict[str, Any] | None = None) -> str | None:
@@ -5107,6 +5222,10 @@ def _contact_warnings(fields: list[dict[str, Any]]) -> list[str]:
         wanted = str(data.get(topic) or "").strip()
         if not current or not wanted or resolver.same_contact(topic, current, wanted):
             continue
+        if topic == "phone" and len(re.sub(r"\D", "", current)) <= 4:
+            # The country-code half of a phone pair, both labelled "Phone
+            # Number *": "IN +91" is not a wrong number (TurboHire, Oct 2026).
+            continue
         out.append(f"{_field_label(field)} shows '{current}', your profile says '{wanted}'")
     return out
 
@@ -5316,13 +5435,17 @@ def _run_action(
         if (field or {}).get("type", "").lower() == "password" or profile.is_secret(
             f"{label} {(field or {}).get('name') or ''}"
         ):
+            notes.append(f"'{label}' is a secret the candidate types on the page")
+            if key:
+                handled.add(key)
+            if (field or {}).get("type", "").lower() != "password" and holder is not None:
+                if _wait_for_code(sess, holder, page, handled, fields, field, notes) is None:
+                    return "stale"        # the page moved on: read it again
+                return "asked"
             sess.log(
                 f"'{label}' wants a secret. Type it into the browser yourself - "
                 "I never ask for one, and nothing of the sort is stored."
             )
-            notes.append(f"'{label}' is a secret the candidate types on the page")
-            if key:
-                handled.add(key)
             return "skipped"
         # A government identifier is never stored and never guessed, so a
         # required one is a fair question. An OPTIONAL one is not: the
@@ -7491,10 +7614,14 @@ def _is_listbox_button(field: dict[str, Any]) -> bool:
 # "7.0 or higher", "5.0-6.9", "Below 5.0", "4 or below", "3": the shapes a
 # form uses when it wants a band rather than a figure. myKaarma asks its two
 # GPA questions this way, and a stored 7.4 matched none of them.
+# A unit may follow ("3-7 Years", "10+ yrs", "15 LPA or more"): TurboHire's
+# Experience list (Oct 2026) was all "N-M Years", and none of it read as a band.
+_BAND_UNIT = r"(?:\s*(?:years?|yrs?|lpa|lakhs?|lacs?|days?|months?|weeks?)\.?)?"
 _BAND_RE = re.compile(
-    r"^(?:(?P<lo>\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(?P<hi>\d+(?:\.\d+)?)"
-    r"|(?P<n>\d+(?:\.\d+)?)\s*(?P<dir>or higher|or above|or more|\+|or below|or less|or lower)?"
-    r"|(?P<word>below|under|less than|above|over|more than)\s*(?P<m>\d+(?:\.\d+)?))\s*$"
+    rf"^(?:(?P<lo>\d+(?:\.\d+)?){_BAND_UNIT}\s*(?:-|–|—|to)\s*(?P<hi>\d+(?:\.\d+)?)"
+    rf"|(?P<n>\d+(?:\.\d+)?){_BAND_UNIT}\s*(?P<dir>or higher|or above|or more|\+|or below|or less|or lower)?"
+    rf"|(?P<word>below|under|less than|above|over|more than)\s*(?P<m>\d+(?:\.\d+)?)){_BAND_UNIT}"
+    rf"\s*(?:(?P<dir2>or higher|or above|or more|\+|or below|or less|or lower){_BAND_UNIT})?\s*$"
 )
 
 
@@ -7502,14 +7629,16 @@ def _band_index(texts: list[str], value: str) -> int:
     """The band an amount falls in, or -1.
 
     Only ever used after an exact match has failed, and only when the value is
-    a bare number: a band is a range, and reading "7.0 or higher" as a match
-    for 7.4 is arithmetic, not guesswork. An option that is not a band at all
-    can never win here.
-    """
-    try:
-        amount = float(str(value).strip())
-    except (TypeError, ValueError):
+    a bare number (or one with its unit: "6 years"): a band is a range, and
+    reading "7.0 or higher" as a match for 7.4 is arithmetic, not guesswork.
+    An option that is not a band at all can never win here, and neither can
+    one of two that both hold the amount ("0-3 Years" and "3-7 Years" for 3):
+    the edge is the form's to explain, so that one is left to the model."""
+    number = re.fullmatch(rf"\s*(\d+(?:\.\d+)?){_BAND_UNIT}\s*", str(value or ""), re.IGNORECASE)
+    if number is None:
         return -1
+    amount = float(number.group(1))
+    hits: list[int] = []
     for i, raw in enumerate(texts):
         found = _BAND_RE.match(resolver.plain(raw).replace(",", ""))
         if not found:
@@ -7517,24 +7646,24 @@ def _band_index(texts: list[str], value: str) -> int:
         bits = found.groupdict()
         if bits["lo"] is not None:
             if float(bits["lo"]) <= amount <= float(bits["hi"]):
-                return i
+                hits.append(i)
         elif bits["n"] is not None:
-            edge, direction = float(bits["n"]), (bits["dir"] or "").strip()
+            edge, direction = float(bits["n"]), (bits["dir"] or bits["dir2"] or "").strip()
             if direction in ("or higher", "or above", "or more", "+"):
                 if amount >= edge:
-                    return i
+                    hits.append(i)
             elif direction in ("or below", "or less", "or lower"):
                 if amount <= edge:
-                    return i
+                    hits.append(i)
             elif amount == edge:
-                return i
+                hits.append(i)
         elif bits["m"] is not None:
             edge, word = float(bits["m"]), bits["word"]
             if word in ("below", "under", "less than") and amount < edge:
-                return i
+                hits.append(i)
             if word in ("above", "over", "more than") and amount > edge:
-                return i
-    return -1
+                hits.append(i)
+    return hits[0] if len(hits) == 1 else -1
 
 
 # Words long enough to look distinctive and far too common to be. A shared
@@ -7610,6 +7739,15 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
         found = pick([i for i, t in enumerate(flat) if bounded.search(t)], True)
         if found >= 0:
             return found
+        if "," in query:
+            # A place by its first part: "Gurgaon" or "Gurgaon, Haryana" for
+            # "Gurgaon, India" (TurboHire, Oct 2026). The row must BE that
+            # name, or start with it and a comma - never merely contain it.
+            head = resolver.plain(query.split(",")[0])
+            raw_heads = [resolver.plain(t.split(",")[0]) for t in texts]
+            found = pick([i for i, h in enumerate(raw_heads) if head and h == head], True)
+            if found >= 0:
+                return found
         # One word, one option growing out of it: "Annual" -> "Annually"
         # (the salary period), "Contract" -> "Contractual". Only when a
         # single option qualifies, so "Bachelor" never picks among four.
@@ -7640,8 +7778,13 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
         rather than a guess, and the word must be long enough to mean
         something. "Faridabad, Haryana" beside "Gurugram, Haryana" shares
         only "haryana" with both, so it picks neither.
+
+        In "City, State, Country" only the city names the place: "Gurgaon,
+        India" took "Morinda, India" on TurboHire (Oct 2026) - one row, and
+        it shared "india".
         """
-        words = {w for w in re.split(r"[^a-z0-9]+", lowered)
+        head = resolver.plain(wanted.split(",")[0]) if "," in wanted else lowered
+        words = {w for w in re.split(r"[^a-z0-9]+", head)
                  if len(w) >= 5 and w not in VAGUE_OPTION_WORDS}
         if not words:
             return -1
@@ -8144,7 +8287,11 @@ def _search_terms(value: str) -> list[str]:
     # what has to match - so a useless one costs a look, not a wrong answer.
     runs = [r for r in runs if len(r) >= 2]
     terms: list[str] = []
-    for candidate in (runs[-1] if runs else "", runs[0] if runs else ""):
+    # The last word first ("+91 IN": the country code) - but "Gurgaon, India"
+    # is a place, and its first part is the one that names it: searching
+    # "India" listed every Indian town but Gurgaon (TurboHire, Oct 2026).
+    order = (runs[0], runs[-1]) if runs and "," in whole else (runs[-1] if runs else "", runs[0] if runs else "")
+    for candidate in order:
         low = candidate.lower()
         if candidate and low != whole.lower() and candidate not in terms:
             terms.append(candidate)
@@ -8474,6 +8621,11 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         direct, why = choose(opening, value), ""
         if direct < 0:
             direct, why = matching.best_option(opening, value, choose)
+        if direct < 0:
+            # 6 is "3-7 Years" (TurboHire, Oct 2026): typing it filtered the
+            # list down to nothing.
+            direct = _band_index(opening, value)
+            why = f"{value} falls in that range" if direct >= 0 else ""
         if direct >= 0 and _click_row(page, locator, opening_rows, direct, opening[direct]):
             if why:
                 _log_best_match(sess, prefix, label, value, opening[direct], why)
@@ -8788,6 +8940,12 @@ def _same_answer(shown: str, wanted: str) -> bool:
     if a == b or re.search(rf"(?<!\w){re.escape(b)}(?!\w)", a) or re.search(rf"(?<!\w){re.escape(a)}(?!\w)", b):
         return True
     if resolver.match_option(wanted, [shown]):
+        return True
+    # A phone code shown short: "IN +91" for the row "India +91" (TurboHire,
+    # Oct 2026), refused as "not entered" and the box reported as wrong.
+    dial_a = re.findall(r"\+\s*\d{1,4}(?:-\d{1,4})?", shown or "")
+    dial_b = re.findall(r"\+\s*\d{1,4}(?:-\d{1,4})?", wanted or "")
+    if len(dial_a) == 1 and dial_a == dial_b:
         return True
     have, want = re.search(r"\d+(?:\.\d+)?", a), re.search(r"\d+(?:\.\d+)?", b)
     return bool(have and want and have.group() == want.group()

@@ -733,7 +733,15 @@ SNAPSHOT_JS = """
       tag: el.tagName.toLowerCase(),
       type: type,
       // A widget standing in for a hidden control answers as that control.
-      role: el.getAttribute('role') || (standsIn && inner ? inner.getAttribute('role') : '') || '',
+      // And a text box whose list is said elsewhere: Material-UI 4 puts
+      // role=combobox on the wrapper and aria-autocomplete on the input
+      // (TurboHire, Oct 2026), so its dropdowns read as plain boxes - guesses
+      // were typed at them ("B.Tech", "6") and their lists never read.
+      role: el.getAttribute('role') || (standsIn && inner ? inner.getAttribute('role') : '') ||
+        (el.tagName === 'INPUT' && (['list', 'both'].includes((el.getAttribute('aria-autocomplete') || '').toLowerCase()) ||
+          (el.parentElement && el.parentElement.closest('[role=combobox]') &&
+           el.parentElement.closest('[role=combobox]').querySelectorAll('input:not([type=hidden])').length === 1))
+          ? 'combobox' : '') || '',
       haspopup: el.getAttribute('aria-haspopup') ||
         (standsIn && inner ? inner.getAttribute('aria-haspopup') : '') || '',
       // Several choices at once: PrimeNG's multiselect, or any listbox

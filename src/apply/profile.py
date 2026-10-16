@@ -16,6 +16,12 @@ SECRET_HINTS = (
     "one time",
     "one-time",
     "verification code",
+    # A code sent to the candidate is typed by them in the browser, never
+    # asked for in the chat (your call, Oct 2026): "Enter the 6 digit code
+    # sent to your Email Id" (TurboHire), "6-digit confirmation code".
+    "confirmation code",
+    "digit code",
+    "code sent",
     "passcode",
     "password",
     "pin",

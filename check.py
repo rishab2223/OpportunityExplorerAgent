@@ -64,6 +64,8 @@ GROUPS: dict[str, list[str]] = {
         "embedded_confirm_check.py", "redraw_on_blur_check.py", "oracle_cx_check.py",
         "infor_check.py",
         "planview_check.py",
+        "nomatch_list_check.py",      # "No match found." under a value the list lacks
+        "mui4_autocomplete_check.py",   # TurboHire: role=combobox on the wrapper; options read for the model
     ],
     "attach": ["chooser_check.py", "jobvite_upload_check.py", "taleo_check.py",
                "photo_picker_check.py"],

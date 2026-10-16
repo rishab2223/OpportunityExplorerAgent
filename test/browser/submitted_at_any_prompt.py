@@ -14,6 +14,11 @@ had to abort and then press Mark applied on the row.
 
 Drives a form whose last box the model asks about, and answers it the way the
 candidate needed to.
+
+Since Oct 2026 a code sent to the candidate is never asked for in the chat:
+the agent tells them to type it into the browser and waits (your call, after
+TurboHire's "Enter the 6 digit code sent to your Email Id"). "I submitted" at
+THAT prompt must still record the application.
 """
 
 from __future__ import annotations
@@ -106,8 +111,10 @@ if sess.status != "applied":
     problems.append(f"status was {sess.status!r}, wanted 'applied'")
 if recorded != ["applied"]:
     problems.append(f"the outcome callback got {recorded}, wanted ['applied']")
-if not any("confirmation code" in q for q in sess.asked):
+if not any("confirmation code" in q and "into the browser yourself" in q for q in sess.asked):
     problems.append("the confirmation-code prompt never appeared, so nothing was proven")
+if any(q.startswith("Please enter") for q in sess.asked):
+    problems.append("the code itself was asked for in the chat")
 
 if problems:
     print("\nREPRODUCED:")

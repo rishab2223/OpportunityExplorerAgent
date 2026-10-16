@@ -1214,7 +1214,7 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
 
     label = field.get("label") or ""
     name = (field.get("name") or "").strip().lower()
-    autocomplete = (field.get("autocomplete") or "").strip().lower()
+    autocomplete = _autocomplete_of(field)
     norm_label = profile.fingerprint(_without_format_hint(label))
     if profile.is_secret(f"{label} {name}"):
         return None
@@ -1521,12 +1521,25 @@ def worked_here_before(field: dict[str, Any], company: str) -> tuple[str, str] |
     return "No", "profile"
 
 
+# A box whose only words are an example address is an e-mail box: TurboHire's
+# sign-in (Oct 2026) labels it "name@domain" and marks it autocomplete
+# "new-password", so nothing matched and the candidate typed it in by hand.
+_EXAMPLE_ADDRESS_RE = re.compile(r"^\s*[\w.+-]+@[\w-]+(\.[\w-]+)*\s*$")
+
+
+def _autocomplete_of(field: dict[str, Any]) -> str:
+    autocomplete = (field.get("autocomplete") or "").strip().lower()
+    if any(_EXAMPLE_ADDRESS_RE.match(str(field.get(k) or "")) for k in ("label", "placeholder")):
+        return "email"
+    return autocomplete
+
+
 def _rule_key(field: dict[str, Any]) -> str:
     """Which profile rule this box answers to, '' for none - by the same
     autocomplete / name / label tests resolve() uses."""
     label = field.get("label") or ""
     name = (field.get("name") or "").strip().lower()
-    autocomplete = (field.get("autocomplete") or "").strip().lower()
+    autocomplete = _autocomplete_of(field)
     norm_label = profile.fingerprint(_without_format_hint(label))
     for key, ac_values, name_re, label_re in _RULES:
         if ((autocomplete and autocomplete in ac_values)

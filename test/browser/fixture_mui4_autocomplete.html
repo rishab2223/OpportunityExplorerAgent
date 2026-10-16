@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Questions</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  .q { margin: 18px 0; width: 480px; }
+  .box { position: relative; display: flex; border: 1px solid #ccc; }
+  .box input { flex: 1; padding: 8px; border: 0; }
+  .popper { position: absolute; background: #fff; border: 1px solid #999; width: 480px; }
+  .popper li { list-style: none; padding: 6px 10px; }
+  .popper ul { margin: 0; padding: 0; }
+</style></head>
+<body>
+<!-- TurboHire's questions (Oct 2026), as Material-UI 4 draws them: role=combobox
+     on the WRAPPER, aria-autocomplete on the input, an "Open" button beside it,
+     and the list drawn in a popper at the end of <body>. Typing filters the
+     list; nothing left reads "No options". -->
+<form id="f">
+  <div class="q"><label for="edu">2. Education Pursued/Pursuing*</label>
+    <div class="MuiAutocomplete-root" role="combobox" aria-expanded="false">
+      <div class="box"><input id="edu" type="text" aria-autocomplete="both" autocomplete="none">
+        <button type="button" aria-label="Open" title="Open" tabindex="-1">v</button></div></div></div>
+  <div class="q"><label for="exp">6. Experience*</label>
+    <div class="MuiAutocomplete-root" role="combobox" aria-expanded="false">
+      <div class="box"><input id="exp" type="text" aria-autocomplete="both" autocomplete="none">
+        <button type="button" aria-label="Open" title="Open" tabindex="-1">v</button></div></div></div>
+  <div class="q"><label for="city">10. Current Location*</label>
+    <div class="MuiAutocomplete-root" role="combobox" aria-expanded="false">
+      <div class="box"><input id="city" type="text" aria-autocomplete="both" autocomplete="none">
+        <button type="button" aria-label="Open" title="Open" tabindex="-1">v</button></div></div></div>
+  <div class="q"><label for="college">3. Which College/s have you graduated/postgraduated from?*</label>
+    <div class="MuiAutocomplete-root" role="combobox" aria-expanded="false">
+      <div class="box"><input id="college" type="text" aria-autocomplete="both" autocomplete="none">
+        <button type="button" aria-label="Open" title="Open" tabindex="-1">v</button></div></div>
+    <div id="college-tags"></div></div>
+  <div class="q"><label for="code">Phone Number *</label>
+    <div class="MuiAutocomplete-root" role="combobox" aria-expanded="false">
+      <div class="box"><input id="code" type="text" aria-autocomplete="both" autocomplete="none">
+        <button type="button" aria-label="Open" title="Open" tabindex="-1">v</button></div></div></div>
+  <div class="q"><label for="ctc">7. Current CTC ( in INR )*</label>
+    <div class="box"><input id="ctc" type="number"></div></div>
+</form>
+<script>
+const LISTS = {
+  edu: ["Engineering", "Medical", "Management", "Science", "Commerce", "Arts", "Others"],
+  exp: ["0-3 Years", "3-7 Years", "7-10 Years", "10+ Years"],
+  city: null,     // searched on the server: nothing until something is typed
+  // Several at once: a choice becomes a tag BELOW the box, the box empties,
+  // and the chosen option leaves the list.
+  college: ["IIT", "NIT", "DTU", "Others"],
+  // A phone code: the row says "India +91", the box then shows "IN +91".
+  code: ["Afghanistan +93", "India +91", "Indonesia +62"],
+};
+const SHORT = {"India +91": "IN +91", "Afghanistan +93": "AF +93", "Indonesia +62": "ID +62"};
+const CITIES = ["Gurgaon", "Gurugram", "Morinda, India", "Mumbai, India", "Pune"];
+const tags = [];
+const shownIn = {};     // what each box shows once something is chosen
+let open = null;
+function close() {
+  document.querySelectorAll('.popper').forEach(p => p.remove());
+  document.querySelectorAll('[role=combobox]').forEach(c => { c.setAttribute('aria-expanded', 'false'); c.removeAttribute('aria-owns'); });
+  open = null;
+}
+function draw(input) {
+  close();
+  const id = input.id, q = input.value.trim().toLowerCase();
+  let items = LISTS[id];
+  if (items === null) items = q ? CITIES : [];
+  if (!q && LISTS[id] === null) return;          // the city list waits for typing
+  items = items.filter(o => o.toLowerCase().includes(q) && !(id === 'college' && tags.includes(o)));
+  const wrap = input.closest('[role=combobox]');
+  const pop = document.createElement('div');
+  pop.className = 'popper';
+  const r = input.getBoundingClientRect();
+  pop.style.left = (r.left + window.scrollX) + 'px';
+  pop.style.top = (r.bottom + window.scrollY + 2) + 'px';
+  pop.innerHTML = items.length
+    ? `<ul role="listbox" id="${id}-popup">` + items.map((o, i) => `<li role="option" id="${id}-option-${i}" data-v="${o}">${o}</li>`).join('') + '</ul>'
+    : '<div class="MuiAutocomplete-noOptions">No options</div>';
+  document.body.appendChild(pop);
+  wrap.setAttribute('aria-expanded', 'true');
+  wrap.setAttribute('aria-owns', `${id}-popup`);
+  open = input;
+  pop.addEventListener('mousedown', (e) => {
+    const li = e.target.closest('[role=option]');
+    if (!li) return;
+    e.preventDefault();
+    if (id === 'college') {
+      tags.push(li.dataset.v);
+      document.getElementById('college-tags').innerHTML =
+        tags.map(t => `<div><span>${t}</span><svg width="8" height="8"></svg></div>`).join('');
+      input.value = '';
+      document.body.dataset.college = tags.join('|');
+      close();
+      return;
+    }
+    input.value = SHORT[li.dataset.v] || li.dataset.v;
+    shownIn[id] = input.value;
+    document.body.dataset[id] = li.dataset.v;
+    close();
+  });
+}
+document.querySelectorAll('[role=combobox] input').forEach(input => {
+  input.addEventListener('mousedown', () => { if (open === input) close(); else draw(input); });
+  input.addEventListener('input', () => draw(input));
+  input.addEventListener('blur', () => {
+    setTimeout(() => { if (open === input) close(); }, 0);   // its own list only
+    // Material-UI: a box left with text that is not a chosen option is cleared.
+    if (input.value !== (shownIn[input.id] || '')) input.value = shownIn[input.id] || '';
+  });
+  input.closest('[role=combobox]').querySelector('button').addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    if (open === input) close(); else { input.focus(); draw(input); }
+  });
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+</script>
+</body>
+</html>

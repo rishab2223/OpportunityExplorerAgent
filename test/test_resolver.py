@@ -76,6 +76,57 @@ class ProfileMappingTests(ResolverTestCase):
         # The title's label is not read as the company's.
         self.assertNotEqual(resolver.resolve(field(label="Job Title at Recent employer"))[0], "Acme Corp")
 
+    def test_a_notice_question_naming_the_employer_is_about_notice(self) -> None:
+        # CBTS (Oct 2026): the current employer's name went into this list.
+        data = dict(DUMMY_PROFILE, current_company="Acme Corp")
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+        for label in ("How much notice must you provide your current employer before leaving?",
+                      "How long is the notice you must give your present employer?",
+                      "Notice you need to serve at your current company"):
+            got = resolver.resolve(field(label=label))
+            self.assertIsNotNone(got, label)
+            self.assertNotEqual(got[0], "Acme Corp", label)
+            self.assertEqual(got[0], "60 days", label)
+        # Still the company where the question is the company.
+        for label in ("Name of your current employer", "Current employer", "Most recent employer"):
+            self.assertEqual(resolver.resolve(field(label=label)), ("Acme Corp", "profile"), label)
+
+    def test_an_example_address_is_an_email_box(self) -> None:
+        # TurboHire's sign-in (Oct 2026): the box's only words are
+        # "name@domain", autocomplete "new-password"; the candidate typed the
+        # address by hand.
+        email = str(DUMMY_PROFILE["email"])
+        for box in (field(label="name@domain", autocomplete="new-password"),
+                    field(label="", placeholder="you@example.com")):
+            self.assertEqual(resolver.resolve(box), (email, "profile"), box)
+        self.assertIsNone(resolver.resolve(field(label="Enter the 6 digit code sent to your Email Id")))
+
+    def test_a_code_sent_to_the_candidate_is_theirs_to_type(self) -> None:
+        # Your call (Oct 2026): never asked for in the chat.
+        for label in ("Enter the 6 digit code sent to your Email Id", "Type the code sent to your phone",
+                      "Enter the 6-digit confirmation code sent to your email *"):
+            self.assertTrue(profile.is_secret(label), label)
+        for label in ("Postal code", "Promo code", "Country code", "Zip code"):
+            self.assertFalse(profile.is_secret(label), label)
+
+    def test_a_last_working_day_question_is_not_the_notice_period(self) -> None:
+        # Oolio (Oct 2026): the saved notice period, "join immediately", went
+        # into a box that said to enter 0 when not serving notice.
+        from src import answers
+        oolio = ('If you are serving notice period or your last working day is completed, please '
+                 'share the details (Example - last working days is /was 19th Nov, 2026 then enter as '
+                 '19112026, if not serving enter "0")')
+        for label in (oolio, "Last working day (if serving notice period)",
+                      "Notice period - date of relieving (DD/MM/YYYY)",
+                      "If on notice period, enter your LWD"):
+            self.assertIsNone(resolver.resolve(field(label=label)), label)
+            self.assertNotEqual(answers.question_key(label), "notice_period", label)
+        # The notice period itself still is.
+        for label in ("What is your notice period?", "Notice Period (in days)",
+                      "Are you currently serving notice period?", "Notice period*"):
+            self.assertEqual(answers.question_key(label), "notice_period", label)
+        self.assertEqual(resolver.resolve(field(label="Notice Period (in days)")), ("60 days", "profile"))
+
     def test_an_immediate_notice_period_matches_its_other_wordings(self) -> None:
         # EPAM (Oct 2026): "Immediate Joiner" against "Available now".
         epam = ["Less than 2 weeks", "Available now", "1 month", "2 months"]
