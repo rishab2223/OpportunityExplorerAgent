@@ -206,9 +206,10 @@ s23c = run("epam", epam_url,
            ["__wait__", "tailored", "__wait__", "__wait__",
             "__wait__",                 # the office question, walked away from
             "__wait__", "done", "submitted"],
-           # Step 2's optional Pronouns; step 3's office locations; step 5's
-           # expected-salary estimate (the stand-in model has none to give).
-           expect_calls=3)
+           # Step 2's optional Pronouns and step 3's office locations. Step 5's
+           # expected-salary estimate is asked in the background and not
+           # counted (the stand-in model has none to give).
+           expect_calls=2)
 logs23c = "\n".join(s23c.logs)
 assert any("office locations" in q.lower() for q in s23c.asked), s23c.asked
 assert "That question's box is no longer on the page" in logs23c, logs23c

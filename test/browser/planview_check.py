@@ -115,6 +115,10 @@ BUTTON_CALLS: list[str] = []
 
 
 def model(system, user, schema, images=None):
+    if schema.__name__ == "SalaryEstimate":
+        # The background expected-pay estimate (started once a form is
+        # reached) is not a read of the page: not counted, and none to give.
+        raise RuntimeError("the stand-in model gives no salary estimate")
     # The end-of-step button labels (buttons.py) are counted on their own:
     # answered with nothing, so iCIMS's submit-type Next stays the candidate's.
     (BUTTON_CALLS if schema.__name__ == "ButtonKinds" else CALLS).append(user)

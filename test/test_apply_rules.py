@@ -592,6 +592,18 @@ class SalaryEstimateTests(TempDbTestCase):
         self.assertIn("Quoting 41 LPA (the band's midpoint)", joined)
         self.assertIn("Sr. Backend Engineer at X Co", joined)
 
+    def test_asked_early_and_waited_on_only_if_needed(self) -> None:
+        # Started at the Apply click; asked when the box appears it held the
+        # form 16-19 s (latency review, Oct 2026).
+        attach = self._attach(40, 42)
+        attach.start_salary_estimate()
+        attach._salary_early.result(timeout=5)
+        self.assertEqual(attach.expected_salary(), 4_100_000)
+        self.assertEqual((self.calls, attach.calls), (1, 1))
+        self.assertNotIn("Estimating the expected salary for this role…", attach.logs)   # nothing to wait for
+        attach.start_salary_estimate()                                                     # once a session
+        self.assertEqual(self.calls, 1)
+
     def test_never_below_current_pay(self) -> None:
         attach = self._attach(12, 16)
         # Band midpoint 14 < current 18: the saved expectation (22) is quoted.

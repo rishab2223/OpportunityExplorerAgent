@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import re
 import threading
@@ -1017,6 +1018,7 @@ def run_session(
         told_dropped = 0
         named_site = ""          # the tracking system last named in the transcript
         settled_sig = ""         # the page last given time to draw before a model call
+        redrawn_sig = ""         # the page last read again for late boxes before a model call
         zero_settles = 0
         closed_prompted: set[str] = set()
         human_check_told: set[str] = set()
@@ -1488,6 +1490,12 @@ def run_session(
                 last_llm_sig = ""
                 continue
 
+            # A page to fill: the expected-pay estimate starts now, in the
+            # background, so it is ready when a pay box turns up. Not when the
+            # posting opens: a page already saying "sent", a closed posting or
+            # a sign-in wall never needs it.
+            attach.start_salary_estimate()
+
             # 2) Deterministic pass: profile + answer bank, zero model calls.
             if _remove_excluded_entries(page, fields, handled, sess):
                 errors_in_a_row = 0
@@ -1938,6 +1946,19 @@ def run_session(
                 if _wait_for_code(sess, holder, page, handled, fields, unresolved[0], notes) is None:
                     last_llm_sig = ""
                 continue
+            # A step still drawing: boxes the read did not see are there now.
+            # On LinkedIn the model was asked a second after a step changed,
+            # answered "nothing to do" in 5-7 s, and the profile then filled
+            # the boxes that had appeared meanwhile - 3 calls in 34 (latency
+            # review, Oct 2026). One fresh read, once per page, costs a tenth
+            # of a second; the sweep gets the new boxes first.
+            if sig != redrawn_sig:
+                redrawn_sig = sig
+                if _new_boxes_appeared(page, fields):
+                    continue
+            # The step's end button, labelled while this plan is made.
+            if unclear_end:
+                _prefetch_button_labels(page, fields, sess, buttons_invoke, history)
             # Every unanswered dropdown's options, as text, before the call:
             # the model answers with one of them instead of guessing.
             _read_lists(page, unresolved, sess, fields)
@@ -2286,6 +2307,20 @@ def run_session(
         browser.close(pw, context)
 
 
+def _in_background(work: Callable[[], Any], name: str) -> concurrent.futures.Future:
+    """Run `work` on a thread of its own; its result or error in the Future."""
+    future: concurrent.futures.Future = concurrent.futures.Future()
+
+    def run() -> None:
+        try:
+            future.set_result(work())
+        except BaseException as exc:
+            future.set_exception(exc)
+
+    threading.Thread(target=run, name=name, daemon=True).start()
+    return future
+
+
 class Attachments:
     """Builds the resume and cover letter on demand, once per session.
 
@@ -2326,8 +2361,29 @@ class Attachments:
         self.calls = 0
         self._salary: int | None = None   # expected pay, rupees/year, once per session
         self._salary_tried = False
+        self._salary_early: concurrent.futures.Future | None = None
 
     # -- expected salary --------------------------------------------------
+    def _estimate_call(self) -> "salary.SalaryEstimate":
+        data = profile.load_profile()
+        return self.invoke(
+            salary.ESTIMATE_SYSTEM,
+            salary.estimate_prompt(self.job, str(data.get("total_experience_years") or "")),
+            salary.SalaryEstimate,
+        )
+
+    def start_salary_estimate(self) -> None:
+        """Ask for the estimate now, in the background, so it is ready when an
+        expected-pay box turns up. Asked then, it held the form up 16-19 s on
+        every application - its own model process starting cold (latency
+        review, Oct 2026). One call a session that reaches a form, used or
+        not, and counted in the session's model calls when it starts; the
+        transcript only speaks of it when a box needs it."""
+        if self.invoke is None or self._salary_early is not None:
+            return
+        self.calls += 1
+        self._salary_early = _in_background(self._estimate_call, "salary-estimate")
+
     def expected_salary(self) -> int | None:
         """Rupees per year to quote as expected pay: the midpoint of the
         model's band for this role at this company, never below current pay.
@@ -2342,14 +2398,15 @@ class Attachments:
         if current is None:
             banked = answers.lookup("current_ctc")
             current = salary.parse_annual_inr(banked["answer"]) if banked else None
-        self.sess.log("Estimating the expected salary for this role…")
+        early = self._salary_early
+        if early is None or not early.done():
+            self.sess.log("Estimating the expected salary for this role…")
         try:
-            estimate = self.invoke(
-                salary.ESTIMATE_SYSTEM,
-                salary.estimate_prompt(self.job, str(data.get("total_experience_years") or "")),
-                salary.SalaryEstimate,
-            )
-            self.calls += 1
+            if early is None:
+                self.calls += 1
+                estimate = self._estimate_call()
+            else:
+                estimate = early.result()
         except Exception as exc:
             self.sess.log(f"Could not estimate the salary: {_short(exc)}")
             return None
@@ -3819,6 +3876,16 @@ def _look_at(page, field: dict[str, Any], open_list: bool = False, typed: str = 
 # opened to read them before one call.
 LIST_OPTIONS_SHOWN = 80
 LIST_READS_PER_CALL = 12
+
+
+def _new_boxes_appeared(page, fields: list[dict[str, Any]]) -> bool:
+    """Whether the page now has fillable boxes the read in hand does not."""
+    try:
+        now = browser.snapshot(page)
+    except Exception:
+        return False
+    known = {_field_key(f, _field_label(f)) for f in fields}
+    return any(_accepts_value(f) and _field_key(f, _field_label(f)) not in known for f in now)
 
 
 def _parent_choices(fields: list[dict[str, Any]], field: dict[str, Any]) -> str:
@@ -5822,6 +5889,34 @@ def _is_step_only(label: str) -> bool:
     return _ADVANCE_RE.match(text) is not None and not re.search(r"\bsubmit\b", text)
 
 
+def _button_sig(page, fields: list[dict[str, Any]]) -> str:
+    """The page as far as its buttons' labels go: what it asks and offers,
+    never what has been typed - filling a step does not change the answer."""
+    return _safe_url(page) + "|" + "|".join(
+        f"{f.get('tag')}:{f.get('type')}:{f.get('label') or f.get('text')}" for f in fields)
+
+
+def _prefetch_button_labels(page, fields: list[dict[str, Any]], sess: ApplySession, invoke,
+                            history: list[str]) -> None:
+    """Start the end-of-step button labels while the step's plan is being
+    made, so they are ready when the step is done: asked then, they held the
+    review up 3-5 s on every step that needed them (latency review, Oct
+    2026). The page is read here, on the browser's thread; only the model
+    call runs alongside. The step's boxes are not in the question: the same
+    page, filled or not, gets the same answer (_button_sig)."""
+    if invoke is None or not buttons.candidates(fields):
+        return
+    sig = _button_sig(page, fields)
+    early: dict[str, Any] = sess.__dict__.setdefault("button_early", {})
+    if sig in sess.__dict__.get("button_cache", {}) or sig in early:
+        return
+    context = buttons.read_context(browser.target(page))
+    steps_done = sum(1 for h in history if h.startswith("clicked "))
+    url = _safe_url(page)
+    early[sig] = _in_background(lambda: buttons.classify(invoke, fields, context, steps_done, url),
+                                "button-labels")
+
+
 def _label_buttons(page, fields: list[dict[str, Any]], sess: ApplySession, invoke,
                    history: list[str]) -> dict[int, "buttons.ButtonVerdict"]:
     """The model's label for each button on this page (buttons.py), by field
@@ -5835,16 +5930,22 @@ def _label_buttons(page, fields: list[dict[str, Any]], sess: ApplySession, invok
     if not found:
         return {}
     cache: dict[str, dict[int, Any]] = sess.__dict__.setdefault("button_cache", {})
-    sig = _safe_url(page) + "|" + "|".join(
-        f"{f.get('tag')}:{f.get('type')}:{f.get('label') or f.get('text')}" for f in fields)
+    sig = _button_sig(page, fields)
     if sig in cache:
         return cache[sig]
-    context = buttons.read_context(browser.target(page))
-    steps_done = sum(1 for h in history if h.startswith("clicked "))
+    early = sess.__dict__.setdefault("button_early", {}).pop(sig, None)
     started = time.monotonic()
+    if early is None:
+        context = buttons.read_context(browser.target(page))
+        steps_done = sum(1 for h in history if h.startswith("clicked "))
+        url = _safe_url(page)
     try:
-        result = _while_model_thinks(
-            sess, lambda: buttons.classify(invoke, fields, context, steps_done, _safe_url(page)))
+        if early is not None:
+            # Asked while the step's plan was being made (_prefetch_button_labels).
+            result = _while_model_thinks(sess, early.result)
+        else:
+            result = _while_model_thinks(
+                sess, lambda: buttons.classify(invoke, fields, context, steps_done, url))
     except (Aborted, Parked):
         raise
     except Exception as exc:

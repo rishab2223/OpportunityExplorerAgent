@@ -50,6 +50,10 @@ CALLS: list[str] = []
 
 
 def fake_invoke(system, user, schema):
+    if schema.__name__ == "SalaryEstimate":
+        # The background expected-pay estimate (started once a form is
+        # reached) is not a read of the page: not counted, and none to give.
+        raise RuntimeError("the stand-in model gives no salary estimate")
     CALLS.append(system[:20])
     raise AssertionError("a submitted application should never reach the model")
 

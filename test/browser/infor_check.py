@@ -290,6 +290,10 @@ def picker(user, images):
 
 
 def model(system, user, schema, images=None):
+    if schema.__name__ == "SalaryEstimate":
+        # The background expected-pay estimate (started once a form is
+        # reached) is not a read of the page: not counted, and none to give.
+        raise RuntimeError("the stand-in model gives no salary estimate")
     if schema is matching.OptionPicks:
         return picker(user, images)
     CALLS.append((user, len(images or [])))
@@ -366,6 +370,8 @@ print("\n-- drawn rows the dropdown call cannot read --")
 
 
 def model_unreadable(system, user, schema, images=None):
+    if schema.__name__ == "SalaryEstimate":
+        raise RuntimeError("the stand-in model gives no salary estimate")   # not a read of the page
     if schema is matching.OptionPicks:
         return picker(user, images)
     CALLS.append((user, len(images or [])))

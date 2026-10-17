@@ -32,6 +32,10 @@ calls = []
 
 
 def _no_model(system, user, schema):
+    if schema.__name__ == "SalaryEstimate":
+        # The background expected-pay estimate (started once a form is
+        # reached) is not a read of the page: not counted, and none to give.
+        raise RuntimeError("the stand-in model gives no salary estimate")
     # The end-of-step button labels (buttons.py) are not the form planner
     # this check means: answered with nothing, so the usual rules decide.
     if schema.__name__ == "ButtonKinds":

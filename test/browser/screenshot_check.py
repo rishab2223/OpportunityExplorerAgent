@@ -245,6 +245,10 @@ CALLS: list[tuple[str, list[bytes]]] = []
 
 
 def model(system, user, schema, images=None):
+    if schema.__name__ == "SalaryEstimate":
+        # The background expected-pay estimate (started once a form is
+        # reached) is not a read of the page: not counted, and none to give.
+        raise RuntimeError("the stand-in model gives no salary estimate")
     CALLS.append((user, list(images or [])))
     fields = json.loads(user.split("FORM FIELDS:\n", 1)[1].split("\n\nALREADY DONE:")[0])
     actions = []

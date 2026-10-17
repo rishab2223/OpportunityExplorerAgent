@@ -94,6 +94,10 @@ def _fake_buttons(user: str, schema):
 
 def fake_invoke(system: str, user: str, schema, images=None):
     """Deterministic stand-in for the model."""
+    if schema.__name__ == "SalaryEstimate":
+        # The background expected-pay estimate (started once a form is
+        # reached) is not a read of the page: not counted, and none to give.
+        raise RuntimeError("the stand-in model gives no salary estimate")
     if schema.__name__ == "ButtonKinds":
         return _fake_buttons(user, schema)
     LLM_CALLS.append(system[:24])
