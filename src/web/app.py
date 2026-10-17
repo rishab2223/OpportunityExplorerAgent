@@ -189,6 +189,167 @@ def api_applied_sent(job_id: str, kind: str) -> dict:
     return {"follow_up_at": follow, "detail": tracker.detail(job_id)}
 
 
+# ------------------------------------------------------------- People page
+
+def _people_cfg():
+    return run_options.effective_config().people
+
+
+def _person(payload: dict) -> dict:
+    """The person a People page action is about, as the page sent it."""
+    person = payload.get("person") or {}
+    if not isinstance(person, dict) or not str(person.get("profile_url") or "").strip():
+        raise HTTPException(status_code=400, detail="which person? (no profile link)")
+    return {k: str(person.get(k) or "") for k in ("name", "headline", "profile_url", "kind")}
+
+
+@app.get("/api/people/runs")
+def api_people_runs() -> dict:
+    """Each run with how many of its jobs are not applied, applied, referral."""
+    from src import people
+
+    return {"runs": people.run_counts(), "follow_ups_due": people.follow_ups_due()}
+
+
+@app.get("/api/people/due")
+def api_people_due() -> dict:
+    """The People tab's reminder count: notes sent with no reply, past due."""
+    from src import people
+
+    return {"follow_ups_due": people.follow_ups_due()}
+
+
+@app.get("/api/people/runs/{stamp}")
+def api_people_run(stamp: str) -> dict:
+    from src import people
+
+    try:
+        return {"stamp": stamp, "jobs": people.run_jobs(stamp, _people_cfg())}
+    except runs.RunNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/people/budget")
+def api_people_budget(fresh: bool = False) -> dict:
+    from src import people
+
+    return people.budget(_people_cfg(), load_env().apify_token, fresh=fresh)
+
+
+@app.put("/api/people/settings")
+def api_people_settings(payload: dict = Body(...)) -> dict:
+    from src import people
+
+    cfg = _people_cfg()
+    state = people.budget(cfg, load_env().apify_token)
+    try:
+        people.set_limits(payload.get("soft"), payload.get("pause_at"), state.get("account_limit"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return people.budget(cfg, load_env().apify_token)
+
+
+@app.post("/api/people/warm")
+def api_people_warm() -> dict:
+    """The People page opened: start the message model now."""
+    from src.web import outreach
+
+    return {"warming": outreach.warm()}
+
+
+@app.post("/api/people/runs/{stamp}/jobs/{job_id}/find")
+def api_people_find(stamp: str, job_id: str, payload: dict = Body(default={})) -> dict:
+    """Find people for a job: the Apify search, and who posted it read from
+    the posting alongside (free; skipped when already read, unless again)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from src import people
+
+    job = _job_or_404(stamp, job_id)
+    again = bool(payload.get("again"))
+    without_city = bool(payload.get("without_city"))
+    held = people.stored_poster(job_id)
+    read_poster = not without_city and (again or held is None or held["result"] in ("busy", "error", "signin"))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        poster = pool.submit(people.read_poster, job) if read_poster else None
+        error = ""
+        try:
+            people.find(job, _people_cfg(), load_env().apify_token, without_city=without_city, again=again)
+        except people.PeopleError as exc:
+            error = str(exc)
+        except Exception as exc:
+            error = f"the search failed: {exc}"
+        poster_result = poster.result() if poster else held
+    return {"error": error, "poster": (poster_result or {}).get("result", "")}
+
+
+@app.post("/api/people/runs/{stamp}/jobs/{job_id}/poster")
+def api_people_poster(stamp: str, job_id: str) -> dict:
+    """Read who posted the job, without a search: free, and allowed while
+    people search is paused."""
+    from src import people
+
+    return people.read_poster(_job_or_404(stamp, job_id))
+
+
+@app.post("/api/people/runs/{stamp}/jobs/{job_id}/message")
+def api_people_message(stamp: str, job_id: str, payload: dict = Body(...)) -> dict:
+    """The stored note and message for one person."""
+    from src import people
+
+    _job_or_404(stamp, job_id)
+    person = _person(payload)
+    held = people.messages_for([job_id]).get(job_id, {}).get(people.profile_key(person["profile_url"])) or {}
+    return {k: held.get(k) or "" for k in ("note", "message", "sent_at", "follow_up_at")}
+
+
+@app.post("/api/people/runs/{stamp}/jobs/{job_id}/draft")
+def api_people_draft(stamp: str, job_id: str, payload: dict = Body(...)) -> dict:
+    from src.web import outreach
+
+    job = _job_or_404(stamp, job_id)
+    applied_at = job.get("history_marked_at") if job.get("history_status") == "applied" else ""
+    try:
+        return outreach.people_draft(job, _person(payload), str(payload.get("which") or "note"),
+                                     applied_at or "", bool(payload.get("follow_up")))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"the model could not write it: {exc}") from exc
+
+
+@app.post("/api/people/runs/{stamp}/jobs/{job_id}/text")
+def api_people_text(stamp: str, job_id: str, payload: dict = Body(...)) -> dict:
+    """Save the candidate's own edit of a note or message."""
+    from src import people
+
+    _job_or_404(stamp, job_id)
+    try:
+        people.save_text(job_id, _person(payload), str(payload.get("which") or ""), str(payload.get("text") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@app.post("/api/people/runs/{stamp}/jobs/{job_id}/sent")
+def api_people_sent(stamp: str, job_id: str, payload: dict = Body(...)) -> dict:
+    from src import people
+
+    job = _job_or_404(stamp, job_id)
+    try:
+        return people.mark_sent(job, stamp, _person(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/people/runs/{stamp}/jobs/{job_id}/unsent")
+def api_people_unsent(stamp: str, job_id: str, payload: dict = Body(...)) -> dict:
+    from src import people
+
+    _job_or_404(stamp, job_id)
+    return people.unmark_sent(job_id, _person(payload))
+
+
 @app.get("/api/daily")
 def api_daily() -> dict:
     """The once-a-day batch: when it runs, when it last did, what it found."""

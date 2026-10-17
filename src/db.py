@@ -112,6 +112,55 @@ CREATE TABLE IF NOT EXISTS open_checks (
   detail     TEXT,
   checked_at TEXT NOT NULL
 );
+-- The People page (src/people.py). One search per company and city (city ''
+-- when searched without one), reused by every job there; its people; who
+-- posted each job, read from the posting; the notes to each person; and
+-- what every Apify search cost, for the month's limits.
+CREATE TABLE IF NOT EXISTS people_searches (
+  key      TEXT PRIMARY KEY,
+  company  TEXT NOT NULL,
+  city     TEXT NOT NULL,
+  size     TEXT NOT NULL,
+  found_at TEXT NOT NULL,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  note     TEXT
+);
+CREATE TABLE IF NOT EXISTS people (
+  search_key  TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  rank        INTEGER NOT NULL,
+  name        TEXT NOT NULL,
+  headline    TEXT,
+  profile_url TEXT NOT NULL,
+  flag        TEXT,
+  PRIMARY KEY (search_key, profile_url)
+);
+CREATE TABLE IF NOT EXISTS job_posters (
+  job_id  TEXT PRIMARY KEY,
+  result  TEXT NOT NULL,
+  people  TEXT NOT NULL,
+  read_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS people_messages (
+  job_id       TEXT NOT NULL,
+  profile_url  TEXT NOT NULL,
+  name         TEXT,
+  kind         TEXT,
+  note         TEXT,
+  message      TEXT,
+  sent_at      TEXT,
+  follow_up_at TEXT,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (job_id, profile_url)
+);
+CREATE TABLE IF NOT EXISTS people_spend (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  at         TEXT NOT NULL,
+  actor      TEXT,
+  run_id     TEXT,
+  search_key TEXT,
+  usd        REAL NOT NULL
+);
 """
 
 _INIT_LOCK = threading.Lock()

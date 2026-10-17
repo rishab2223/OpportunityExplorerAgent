@@ -1,5 +1,6 @@
 """Referral, outreach, follow-up and thank-you messages for an application,
-and the small chat that edits them (#42, Oct 2026).
+and the small chat that edits them (#42, Oct 2026); and the People page's
+note to one person about a job, applied to or not (people_draft, #51).
 
 Drafts only. The candidate sends every message themselves - LinkedIn's terms
 forbid automating that - and presses Mark sent, which sets the follow-up date.
@@ -154,6 +155,66 @@ def draft(job_id: str, kind: str, invoke=None) -> dict[str, Any]:
         raise ValueError("the model returned an empty draft")
     tracker.save_message(job_id, kind, text)
     return {"draft": text, "reply": turn.reply.strip() or "Here is a draft."}
+
+
+# The People page (src/people.py): a note to one person about one job, from
+# the run's row - the job may not be applied to yet.
+PEOPLE_WORDS = {
+    "engineers": "a referral request to an engineer at the company: ask whether they would refer the "
+                 "candidate for this role, say in one line why the candidate fits, offer the resume",
+    "managers": "a note to someone who may be the role's hiring manager: interest in the role, one or two "
+                "lines of fit from the resume, an offer to share more",
+    "recruiters": "a note to a recruiter at the company: interest in the role, one line of fit, notice "
+                  "period or location only if the profile gives it, an offer to share the resume",
+    "poster": "a note to the person who posted the job: thanks for posting it, interest, one line of fit",
+}
+# LinkedIn takes 300 characters in a connection request's note.
+NOTE_LIMIT = 300
+
+
+def _people_context(job: dict[str, Any], person: dict[str, str], applied_at: str) -> str:
+    status = (f"the candidate applied on {applied_at[:10]}" if applied_at
+              else "the candidate has not applied yet and is reaching out first")
+    return (
+        f"TODAY: {datetime.now():%d %b %Y}\n"
+        f"MESSAGE: {PEOPLE_WORDS.get(person.get('kind') or '', PEOPLE_WORDS['recruiters'])}\n"
+        f"JOB: {job.get('title')} at {job.get('company')} ({job.get('location') or 'location not given'}); {status}\n"
+        f"CONTACT: {person.get('name') or 'unknown'}, {person.get('headline') or 'role not known'}; "
+        f"how the candidate knows them: not given - claim no connection\n\n"
+        f"POSTING:\n{(job.get('description') or '')[:5000]}\n\n"
+        f"{_candidate()}"
+    )
+
+
+def people_draft(job: dict[str, Any], person: dict[str, str], which: str, applied_at: str = "",
+                 follow_up: bool = False, invoke=None) -> dict[str, Any]:
+    """A connection note (`which` = note: under 300 characters) or the
+    message after they accept (message). With `follow_up`, a nudge after
+    no reply. Saved for the person, replacing any earlier draft."""
+    from src import people
+
+    if which not in ("note", "message"):
+        raise ValueError("which must be note or message")
+    if which == "note":
+        ask = ("Write the connection request note. LinkedIn allows 300 characters: keep it under 270, "
+               "one or two sentences, no sign-off.")
+    else:
+        ask = "Write the message to send once they accept the connection: 50-110 words, first name sign-off."
+    if follow_up:
+        ask = ("They have not replied to an earlier note about this role. Write a short, polite follow-up, "
+               "no pressure" + (", under 270 characters." if which == "note" else ", 30-70 words."))
+    context = _people_context(job, person, applied_at)
+    turn = _ask(context + "\n\n" + ask, invoke)
+    text = turn.draft.strip()
+    if which == "note" and len(text) > NOTE_LIMIT:
+        # One more try; past that the counter on the page says how far over.
+        turn = _ask(context + f"\n\nCURRENT DRAFT:\n{text}\n\nTHE CANDIDATE ASKS: it is {len(text)} characters; "
+                    "LinkedIn allows 300. Shorten it to under 270 characters.", invoke)
+        text = turn.draft.strip() or text
+    if not text:
+        raise ValueError("the model returned an empty draft")
+    people.save_text(str(job.get("job_id") or ""), person, which, text)
+    return {"text": text, "reply": turn.reply.strip() or "Here is a draft."}
 
 
 def chat(job_id: str, kind: str, text: str, current: str = "",

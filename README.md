@@ -282,7 +282,7 @@ python -m src.web              # then open http://127.0.0.1:8000
 opportunity-explorer-web       # same thing after pip install -e .
 ```
 
-One page, three cards, plus the **Applied**, **Referrals**, **Held back** and **Resume fit** tabs:
+One page, three cards, plus the **Applied**, **Referrals**, **People**, **Held back** and **Resume fit** tabs, and **Profile**, **Saved answers** and **Settings** in the user menu (top right):
 
 - **Run** — **Start run…** opens the run settings popup, then the live log. Logs stream over server-sent events, so you watch `[score] 12/40 …` as it happens instead of guessing. One run at a time.
 - **Shortlist** — pick any past run from the dropdown; the table shows company, title, relevance, location, apply and listing links, the local PDF path with a copy button, status, and per-row actions. Long runs page at 15 rows: `‹ Prev  1 2 3 … [box] … 29 30  Next ›`, where the box takes a page number directly, so run 200 of a 400-job scrape is one keystroke away instead of thirty clicks. An identical toolbar sits **above and below** the table — tick boxes and **Start queue**, plus **Job info** — so a long page never has to be scrolled back up to act on it.
@@ -318,6 +318,22 @@ Every job marked applied (by hand, or when an apply session ends), and what happ
 - **Follow up?** — an open application with no change for 10 days, or a sent message's follow-up date passed, is flagged amber.
 
 Stages are yours to set; nothing guesses a stage from silence. Referrals stay on their own tab. The data is in `localData/job_history.db` (`applications`, `application_events`, `outreach_messages`).
+
+### People
+
+Who can help with each job, to ask for a referral or reach the hiring team. The **Run** menu lists each run with how many of its jobs are *not applied*, *applied* and *referral*; three tabs with those counts split the run's jobs, best score first.
+
+Each job starts with **Find people · ~6¢**. Pressing it fills four groups:
+
+- **Posted this job** — read from "Meet the hiring team" on the LinkedIn posting, in the apply window's signed-in Chrome profile (headless, one page). Free. Not every posting shows one; an Indeed posting never does, and it cannot be read while an apply window is open (it says so, with **Try again**).
+- **Likely hiring managers** and **Recruiters** — searched on Apify by role, company and city ([this actor](https://console.apify.com/actors/CrfU3svgxeBZmv5Mh), 1¢ a person, three of each). Only people whose profile names the company are kept; a headline that does not name it, or says "ex-", is marked.
+- **Engineers who could refer you** — a second search ([this actor](https://console.apify.com/actors/KGWgXNRD1aYhDYDeA), about 0.3¢) that checks each profile's current company. It ignores the role asked for, so they are "at the company", not a title.
+
+A search is per company and city: another job there shows the same people for 14 days at no cost, after which the list is marked old (**Search again** replaces it). A group that found nobody in the city offers **Search without the city**. When the posting names its team ("join our Accounts Payable team") it is shown as a hint.
+
+Each person has their LinkedIn link and a note button. The panel drafts a **connection note** (with LinkedIn's 300-character count) and a **message after they accept**, each when first opened, from the posting, your profile and resume — for an engineer a referral request, for a manager or recruiter a note of interest, saying whether you have applied yet. Edit it in place (kept), **Copy**, **Open their LinkedIn**, and **Mark sent**: that records when, sets a reminder 5 days later (the tab shows `People (2 due)`), and moves a job you have not applied to onto the Referral tab (and the **Referrals** tab, as a `referral_pending` with that person as the contact). An applied job stays applied, and its Applied timeline notes the message. **Undo** right after, or **Not sent? Undo** in the panel, takes it back. **Write a follow-up** drafts a nudge. You send every message yourself.
+
+**Spending** (Settings, in the user menu): searches run on your Apify account, which also pays for job fetches, and on the free plan a run stops once the month's $5 is used. So there are two limits, both editable there: above **$3** of people search this month, searches find 2 managers, 2 recruiters and 1 engineer (~4¢), with a notice on the People page; when the whole account reaches **$4.50**, people search pauses until the month resets, leaving the rest for job fetches (reading who posted a job stays available, as it is free). Each search is also capped on Apify's side so it cannot cross that line, and if the account cannot be read, Find people stays off rather than guess. Search sizes and titles are under `people:` in `settings.yaml`. Everything found is stored in `localData/job_history.db` only (`people_searches`, `people`, `job_posters`, `people_messages`, `people_spend`).
 
 ### Resume fit
 

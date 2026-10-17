@@ -69,6 +69,20 @@ daily:
   # 2. A search over the last 24 hours, with your saved run settings.
   search_run: true
 
+# The People page: who can help with a job (who posted it, hiring managers,
+# recruiters, engineers who could refer you), searched on Apify when you press
+# Find people. About 6¢ a job. The two spending limits are set on the
+# Settings page (user menu, top right); these are their defaults.
+people:
+  manager_title: "Engineering Manager"
+  recruiter_title: "Talent Acquisition"
+  engineer_title: "Software Engineer"
+  full: [3, 3, 4]          # managers, recruiters, engineers per search
+  small: [2, 2, 1]         # once people search is over soft_limit_usd this month
+  soft_limit_usd: 3.0      # people search alone, this month
+  pause_at_usd: 4.5        # the whole Apify account; the rest is kept for job fetches
+  reuse_days: 14           # another job at the same company and city reuses a search
+
 # Which LLM writes the tailored resume + interview prep: openai | claude.
 # Scoring always uses openai.score_model (cheap, one call per scraped job).
 enrich_provider: claude

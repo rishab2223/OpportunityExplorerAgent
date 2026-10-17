@@ -86,7 +86,9 @@ GROUPS: dict[str, list[str]] = {
     "ui": ["ui_check.py", "queue_ui_check.py", "chat_ui_check.py",
            "pager_check.py", "profile_ui_check.py", "held_ui_check.py",
            "answers_ui_check.py", "readme_check.py", "run_settings_ui_check.py", "fit_ui_check.py",
-           "applied_ui_check.py"],
+           "applied_ui_check.py",
+           "people_ui_check.py",          # the People page and the Settings page's spending card
+           "hiring_team_check.py"],       # who posted a job, read from a LinkedIn posting
 }
 
 # The slow ones, worst first, so -j starts them before it starts anything it
@@ -122,6 +124,7 @@ TOUCHES: list[tuple[str, tuple[str, ...]]] = [
     ("src/apply/profile.py", ("apply", "sites", "ui")),   # the Profile page reads and saves it
     ("src/answers.py", ("apply", "sites", "ui")),   # the Saved answers page edits it
     ("src/tracker.py", ("ui",)),
+    ("src/people.py", ("unit", "ui")),
     ("src/open_check.py", ("daily",)),
     ("src/daily.py", ("daily",)),
     ("src/llm_claude.py", ("unit", "apply")),

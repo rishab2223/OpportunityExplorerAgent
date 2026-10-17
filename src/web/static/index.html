@@ -22,6 +22,7 @@
       <div id="usermenu" class="menu" role="menu" hidden>
         <button type="button" role="menuitem" data-open-view="profile">Profile</button>
         <button type="button" role="menuitem" data-open-view="answers">Saved answers</button>
+        <button type="button" role="menuitem" data-open-view="settings">Settings</button>
       </div>
     </div>
   </header>
@@ -31,6 +32,8 @@
     <button data-view="applied" id="nav-applied"
             title="Every application you sent, and where it stands now">Applied</button>
     <button data-view="referrals" id="nav-referrals">Referrals</button>
+    <button data-view="people" id="nav-people"
+            title="Who can help with each job: who posted it, hiring managers, recruiters, engineers who could refer you">People</button>
     <button data-view="held" id="nav-held"
             title="Strong matches a filter in review mode kept out of the shortlist">Held back</button>
     <button data-view="fit" id="nav-fit"
@@ -280,6 +283,87 @@
     </table>
     </div>
     <nav class="row pager" id="referralspager" aria-label="Referral pages" hidden></nav>
+  </div>
+  </section>
+
+  <section id="view-people" hidden>
+  <div class="card">
+    <div class="card-head">
+      <h2>People who can help with a job</h2>
+      <div class="card-head-tools">
+        <label for="pplrun">Run</label>
+        <select id="pplrun" title="Which run's jobs, with how many are on each tab"></select>
+      </div>
+    </div>
+    <p class="muted heldintro">
+      For each job in the run: who posted it, likely hiring managers, recruiters, and engineers who
+      could refer you. Found when you press <b>Find people</b>; you send every message yourself.
+    </p>
+    <div id="pplalert" class="profilenotice pplalert" role="status" hidden></div>
+    <div id="pplnotice" class="movednotice" role="status" hidden></div>
+    <div class="ppltabs" role="group" aria-label="Which jobs">
+      <button type="button" data-ppltab="not_applied" aria-pressed="true">Not applied<span class="n" id="ppln-not_applied"></span></button>
+      <button type="button" data-ppltab="applied" aria-pressed="false">Applied<span class="n" id="ppln-applied"></span></button>
+      <button type="button" data-ppltab="referral" aria-pressed="false">Referral<span class="n" id="ppln-referral"></span></button>
+    </div>
+    <div id="ppljobs" class="ppljobs" aria-live="polite"></div>
+    <nav class="row pager" id="pplpager" aria-label="Job pages" hidden></nav>
+  </div>
+  <details class="card ppllegend">
+    <summary>Where each person comes from</summary>
+    <div class="ppllegendgrid">
+      <div><b>Posted this job</b>Read from "Meet the hiring team" on a LinkedIn posting, in your apply
+        window's signed-in Chrome profile, when you press Find people. Free. Not every posting shows one,
+        and it cannot be read while an apply window is open.</div>
+      <div><b>Hiring managers and recruiters</b>Searched on Apify by role, company and city, about 1¢ a
+        person. Only people whose profile names the company are kept; anyone who may have left is marked.</div>
+      <div><b>Engineers who could refer you</b>A second search that checks each profile's current company;
+        a fraction of a cent.</div>
+      <div><b>Reused for 14 days</b>Another job at the same company and city shows the same people at no
+        cost. After that the list is marked old. Stored on your computer only.</div>
+    </div>
+  </details>
+  <aside id="ppldrawer" class="apldrawer ppldrawer" role="dialog" aria-labelledby="ppldh" hidden></aside>
+  </section>
+
+  <section id="view-settings" hidden>
+  <div class="card">
+    <div class="card-head">
+      <h2>People search spending</h2>
+      <div class="card-head-tools">
+        <button type="button" id="setrefresh" title="Ask Apify for the account's figure now">Refresh</button>
+      </div>
+    </div>
+    <p class="muted heldintro">
+      People search runs on your Apify account, which also pays for job fetches. On the free plan a run
+      stops once the account's month is used up, so people search pauses before that.
+    </p>
+    <div class="pplbudget" id="setbudget">
+      <div class="pplmeter" aria-hidden="true"><span id="setmeter"></span></div>
+      <span class="muted" id="setbudgettext">Reading your Apify account…</span>
+    </div>
+    <div id="setalert" class="profilenotice pplalert" role="status" hidden></div>
+    <div class="setrules">
+      <label class="setrule">
+        <span class="setlbl">Smaller searches above</span>
+        <span class="setwhy muted" id="setsoftwhy">People search alone, this month.</span>
+        <span class="setctl">$<input type="number" id="setsoft" min="0" step="0.5" inputmode="decimal"></span>
+      </label>
+      <label class="setrule">
+        <span class="setlbl">Pause people search when the account reaches</span>
+        <span class="setwhy muted">The whole Apify account, so what is left still pays for job fetches.</span>
+        <span class="setctl">$<input type="number" id="setpause" min="0.5" step="0.5" inputmode="decimal"></span>
+      </label>
+      <div class="setrule">
+        <span class="setlbl">People per search</span>
+        <span class="setwhy muted" id="setsizes"></span>
+        <span class="setctl muted">set in settings.yaml</span>
+      </div>
+    </div>
+    <div class="row setsave">
+      <button type="button" class="btn-primary" id="setsave">Save limits</button>
+      <span class="muted" id="setstate" role="status"></span>
+    </div>
   </div>
   </section>
 
@@ -611,5 +695,6 @@
 <script src="/static/profile.js"></script>
 <script src="/static/answers.js"></script>
 <script src="/static/applied.js"></script>
+<script src="/static/people.js"></script>
 </body>
 </html>

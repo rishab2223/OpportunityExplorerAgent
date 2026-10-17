@@ -180,10 +180,7 @@ def load_jobs(stamp: str) -> list[dict[str, Any]]:
     the two apart.
     """
     directory = run_dir(stamp)
-    rows = _rows(directory / "shortlisted.json")
-    for row in _rows(directory / "held_back.json"):
-        row["held_back"] = row.get("held_back") or "held back by a filter"
-        rows.append(row)
+    rows = raw_rows(stamp)
     if not rows:
         return []
     backfill_history()
@@ -204,14 +201,7 @@ def load_jobs(stamp: str) -> list[dict[str, Any]]:
         row["decided_at"] = entry.get("decided_at", "")
         # Cross-run history: what you have since applied to, skipped, or are
         # chasing a referral for, from any run.
-        entry = history_by_id.get(row.get("job_id") or "")
-        h_how = "id" if entry else ""
-        if not entry:
-            fp = history.fingerprint(row.get("company") or "", row.get("title") or "")
-            entry = history_by_fp.get(fp)
-            if not history.same_posting(entry, row.get("description")):
-                entry = None
-            h_how = "similar" if entry else ""
+        entry, h_how = history_entry(row, history_by_id, history_by_fp)
         row["history_status"] = entry["status"] if entry else ""
         row["history_how"] = h_how
         row["history_contact"] = entry["contact"] if entry else ""
@@ -221,6 +211,19 @@ def load_jobs(stamp: str) -> list[dict[str, Any]]:
         if not row.get("resume_pdf_path"):
             row["resume_pdf_path"] = _existing_pdf(directory, row.get("resume_tex_file"))
     return rows
+
+
+def history_entry(row: dict[str, Any], by_id: dict[str, Any],
+                  by_fp: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """A run row's history entry from history.snapshot(), and how it was
+    matched: "id", "similar" (company + title, the same posting) or ""."""
+    entry = by_id.get(row.get("job_id") or "")
+    if entry:
+        return entry, "id"
+    entry = by_fp.get(history.fingerprint(row.get("company") or "", row.get("title") or ""))
+    if not history.same_posting(entry, row.get("description")):
+        return None, ""
+    return entry, "similar"
 
 
 def find_job(stamp: str, job_id: str) -> dict[str, Any]:
@@ -266,11 +269,14 @@ def save_decision(
 
 
 def raw_rows(stamp: str) -> list[dict[str, Any]]:
-    """The run's rows as written, shortlist then held back, without the
-    decision and history columns load_jobs adds (and without its database
-    read) - for callers that only need a file name or a title."""
+    """The run's rows as written, shortlist then held back (each held row
+    carrying `held_back`, its reason), without the decision and history
+    columns load_jobs adds and without its database read."""
     directory = run_dir(stamp)
-    return _rows(directory / "shortlisted.json") + _rows(directory / "held_back.json")
+    held = _rows(directory / "held_back.json")
+    for row in held:
+        row["held_back"] = row.get("held_back") or "held back by a filter"
+    return _rows(directory / "shortlisted.json") + held
 
 
 def update_job(stamp: str, job_id: str, fields: dict[str, Any]) -> None:

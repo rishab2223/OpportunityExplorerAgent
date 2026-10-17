@@ -189,6 +189,35 @@ class ScrapeConfig(BaseModel):
         return int(self.max_jobs.get(source.lower(), self.max_detail_jobs))
 
 
+class PeopleConfig(BaseModel):
+    # The People page (src/people.py): who can help with a job, found on
+    # Apify when you press Find people. Managers and recruiters:
+    # https://console.apify.com/actors/CrfU3svgxeBZmv5Mh (1¢ a person found);
+    # engineers: https://console.apify.com/actors/KGWgXNRD1aYhDYDeA (a
+    # fraction of a cent a search). Picked 16-17 Oct 2026 on test searches.
+    role_actor: str = "CrfU3svgxeBZmv5Mh"
+    engineer_actor: str = "KGWgXNRD1aYhDYDeA"
+    manager_title: str = "Engineering Manager"
+    recruiter_title: str = "Talent Acquisition"
+    engineer_title: str = "Software Engineer"
+    # What the role actor charges for each person it returns.
+    usd_per_person: float = Field(default=0.01, ge=0, le=1)
+    # People per search: managers, recruiters, engineers. `small` is used
+    # once people search has spent the month's soft limit.
+    full: tuple[int, int, int] = (3, 3, 4)
+    small: tuple[int, int, int] = (2, 2, 1)
+    # Defaults for the two limits; the Settings page can change both.
+    # soft: people search alone, this month; above it searches are small.
+    # pause_at: the whole Apify account, which also pays for job fetches.
+    soft_limit_usd: float = Field(default=3.0, ge=0, le=100)
+    pause_at_usd: float = Field(default=4.5, ge=0, le=100)
+    # A search is reused for another job at the same company and city for
+    # this many days; after that its list is shown as old.
+    reuse_days: int = Field(default=14, ge=1, le=90)
+    # One search may run this long on Apify before it is stopped.
+    timeout_minutes: int = Field(default=3, ge=1, le=15)
+
+
 class AppConfig(BaseModel):
     # Out of 100 (src/agent/nodes/score.py). 1-10 is read as the old scale.
     min_score: int = Field(default=70, ge=1, le=100)
@@ -219,6 +248,7 @@ class AppConfig(BaseModel):
     resume: ResumeConfig = Field(default_factory=ResumeConfig)
     scrape: ScrapeConfig = Field(default_factory=ScrapeConfig)
     daily: DailyConfig = Field(default_factory=DailyConfig)
+    people: PeopleConfig = Field(default_factory=PeopleConfig)
 
     @model_validator(mode="after")
     def _score_scale(self) -> "AppConfig":

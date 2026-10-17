@@ -1730,9 +1730,9 @@ async function resumeActiveApply() {
   }
 }
 
-// Profile is not a tab: it opens from the user menu, and no tab is marked
-// active while it is showing.
-const VIEWS = ["jobs", "applied", "referrals", "held", "fit", "answers", "profile"];
+// Profile, Saved answers and Settings are not tabs: they open from the user
+// menu, and no tab is marked active while one is showing.
+const VIEWS = ["jobs", "applied", "referrals", "people", "held", "fit", "answers", "profile", "settings"];
 
 function showView(name) {
   VIEWS.forEach((view) => { $("view-" + view).hidden = name !== view; });
@@ -1744,6 +1744,8 @@ function showView(name) {
   if (name === "answers" && typeof loadAnswers === "function") loadAnswers();
   if (name === "held") loadHeldInsight();
   if (name === "fit" && typeof loadFit === "function") loadFit();
+  if (name === "people" && typeof loadPeople === "function") loadPeople();
+  if (name === "settings" && typeof loadSettings === "function") loadSettings();
 }
 
 // The suggestion above Held back: what the candidate's own clicks on
