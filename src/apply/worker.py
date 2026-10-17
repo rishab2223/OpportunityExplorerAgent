@@ -904,7 +904,7 @@ def run_session(
             last = ""
         if last:
             sess.summary["last_page"] = last
-            sess.summary["ats"] = sites.ats(last) or sess.summary.get("ats", "")
+            sess.summary["ats"] = sess.summary.get("ats") or sites.ats(last)
 
     # Pictures sent to the model are kept under dumps/screenshots/<company>/.
     sess.company = str(job.get("company") or "")
@@ -1441,6 +1441,13 @@ def run_session(
             # any value the candidate typed) under its tracking system: a
             # record of every form met, not only the ones that were dumped.
             site = _site_of(page)
+            if site and site not in sess.summary.setdefault("systems", []):
+                # Which hiring systems the applications run on, for deciding
+                # which ones deserve their own handling (#8, Oct 2026). The
+                # last page's address alone left half the records empty.
+                sess.summary["systems"].append(site)
+                if site != "linkedin" or not sess.summary.get("ats"):
+                    sess.summary["ats"] = site
             if site and site != named_site and site != "linkedin":
                 # Once per system per session. Said because it is the first
                 # thing worth knowing about a form that misbehaves - and the
