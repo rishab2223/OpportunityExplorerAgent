@@ -148,6 +148,12 @@ class ApifyActorsConfig(BaseModel):
     linkedin_actor: str = "d1gs0RHIwEnsan7XX"
     indeed_input: dict[str, Any] = Field(default_factory=dict)
     linkedin_input: dict[str, Any] = Field(default_factory=dict)
+    # How long one fetch may run on Apify before it is stopped, and how many
+    # more tries a fetch that brought back nothing gets (#49): two tries of 10
+    # minutes in all, your call (16 Oct 2026). Without a limit a hung fetch
+    # hung the run, and the daily batch with it.
+    timeout_minutes: int = Field(default=10, ge=1, le=60)
+    retries: int = Field(default=1, ge=0, le=5)
 
 
 class ScrapeConfig(BaseModel):

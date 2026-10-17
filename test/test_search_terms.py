@@ -77,7 +77,7 @@ class ApifyInputTests(unittest.TestCase):
     def _input(self, cfg, scraper):
         sent = {}
 
-        def fake(_token, _actor, run_input):
+        def fake(_token, _actor, run_input, *_rest, **_kw):
             sent.update(run_input)
             return []
 
@@ -103,3 +103,74 @@ class ApifyInputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApifyTimeLimitTests(unittest.TestCase):
+    """A fetch is stopped after its time limit and tried again (#49): a hung
+    Apify run hung the whole run, and the daily batch with it."""
+
+    def client(self, runs, items_by_dataset):
+        calls, aborted = [], []
+
+        class Actor:
+            def call(self, **kw):
+                calls.append(kw)
+                outcome = runs.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+
+        class Dataset:
+            def __init__(self, ds):
+                self.ds = ds
+
+            def iterate_items(self):
+                return iter(items_by_dataset.get(self.ds, []))
+
+        class Run:
+            def __init__(self, rid):
+                self.rid = rid
+
+            def abort(self):
+                aborted.append(self.rid)
+
+        fake = mock.Mock()
+        fake.actor.return_value = Actor()
+        fake.dataset.side_effect = Dataset
+        fake.run.side_effect = Run
+        return fake, calls, aborted
+
+    def fetch(self, runs, items, retries=1):
+        fake, calls, aborted = self.client(runs, items)
+        with mock.patch.object(apify_jobs, "ApifyClient", return_value=fake), \
+                mock.patch.object(apify_jobs.progress, "log") as log:
+            try:
+                got = apify_jobs._run_actor("t", "actor", {}, 10, retries, source="LinkedIn")
+            except RuntimeError as exc:
+                got = exc
+        return got, calls, aborted, [c.args[0] for c in log.call_args_list]
+
+    def test_every_try_has_a_time_limit(self):
+        got, calls, _, _ = self.fetch([{"status": "SUCCEEDED", "defaultDatasetId": "d"}], {"d": [{"a": 1}]})
+        self.assertEqual(got, [{"a": 1}])
+        self.assertEqual(calls[0]["run_timeout"].total_seconds(), 600)
+        self.assertGreater(calls[0]["wait_duration"], calls[0]["run_timeout"])
+
+    def test_a_timeout_with_jobs_keeps_them(self):
+        got, calls, _, logs = self.fetch([{"status": "TIMED-OUT", "defaultDatasetId": "d"}], {"d": [{"a": 1}]})
+        self.assertEqual((got, len(calls)), ([{"a": 1}], 1))
+        self.assertIn("timed out after 10 min; using the 1 job(s)", logs[0])
+
+    def test_a_timeout_with_nothing_is_tried_again(self):
+        got, calls, aborted, logs = self.fetch(
+            [{"status": "RUNNING", "id": "r1", "defaultDatasetId": "d1"},
+             {"status": "SUCCEEDED", "defaultDatasetId": "d2"}], {"d2": [{"b": 2}]})
+        self.assertEqual((got, len(calls)), ([{"b": 2}], 2))
+        self.assertEqual(aborted, ["r1"])                    # stopped, not left billing
+        self.assertIn("trying again (2 of 2)", logs[0])
+
+    def test_after_the_last_try_it_says_so(self):
+        got, calls, _, _ = self.fetch([RuntimeError("network")] * 2, {})
+        self.assertIsInstance(got, RuntimeError)
+        self.assertEqual(len(calls), 2)                     # one try and one retry, your call
+        self.assertIn("on all 2 tries", str(got))

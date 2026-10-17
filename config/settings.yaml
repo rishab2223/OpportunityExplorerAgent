@@ -135,6 +135,10 @@ scrape:
     indeed_actor: "BIeK7ZcYUrdxDgOEQ"
     # https://console.apify.com/actors/d1gs0RHIwEnsan7XX
     linkedin_actor: "d1gs0RHIwEnsan7XX"
+    # One fetch is stopped after this many minutes; a fetch that found
+    # nothing is tried once more (a timed-out one keeps what it found).
+    timeout_minutes: 10
+    retries: 1
     # indeed_input / linkedin_input override the working defaults in
     # src/scrape/apify_jobs.py; only set what you want to change.
     linkedin_input:

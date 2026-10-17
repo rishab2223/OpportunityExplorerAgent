@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
 
 from apify_client import ApifyClient
 
+from src import progress
 from src.config import ApifyActorsConfig, EnvSettings, ScrapeConfig
 from src.models import JobPosting
 from src.scrape import search_terms
@@ -159,18 +161,57 @@ def _run_field(run: object, camel: str, snake: str) -> Any:
     return getattr(run, snake, None) or getattr(run, camel, None)
 
 
-def _run_actor(token: str, actor_id: str, run_input: dict[str, Any]) -> list[dict[str, Any]]:
+def _status(run: object) -> str:
+    status = _run_field(run, "status", "status")
+    return str(getattr(status, "value", status) or "").upper()
+
+
+def _run_actor(token: str, actor_id: str, run_input: dict[str, Any],
+               timeout_minutes: int = 10, retries: int = 1, source: str = "") -> list[dict[str, Any]]:
+    """The items of one Apify fetch. Each try is stopped on Apify's side
+    after `timeout_minutes` (so it stops costing too), and this side stops
+    waiting a minute later. A try that timed out with jobs already found
+    keeps them; one that found nothing is tried again, `retries` times."""
     if not token.strip():
         raise RuntimeError("APIFY_TOKEN is not set")
     if not actor_id.strip():
         raise RuntimeError("Apify actor id is empty")
     client = ApifyClient(token.strip())
-    run = client.actor(actor_id.strip()).call(run_input=run_input)
-    dataset_id = _run_field(run, "defaultDatasetId", "default_dataset_id")
-    if not dataset_id:
-        raise RuntimeError(f"Apify actor {actor_id} returned no dataset")
-    items = list(client.dataset(str(dataset_id)).iterate_items())
-    return [i for i in items if isinstance(i, dict)]
+    name = source or actor_id
+    limit = timedelta(minutes=timeout_minutes)
+    problem = ""
+    for attempt in range(1, retries + 2):
+        try:
+            run = client.actor(actor_id.strip()).call(
+                run_input=run_input, run_timeout=limit, wait_duration=limit + timedelta(minutes=1))
+        except Exception as exc:
+            problem = f"failed: {exc}"
+            run = None
+        status = _status(run)
+        if run is not None and status in ("READY", "RUNNING"):
+            # Still going when we stopped waiting: stop it, or it keeps
+            # running and billing with nobody to read its results.
+            try:
+                client.run(str(_run_field(run, "id", "id"))).abort()
+            except Exception:
+                pass
+            status = "TIMED-OUT"
+        items: list[dict[str, Any]] = []
+        dataset_id = _run_field(run, "defaultDatasetId", "default_dataset_id")
+        if dataset_id:
+            items = [i for i in client.dataset(str(dataset_id)).iterate_items() if isinstance(i, dict)]
+        if status == "SUCCEEDED":
+            return items
+        if run is not None:
+            problem = ("timed out after " f"{timeout_minutes} min" if status.startswith("TIMED")
+                       else f"ended {status.lower() or 'without a status'}")
+        if items:
+            progress.log(f"[scrape] {name} {problem}; using the {len(items)} job(s) it had found.")
+            return items
+        if attempt <= retries:
+            progress.log(f"[scrape] {name} {problem} with nothing found; trying again "
+                         f"({attempt + 1} of {retries + 1}).")
+    raise RuntimeError(f"Apify {name} {problem} on all {retries + 1} tries")
 
 
 def _collect(
@@ -209,7 +250,8 @@ def scrape_indeed_apify(
         run_input["keyword"] = search_terms.indeed_query(chosen)
     run_input["fromDays"] = INDEED_FROM_DAYS.get(scrape.posted_within, "3")
     run_input["maxItems"] = scrape.cap("indeed")
-    items = _run_actor(env.apify_token, apify.indeed_actor, run_input)
+    items = _run_actor(env.apify_token, apify.indeed_actor, run_input,
+                       apify.timeout_minutes, apify.retries, source="Indeed")
     return _collect(items, _map_indeed, scrape, "indeed")
 
 
@@ -236,7 +278,8 @@ def scrape_linkedin_apify(
     ]
     run_input["datePosted"] = LINKEDIN_DATE_POSTED.get(scrape.posted_within, "pastWeek")
     run_input["maxResults"] = scrape.cap("linkedin")
-    items = _run_actor(env.apify_token, apify.linkedin_actor, run_input)
+    items = _run_actor(env.apify_token, apify.linkedin_actor, run_input,
+                       apify.timeout_minutes, apify.retries, source="LinkedIn")
     return _collect(items, _map_linkedin, scrape, "linkedin")
 
 
