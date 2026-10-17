@@ -305,7 +305,6 @@ def _layout(source: str, setting: str, value: float) -> str:
 
 # ------------------------------------------------------------------ content steps
 
-_SECTION_RE = re.compile(r"\\section\*?\{")
 _TOKEN = re.compile(r"\\begin\{itemize\}(\[[^\]]*\])?|\\end\{itemize\}|\\item\b")
 
 

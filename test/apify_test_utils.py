@@ -9,6 +9,8 @@ from pathlib import Path
 from apify_client import ApifyClient
 from dotenv import load_dotenv
 
+from src.scrape.apify_jobs import _run_field
+
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 
@@ -19,14 +21,6 @@ def load_apify_token() -> str:
     if not token:
         raise SystemExit("APIFY_TOKEN is not set in .env")
     return token
-
-
-def _run_field(run: object, camel: str, snake: str):
-    if run is None:
-        return None
-    if isinstance(run, dict):
-        return run.get(camel) or run.get(snake)
-    return getattr(run, snake, None) or getattr(run, camel, None)
 
 
 def run_actor(actor_id: str, run_input: dict) -> list[dict]:
