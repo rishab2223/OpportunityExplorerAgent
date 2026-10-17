@@ -1390,9 +1390,12 @@ class TieBreakerTests(unittest.TestCase):
         from src.apply.worker import _choose_option
 
         opts = ["Bangalore, Odisha, India", "Bangalore, Karnataka, India", "Bengaluru, Karnataka, India"]
-        self.assertEqual(_choose_option(opts, "Bangalore"), 0)                       # no context: first
+        # No context: never the first of two different rows (code review,
+        # Oct 2026); the city's other name is one row, and it is the right one.
+        self.assertEqual(_choose_option(opts, "Bangalore"), 2)
         self.assertEqual(_choose_option(opts, "Bangalore", ["Karnataka", "India"]), 1)
-        self.assertEqual(_choose_option(opts, "Bangalore", ["Kerala"]), 0)          # nothing to prefer: first
+        self.assertEqual(_choose_option(opts, "Bangalore", ["Kerala"]), 2)          # nothing to prefer
+        self.assertEqual(_choose_option(["Bangalore, Odisha", "Bangalore, Kerala"], "Bangalore"), -1)
         # Containment with several hits stays ambiguous unless a preference decides.
         self.assertEqual(_choose_option(["A Karnataka B", "C Karnataka D"], "Karnataka"), -1)
         self.assertEqual(_choose_option(["A Karnataka B", "C Karnataka D"], "Karnataka", ["C"]), 1)
@@ -4072,3 +4075,178 @@ class UndoWrongChoiceTests(unittest.TestCase):
         # No locator needed: nothing is touched.
         self.assertEqual(worker._undo_wrong_choice(None, None, "India", "India", None, "", "Country"), "")
         self.assertEqual(worker._undo_wrong_choice(None, None, "", "", None, "", "Country"), "")
+
+
+class BandUnitTests(unittest.TestCase):
+    """A band is matched in the answer's unit, not by its bare number (code
+    review, Oct 2026)."""
+
+    PAY = ["Below 5 LPA", "5-10 LPA", "10-20 LPA", "20-30 LPA", "30-50 LPA", "50 LPA+"]
+    NOTICE = ["0-15 days", "16-30 days", "31-60 days", "More than 3 months"]
+    YEARS = ["0-11 months", "1-3 years", "3-7 Years", "7+ years"]
+
+    def test_pay_in_lakhs_or_rupees_finds_the_lakh_band(self):
+        self.assertEqual(worker._band_index(self.PAY, "25 LPA"), 3)
+        # What the salary code writes for an Expected CTC box naming no unit:
+        # it took "50 LPA+".
+        self.assertEqual(worker._band_index(self.PAY, "2500000"), 3)
+        self.assertEqual(worker._band_index(self.PAY, "25"), 3)
+
+    def test_a_month_is_not_fifteen_days(self):
+        self.assertEqual(worker._band_index(self.NOTICE, "1 month"), 1)    # was "0-15 days"
+        self.assertEqual(worker._band_index(self.NOTICE, "30 days"), 1)    # was "More than 3 months"
+        self.assertEqual(worker._band_index(self.NOTICE, "4 months"), 3)
+
+    def test_years_are_not_months(self):
+        self.assertEqual(worker._band_index(self.YEARS, "6 years"), 2)     # was "0-11 months"
+        self.assertEqual(worker._band_index(self.YEARS, "6 months"), 0)
+        self.assertEqual(worker._band_index(["6 months - 1 year", "1-3 years"], "8 months"), 0)
+
+    def test_years_never_match_a_pay_band(self):
+        self.assertEqual(worker._band_index(["3-7 Years"], "6 LPA"), -1)
+        self.assertEqual(worker._band_index(self.PAY, "6 years"), -1)
+
+    def test_rows_without_a_unit_take_the_lists(self):
+        self.assertEqual(worker._band_index(["0-3", "3-7 Years", "7+ Years"], "6 years"), 1)
+
+    def test_bare_scores_still_work(self):
+        ten = ["7.0 or higher", "5.0-6.9", "Below 5.0"]
+        self.assertEqual(worker._band_index(ten, "7.4"), 0)
+        self.assertEqual(worker._band_index(ten, "4.1"), 2)
+        self.assertEqual(worker._band_index(["0-3 Years", "3-7 Years"], "3"), -1)   # the edge is the form's
+
+
+class ListSalaryTests(TempDbTestCase):
+    def test_a_salary_list_gets_the_answer_not_rupees(self):
+        # The value reaching the list keeps its unit; converted, it was
+        # 2500000 and the band matcher had nothing to say about lakhs.
+        seen = {}
+
+        def fake_combobox(page, locator, value, *rest, **kw):
+            seen["value"] = value
+            return None
+
+        box = {"id": 1, "tag": "input", "type": "text", "role": "combobox",
+               "label": "Expected CTC", "name": "", "group": "", "value": ""}
+        sess = types.SimpleNamespace(log=lambda *a, **k: None)
+        with unittest.mock.patch.object(worker.browser, "locate", return_value=object()), \
+                unittest.mock.patch.object(worker.browser, "await_usable", return_value=("", None)), \
+                unittest.mock.patch.object(worker, "_commit_combobox", fake_combobox):
+            worker._apply_value(None, box, "25 LPA", "", sess)
+        self.assertEqual(seen["value"], "25 LPA")
+
+
+class DayFirstDateTests(TempDbTestCase):
+    """A box that shows or names a day-first date gets one (code review,
+    Oct 2026): 05/11/1990 went in as 11/05/1990, and the digit read-back
+    passed it."""
+
+    def test_a_shown_date_that_must_be_day_first(self):
+        self.assertEqual(worker._date_mask({}, "15/10/2026"), "DD/MM/YYYY")
+        self.assertEqual(worker._date_mask({}, "10/15/2026"), "MM/DD/YYYY")
+        # Either way round: month first, as EPAM's picker wanted.
+        self.assertEqual(worker._date_mask({}, "05/11/2026"), "MM/DD/YYYY")
+        self.assertEqual(worker._date_mask({"label": "DOB (DD/MM/YYYY)"}, "05/11/2026"), "DD/MM/YYYY")
+
+    def test_the_format_named_inside_a_label(self):
+        self.assertEqual(worker._date_mask({"label": "Date of birth (DD/MM/YYYY)"}, ""), "DD/MM/YYYY")
+        self.assertEqual(worker._date_mask({"placeholder": "e.g. dd-mm-yyyy"}, ""), "DD-MM-YYYY")
+        self.assertEqual(worker._date_mask({"label": "Date (DD.MM.YYYY)"}, ""), "DD.MM.YYYY")
+
+    def test_the_date_of_birth_goes_in_day_first(self):
+        month, day, year = worker._parse_date("05/11/1990")
+        self.assertEqual(worker._format_date(month, day, year, "DD/MM/YYYY"), "05/11/1990")
+        self.assertEqual(worker._format_date(month, day, year, "DD.MM.YYYY"), "05.11.1990")
+
+    def test_with_nothing_to_go_on_it_is_month_first(self):
+        # As MyCareernet's picker wanted, on an Indian form (primeng_check).
+        self.assertEqual(worker._default_date_mask(5), "MM/DD/YYYY")
+        self.assertEqual(worker._default_date_mask(None), "MM/YYYY")
+
+
+class NewStepTests(unittest.TestCase):
+    """A step's "Comments" is not the last step's (code review, Oct 2026)."""
+
+    def box(self, i, label):
+        return {"id": i, "tag": "input", "type": "text", "label": label, "name": "", "value": "", "group": ""}
+
+    def test_a_new_step_forgets_what_was_done_on_the_last(self):
+        step1 = [self.box(1, "Full name"), self.box(2, "Email"), self.box(3, "Comments")]
+        step2 = [self.box(7, "Notice period"), self.box(8, "Comments")]
+        keys = {worker._field_key(f, worker._field_label(f)) for f in step1}
+        handled, written, ignored = set(keys), {k: "x" for k in keys}, {k: 1 for k in keys}
+        holder = {"wrote": set(keys)}
+        with unittest.mock.patch.object(worker.browser, "snapshot", return_value=step2):
+            self.assertTrue(worker._forget_last_step(None, step1, handled, written, ignored, holder))
+        self.assertEqual((handled, written, ignored, holder["wrote"]), (set(), {}, {}, set()))
+
+    def test_a_box_appearing_on_the_same_step_is_not_a_new_step(self):
+        step = [self.box(1, "Full name"), self.box(2, "Email"), self.box(3, "Comments")]
+        handled = {worker._field_key(f, worker._field_label(f)) for f in step}
+        with unittest.mock.patch.object(worker.browser, "snapshot", return_value=step + [self.box(4, "If yes, specify")]):
+            self.assertFalse(worker._forget_last_step(None, step, handled, {}, {}, {}))
+        self.assertEqual(len(handled), 3)
+
+
+class OwnLabelTickTests(unittest.TestCase):
+    def test_no_on_the_no_option_ticks_it(self):
+        no = {"id": 1, "tag": "input", "type": "radio", "label": "No", "group": "Do you need a visa?"}
+        self.assertTrue(worker._is_own_label(no, "No"))
+        self.assertTrue(worker._is_own_label(dict(no, label="Never*"), "never"))
+        self.assertFalse(worker._is_own_label(dict(no, label="I agree"), "No"))
+        seen = {}
+        with unittest.mock.patch.object(worker.browser, "locate", return_value=types.SimpleNamespace(
+                count=lambda: 1, is_visible=lambda: False)), \
+                unittest.mock.patch.object(worker, "_apply_value",
+                                           lambda *a, **k: seen.setdefault("on", k.get("wants_on"))):
+            worker._execute(None, ApplyAction(action="check", field_id=1, value="No"), no, "",
+                            types.SimpleNamespace(log=lambda *a: None))
+        self.assertIs(seen["on"], True)          # was False: an impossible uncheck
+
+
+class ConsentBoxGroupingTests(unittest.TestCase):
+    def test_ticking_one_consent_box_leaves_the_other_open(self):
+        # Two boxes under one heading, no shared name: two questions.
+        fields = [
+            {"id": 1, "tag": "input", "type": "checkbox", "label": "I agree to the privacy policy",
+             "group": "Consent", "name": "", "checked": True},
+            {"id": 2, "tag": "input", "type": "checkbox", "label": "I confirm the details are true",
+             "group": "Consent", "name": "", "checked": False, "required": True},
+        ]
+        self.assertEqual([f["id"] for f in _unresolved_fields(fields, set())], [2])
+
+    def test_a_named_list_with_one_ticked_is_answered(self):
+        fields = [
+            {"id": 1, "tag": "input", "type": "checkbox", "label": "None of the above", "name": "s", "checked": True},
+            {"id": 2, "tag": "input", "type": "checkbox", "label": "Cuba", "name": "s", "checked": False},
+        ]
+        self.assertEqual(_unresolved_fields(fields, set()), [])
+
+
+class FloorAndCeilingTests(unittest.TestCase):
+    def test_the_ceiling_is_the_figure_it_belongs_to(self):
+        # Read as 100, the answer was cut to the minimum (code review, Oct 2026).
+        self.assertEqual(worker._stated_limit({"label": "Minimum 100 words, max 300 words"}), (300, "words"))
+        self.assertEqual(worker._stated_limit({"label": "Between 100 and 300 words max"}), (300, "words"))
+        self.assertEqual(worker._stated_limit({"label": "At least 50 words (500 characters maximum)"}),
+                         (500, "characters"))
+
+
+class WholeWordGateTests(unittest.TestCase):
+    """Legal and secret words are whole words (code review, Oct 2026)."""
+
+    def action(self):
+        return ApplyAction(action="fill", field_id=1, value="x", confidence=0.9)
+
+    def test_a_city_is_not_a_visa_and_marks_are_not_eligibility(self):
+        for label in ("Current city: Visakhapatnam", "Eligibility: 60% in 10th and 12th"):
+            self.assertFalse(_needs_user(self.action(), {"id": 1, "label": label}, label), label)
+        for label in ("Do you need visa sponsorship?", "Are you eligible to work in India?",
+                      "I consent to the processing of my data"):
+            self.assertTrue(_needs_user(self.action(), {"id": 1, "label": label}, label), label)
+
+    def test_a_phone_box_that_mentions_an_otp_is_a_phone_box(self):
+        self.assertFalse(profile.is_secret("Mobile number (OTP will be sent)"))
+        self.assertFalse(profile.is_secret("Phone - an OTP will be sent to verify it"))
+        self.assertTrue(profile.is_secret("Enter the OTP sent to your mobile"))
+        self.assertTrue(profile.is_secret("OTP"))

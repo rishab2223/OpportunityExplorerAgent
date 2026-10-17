@@ -316,3 +316,34 @@ class ToggleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpelledOutDegreeTests(unittest.TestCase):
+    """A short form against a list that spells degrees out (code review,
+    Oct 2026): the family alone took the first member."""
+
+    def test_the_subject_decides(self) -> None:
+        bachelors = ["Bachelor of Arts", "Bachelor of Science", "Bachelor of Technology"]
+        self.assertEqual(bachelors[pick(bachelors, "B.Tech")[0]], "Bachelor of Technology")   # was Arts
+        self.assertEqual(bachelors[pick(bachelors, "B.Sc")[0]], "Bachelor of Science")
+        masters = ["Master of Arts", "Master of Science", "Master of Business Administration"]
+        self.assertEqual(masters[pick(masters, "MBA")[0]], "Master of Business Administration")   # was Arts
+
+    def test_a_subject_the_list_lacks_takes_the_plain_degree_or_nothing(self) -> None:
+        self.assertEqual(pick(["Bachelors", "Bachelor of Arts"], "B.Tech")[0], 0)
+        self.assertEqual(pick(["Bachelor of Arts", "Bachelor of Commerce"], "B.Tech")[0], -1)
+
+    def test_the_plain_degree_never_takes_the_first_subject(self) -> None:
+        from src.apply import worker
+        spelled = ["Bachelor of Arts", "Bachelor of Science", "Bachelor of Technology"]
+        self.assertEqual(worker._choose_option(spelled, "Bachelors"), -1)
+        self.assertEqual(worker._choose_option(["Bachelors", "Bachelor of Arts"], "Bachelor's Degree"), 0)
+
+
+class StartsWithTests(unittest.TestCase):
+    def test_of_several_different_rows_none(self) -> None:
+        from src.apply import worker
+        self.assertEqual(worker._choose_option(
+            ["Yes, I am authorized", "Yes, but I require sponsorship", "No"], "Yes"), -1)
+        self.assertEqual(worker._choose_option(["Bangalore Rural", "Bangalore Urban"], "Bangalore"), -1)
+        self.assertEqual(worker._choose_option(["India (+91)", "Indonesia (+62)"], "India"), 0)

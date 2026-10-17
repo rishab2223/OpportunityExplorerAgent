@@ -44,6 +44,21 @@ _ANNUAL_FIELD_RE = re.compile(
     r"\b(per annum|annual|annually|yearly|per year|p\.?a\.?|inr|rupees|rs\.?)\b|₹",
     re.IGNORECASE,
 )
+# A pay box in another currency. Nothing the candidate holds is in it: "30
+# LPA" went into "Expected salary (USD)" as 3000000 (code review, Oct 2026).
+# Such a box is left to the model and the candidate, and what they type there
+# is never saved over the rupee answer.
+_FOREIGN_FIELD_RE = re.compile(
+    r"\b(usd|us ?dollars?|dollars?|eur|euros?|gbp|pounds? sterling|sterling|aud|cad|sgd|aed"
+    r"|dirhams?|chf|jpy|yen)\b|[$€£¥]",
+    re.IGNORECASE,
+)
+# A box that counts in thousands: "(in thousands)", "in '000s", "(in K)".
+# "120" there is 1.2 lakh, never 120 lakh.
+_THOUSANDS_FIELD_RE = re.compile(
+    r"\bthousands?\b|'?\b000s\b|\(\s*(?:in\s+)?k\s*\)|\bin\s+k\b|\bk\s*/\s*(?:month|year|annum)\b",
+    re.IGNORECASE,
+)
 
 
 _SALARY_FIELD_RE = re.compile(
@@ -89,6 +104,11 @@ def parse_annual_inr(text: str, unit_hint: str = "") -> int | None:
         amount = number * CRORE
     elif unit in ("k", "thousand"):
         amount = number * 1000
+    elif unit_hint in ("thousands", "monthly_thousands") and number < 100_000:
+        # "120" in a box that counts in thousands; "1200000" typed there
+        # anyway is rupees.
+        amount = number * 1000
+        monthly = monthly or unit_hint == "monthly_thousands"
     elif number < 500 or (unit_hint == "lpa" and number < 10_000):
         # "18" is lakhs; so is "1800" in an LPA box - but "1800000" typed
         # into that same box is rupees, whatever the label says.
@@ -103,7 +123,8 @@ def parse_annual_inr(text: str, unit_hint: str = "") -> int | None:
 
 
 def unit_of(field: dict[str, Any]) -> str:
-    """The unit the field asks for: 'lpa', 'monthly', 'annual' or ''.
+    """The unit the field asks for: 'lpa', 'thousands', 'monthly_thousands',
+    'monthly', 'annual', 'foreign' (another currency) or ''.
 
     The words beside the box count as much as its label: Hunting Cube (Oct
     2026) draws "LPA" after a CTC box whose label says nothing about units.
@@ -113,8 +134,12 @@ def unit_of(field: dict[str, Any]) -> str:
     text = " ".join(
         str(field.get(k) or "") for k in ("label", "group", "name", "placeholder", "text", "beside")
     )
+    if _FOREIGN_FIELD_RE.search(text) and not re.search(r"\b(inr|rupees?|rs\.?)\b|₹", text, re.IGNORECASE):
+        return "foreign"
     if _LPA_FIELD_RE.search(text):
         return "lpa"
+    if _THOUSANDS_FIELD_RE.search(text):
+        return "monthly_thousands" if _MONTHLY_FIELD_RE.search(text) else "thousands"
     if _MONTHLY_FIELD_RE.search(text):
         return "monthly"
     if _ANNUAL_FIELD_RE.search(text):
@@ -152,6 +177,10 @@ def format_for(annual_inr: int, field: dict[str, Any], fallback: str = "") -> st
     unit = unit_of(field)
     if unit == "lpa":
         return _trim(annual_inr / LAKH)
+    if unit == "thousands":
+        return _trim(annual_inr / 1000)
+    if unit == "monthly_thousands":
+        return _trim(annual_inr / 12 / 1000)
     if unit == "monthly":
         return str(int(round(annual_inr / 12)))
     return str(annual_inr)
@@ -162,7 +191,7 @@ def for_field(value: str, field: dict[str, Any]) -> str:
     converted to this field's unit. Non-salary fields and unparsable text
     pass through untouched, so this is safe at the one place values are
     written."""
-    if not is_salary_field(field):
+    if not is_salary_field(field) or is_foreign(field):
         return value
     if len(re.findall(r"\d+(?:[.,]\d+)*", value or "")) != 1:
         return value  # a range ("25-22 LPA") or prose: the writer's words stand
@@ -180,6 +209,12 @@ def normalize(value: str, field: dict[str, Any]) -> str:
         return value
     annual = parse_annual_inr(value, unit_of(field))
     return canonical(annual) if annual else value
+
+
+def is_foreign(field: dict[str, Any]) -> bool:
+    """A pay box in another currency: no rupee answer, estimate or saved
+    figure belongs in it, and nothing typed there is saved as one."""
+    return is_salary_field(field) and unit_of(field) == "foreign"
 
 
 # -- market estimate -------------------------------------------------------

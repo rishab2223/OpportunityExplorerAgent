@@ -162,29 +162,16 @@ NEGATIVE_WORDS = frozenset(
     ("no", "n", "nope", "not", "dont", "never", "false", "uncheck", "unchecked",
      "untick", "disagree", "decline", "refuse", "off", "disable", "leave")
 )
-LEGAL_WORDS = (
-    "agree",
-    "consent",
-    "certify",
-    "declare",
-    "authorize",
-    "terms",
-    "privacy",
-    "gdpr",
-    "sponsorship",
-    "visa",
-    "authori",  # authorised / authorized / authorization
-    "eligib",
-    "citizen",
-    "nationality",
-    "criminal",
-    "background check",
-    "disability",
-    "veteran",
-    "ethnicity",
-    "gender",
-    "race",
-)
+# Words that make a field a legal declaration, whole words (a stem may grow:
+# authorised, authorization). As substrings, "visa" was found in
+# Visakhapatnam and "eligib" in "Eligibility: 60% in 10th", and confident
+# answers became chat questions (code review, Oct 2026). Eligibility counts
+# only for work.
+LEGAL_RE = re.compile(
+    r"\b(agree\w*|consent\w*|certif(y|ies|ied)|declar\w*|authori[sz]\w*|terms|privacy|gdpr"
+    r"|sponsor\w*|visas?|citizen\w*|nationality|criminal|background check|disabilit\w*|veterans?"
+    r"|ethnicit\w*|gender|race"
+    r"|eligib\w* (to|for) (work|employment)|work eligibility)\b")
 
 _WORDS = re.compile(r"[a-z]+")
 
@@ -236,8 +223,10 @@ Rules:
   a range that holds their years ("3-7 Years" for 6), the broad category their
   degree belongs to ("Engineering" for a B.Tech), "Other"/"Others" for a school
   or employer the list does not have. Never send a value that is not one of the
-  options. "more_options": true means the list is longer than shown, and a
-  value not shown may be sent. Ask only when no option fits; never "look" at it.
+  options. "more_options": true means the list is longer than shown: send the
+  candidate's own answer (their school, their city) even when it is not among
+  those shown, never "Other" for that reason - the whole list is searched for
+  it. Ask only when no option fits; never "look" at it.
 - Repeating sections - fields whose "section" is Work Experience, Education,
   Languages or similar: click that section's "Add" button, then fill the revealed
   entry FROM THE RESUME: job title, employer, that job's location (the current job's
@@ -1560,6 +1549,7 @@ def run_session(
             ]
 
             final_by_model = False
+            unsure_step = False
             # Only where a label could change what happens: a Next that may be
             # the final send, or a submit-type step button that may be a Next.
             # A plain Submit stays the candidate's whatever is said about it.
@@ -1590,6 +1580,12 @@ def run_session(
                     sess.log(f"'{_field_label(submit_field)}' moves to the next step "
                              f"({_verdict_reason(submit_field, verdicts)}).")
                     advance_field, submit_field = submit_field, None
+                # Nobody is sure what it does - the call failed, or came back
+                # unsure: never clicked unseen, whatever "auto next" says. A
+                # Continue that sends the application would have gone on the
+                # old word rules (code review, Oct 2026).
+                unsure_step = (advance_field is not None and not buttons.clearly_a_step(advance_field)
+                               and buttons.kind_of(advance_field, verdicts) != "next")
             if not unresolved and not pending_adds:
                 if advance_field is not None:
                     key = _field_key(advance_field, _field_label(advance_field))
@@ -1633,14 +1629,17 @@ def run_session(
                     # its "Your application was sent to Scitara!" went into the
                     # baseline as page furniture (Oct 2026).
                     touched = True
-                    if holder.get("confirm_advance", ASK_BEFORE_ADVANCE):
+                    if holder.get("confirm_advance", ASK_BEFORE_ADVANCE) or unsure_step:
                         # The candidate reads the step before it moves on:
                         # prefilling and clicking Next straight away left no
                         # chance to check anything.
                         reply = _ask_watching(
                             sess, holder, page, handled, fields,
-                            (("CHECK YOUR CONTACT DETAILS - " + "; ".join(contact_problems) + ". ")
-                             if contact_problems else "")
+                            (f"I cannot tell whether '{advance_label}' only moves on or sends the "
+                             "application, so I am asking even with auto next on. "
+                             if unsure_step and not holder.get("confirm_advance", ASK_BEFORE_ADVANCE) else "")
+                            + (("CHECK YOUR CONTACT DETAILS - " + "; ".join(contact_problems) + ". ")
+                               if contact_problems else "")
                             + ((f"STILL EMPTY (required): {'; '.join(_brief(l, 60) for l in still_empty[:3])}"
                                 " - type the option's name to pick it, or fill it in the browser. ")
                                if still_empty else "")
@@ -1656,6 +1655,8 @@ def run_session(
                             if holder.get("changed") == "submitted":
                                 outcome, outcome_text = "applied", "confirmed by the page"
                                 break
+                            # The candidate clicked Next themselves.
+                            _forget_last_step(page, fields, handled, written, ignored, holder)
                             continue
                         lowered = reply.strip().lower()
                         if lowered in ("auto next", "autonext", "auto"):
@@ -1715,6 +1716,7 @@ def run_session(
                         attempts.pop(key, None)
                         attach.resume_attached = False
                         attach.letter_attached = False
+                        _forget_last_step(page, fields, handled, written, ignored, holder)
                         continue
                     # The page did not move: a required field is invalid or a
                     # control we could not read is empty. Workday showed this
@@ -1931,7 +1933,7 @@ def run_session(
                 continue
             # Every unanswered dropdown's options, as text, before the call:
             # the model answers with one of them instead of guessing.
-            _read_lists(page, unresolved, sess)
+            _read_lists(page, unresolved, sess, fields)
             sess.log(
                 f"Asking the model about {len(unresolved) + len(pending_adds)} field(s)…"
                 # A kept process started at the click has paid that already.
@@ -1947,6 +1949,9 @@ def run_session(
                          + "; ".join(_brief(p[0] or "unlabelled field", 40) for p in pictures))
             prompt = _build_prompt(job, resume_text, fields, page, history, notes, handled,
                                    refused=_refusals(sess), pictures=[p[1] for p in pictures])
+            # What this call was shown: a field it never saw was not passed
+            # over, and is not retired for it (see below).
+            shown_ids = {id(f) for f in _prompt_fields(fields, handled)[0]}
             asked_at = time.monotonic()
             try:
                 plan, calls_made = _invoke_with_retry(invoke, sess, prompt,
@@ -2007,6 +2012,7 @@ def run_session(
             replan = False
             held_keys: set[str] = set()
             refusals_before = {k: v[0] for k, v in _refusals(sess).items()}
+            notes_before = len(notes)
             side_effects = False
             for action in ordered:
                 if sess.aborted():
@@ -2129,6 +2135,12 @@ def run_session(
                 for f in fields
                 if _field_key(f, _field_label(f)) in acted_keys
             } - {""}
+            # Planned past the action cap: run out of room, not passed over.
+            overflow_keys = {
+                _field_key(f, _field_label(f))
+                for a in plan.actions[MAX_PLAN_ACTIONS:]
+                for f in [_field_by_id(fields, a.field_id)] if f is not None
+            }
             for field in unresolved + adds_done:
                 key = _field_key(field, _field_label(field))
                 if not key or key in acted_keys:
@@ -2137,6 +2149,13 @@ def run_session(
                     continue          # held back for the next plan, not passed over
                 if _choice_group(field) in answered_groups - {""}:
                     handled.add(key)
+                    continue
+                if id(field) not in shown_ids or key in overflow_keys:
+                    # Never in the prompt (a page of more than its 60 fields),
+                    # or planned past the cap: a required one at position 71
+                    # was reported as one to fill by hand, and optional ones
+                    # were dropped, without the model ever seeing them (code
+                    # review, Oct 2026). The next call is shown them.
                     continue
                 if not field.get("required"):
                     handled.add(key)
@@ -2183,9 +2202,13 @@ def run_session(
             if executed or replan or learned:
                 noop_streak = 0
                 last_llm_sig = ""
-            elif refused:
-                # The plan was only a Next we would not click: ask again with
-                # the note, rather than counting it as no progress.
+            elif refused or len(notes) > notes_before:
+                # The plan was only a Next we would not click, or it left a
+                # note (a saved answer that disagreed with it, a reply naming
+                # no option): ask again with the note. Without it the page
+                # looked unchanged and four idle passes ran out the session
+                # (code review, Oct 2026). Still counted, so a plan that only
+                # ever leaves notes stops.
                 last_llm_sig = ""
                 noop_streak += 1
             else:
@@ -3791,7 +3814,22 @@ LIST_OPTIONS_SHOWN = 80
 LIST_READS_PER_CALL = 12
 
 
-def _read_lists(page, unresolved: list[dict[str, Any]], sess) -> None:
+def _parent_choices(fields: list[dict[str, Any]], field: dict[str, Any]) -> str:
+    """What the other dropdowns of this field's section hold now - the
+    choices a dependent list's options can follow."""
+    section = str(field.get("section") or "")
+    held = []
+    for other in fields:
+        if other is field or str(other.get("section") or "") != section:
+            continue
+        if other.get("tag") == "select" or _opens_a_list(other):
+            shown = other.get("text") if _is_listbox_button(other) else other.get("value")
+            held.append(f"{_field_label(other)}={str(shown or '').strip()}")
+    return str(hash("|".join(held)))
+
+
+def _read_lists(page, unresolved: list[dict[str, Any]], sess,
+                fields: list[dict[str, Any]] | None = None) -> None:
     """Open each unanswered dropdown, read its options, close it again, and
     put them on the field as "options" - which is where the model reads them.
 
@@ -3804,9 +3842,22 @@ def _read_lists(page, unresolved: list[dict[str, Any]], sess) -> None:
     cache: dict[str, list[str]] = sess.__dict__.setdefault("list_options", {})
     read: list[str] = []
     for field in unresolved:
+        if field.get("tag") == "select" and field.get("more_options"):
+            # A native list the snapshot cut at 40: the whole of it is one
+            # read away, no clicking. As many as the model is shown of any
+            # list, and "more_options" still set when even that is a cut.
+            everything = _all_select_options(browser.locate(page, field["id"], str(field.get("elid") or "")))
+            if len(everything) > len(field.get("options") or []):
+                field["options"] = everything[:LIST_OPTIONS_SHOWN]
+                field["more_options"] = len(everything) > LIST_OPTIONS_SHOWN
+            continue
         if field.get("options") or not _opens_a_list(field):
             continue
-        key = _field_key(field, _field_label(field))
+        # Read again once a list it may depend on has changed: State after
+        # Country, Specialization after Degree. Read before its parent was
+        # set, the list held nothing, or the wrong country's states, and
+        # stayed that way for the session (code review, Oct 2026).
+        key = _field_key(field, _field_label(field)) + "|" + _parent_choices(fields or unresolved, field)
         if key not in cache:
             if len(read) >= LIST_READS_PER_CALL:
                 continue
@@ -3830,9 +3881,9 @@ def _list_options(page, field: dict[str, Any]) -> list[str]:
         browser.click(locator, timeout=2000)
     except Exception:
         return []
-    rows, texts = _wait_for_options(page, locator, timeout=800)
+    _, texts = _wait_for_options(page, locator, timeout=800)
     if not _real_suggestions(texts) and _open_via_control(locator):
-        rows, texts = _wait_for_options(page, locator, timeout=800)
+        _, texts = _wait_for_options(page, locator, timeout=800)
     seen: list[str] = []
     for text in texts:
         text = " ".join((text or "").split())
@@ -4570,6 +4621,34 @@ def _retype(page, field: dict[str, Any], value: str) -> bool:
         return False
 
 
+def _forget_last_step(page, old_fields: list[dict[str, Any]], handled: set[str],
+                      written: dict[str, str], ignored: dict[str, int], holder: dict[str, Any]) -> bool:
+    """A new step of the form: what was done on the last one is not done on
+    this one. Fields are known by their labels, and a step's "Comments" or
+    "If yes, please specify" carries the same one as the last step's - it was
+    shown to the model as already handled, and the blank-again re-fill could
+    copy the last step's answer into it (code review, Oct 2026). Only when
+    most of the old step's boxes have gone: a box appearing beside them is
+    the same step."""
+    old = {k for k in (_field_key(f, _field_label(f)) for f in old_fields if _accepts_value(f)) if k}
+    if not old:
+        return False
+    try:
+        now = {_field_key(f, _field_label(f)) for f in browser.snapshot(page)}
+    except Exception:
+        return False
+    if len(old & now) * 2 > len(old):
+        return False
+    for key in old:
+        handled.discard(key)
+        written.pop(key, None)
+        ignored.pop(key, None)
+    wrote = holder.get("wrote")
+    if isinstance(wrote, set):
+        wrote.difference_update(old)
+    return True
+
+
 def _repair_written(page, fields, written, sess) -> int:
     """Put back anything the sweep wrote that the page has since emptied.
 
@@ -5239,7 +5318,7 @@ def _wants_salary_estimate(field: dict[str, Any]) -> bool:
     # it as text.
     if (field.get("type") or "").lower() not in ("", "text", "number", "search", "currency"):
         return False
-    if not resolver.is_blank(field):
+    if not resolver.is_blank(field) or salary.is_foreign(field):
         return False
     return salary.topic_of(field) == "expected_ctc"
 
@@ -5681,11 +5760,14 @@ def _guarded_execute(
 def _unresolved_fields(fields: list[dict[str, Any]], handled: set[str]) -> list[dict[str, Any]]:
     """Fields that still need a decision: empty inputs, and check groups with
     nothing picked. Buttons, links and submit controls are not fields."""
+    # Grouped as _choice_group groups them: a checkbox by its shared name
+    # only. By heading, ticking one consent box hid a second required one
+    # under the same heading, which cost a failed Next (code review, Oct 2026).
     checked_groups = {
-        (f.get("name") or f.get("group") or "")
+        _choice_group(f)
         for f in fields
         if (f.get("type") or "").lower() in ("checkbox", "radio") and f.get("checked")
-    }
+    } - {""}
     out = []
     for field in fields:
         if _is_submit(field) or not _accepts_value(field):
@@ -5695,8 +5777,8 @@ def _unresolved_fields(fields: list[dict[str, Any]], handled: set[str]) -> list[
             continue
         field_type = (field.get("type") or "").lower()
         if field_type in ("checkbox", "radio"):
-            group = field.get("name") or field.get("group") or ""
-            if group in checked_groups:
+            group = _choice_group(field)
+            if (group and group in checked_groups) or (not group and field.get("checked")):
                 continue
             out.append(field)
         elif resolver.is_blank(field):
@@ -5831,6 +5913,8 @@ def _maybe_remember(
     if answer.lower() in CONTINUE_WORDS or answer.lower() in SKIP_WORDS:
         return
     if field is not None:
+        if salary.is_foreign(field):
+            return      # dollars, never saved over the rupee answer
         # "25" typed into an "(in LPA)" field is banked as "18 LPA", so a
         # plain "Current salary" box elsewhere gets it in a readable unit.
         answer = salary.normalize(answer, field)
@@ -5838,7 +5922,7 @@ def _maybe_remember(
     if kind == "secret":
         return
     key = answers.question_key(label, group)
-    topic_matched = key in answers.TOPICS
+    topic_matched = answers.topic_of(key) in answers.TOPICS
     if kind == "sensitive":
         reply = sess.ask(
             "Should I remember this answer for future applications? (yes/no)"
@@ -6186,7 +6270,7 @@ def _execute(
         # "check" means tick unless the model explicitly wrote a negative value.
         # Naming the box itself ("none" for "None of the above") is a tick.
         wants_on = True if not chosen.strip() else (
-            _names_option(field, chosen) or _is_affirmative(chosen))
+            _is_own_label(field, chosen) or _names_option(field, chosen) or _is_affirmative(chosen))
         _apply_value(page, field, chosen, pdf_path, sess, wants_on=wants_on)
         return
     if action.action == "uncheck":
@@ -6199,12 +6283,7 @@ def _execute(
 # words", "(500 characters maximum)", "no more than 100 words". Both orders,
 # because forms write it both ways. Never a floor - "minimum 250 words" must
 # not be read as a limit to cut to, so only ceiling words appear here.
-_CEILING = r"(?:max(?:imum)?|no more than|up to|within|limit(?:ed)?\s*(?:to)?|at most|or fewer|or less)"
-STATED_LIMIT_RE = re.compile(
-    rf"{_CEILING}[^.\n]{{0,24}}?(\d{{2,5}})\s*(words?|characters?|chars?)"
-    rf"|(\d{{2,5}})\s*(words?|characters?|chars?)[^.\n]{{0,16}}?{_CEILING}",
-    re.IGNORECASE,
-)
+_CEILING = r"\b(?:max(?:imum)?|no more than|up to|within|limit(?:ed)?\s*(?:to)?|at most|or fewer|or less)\b"
 
 
 def _stated_limit(field: dict[str, Any]) -> tuple[int, str]:
@@ -6217,12 +6296,24 @@ def _stated_limit(field: dict[str, Any]) -> tuple[int, str]:
     neighbours.
     """
     scope = " ".join(str(field.get(k) or "") for k in ("label", "group", "text"))
-    found = STATED_LIMIT_RE.search(scope)
-    if found is None:
-        return 0, ""
-    size = found.group(1) or found.group(3) or ""
-    unit = (found.group(2) or found.group(4) or "").lower()
-    return int(size), ("words" if unit.startswith("word") else "characters")
+    # Each figure on its own: the ceiling word must belong to IT, with no
+    # other figure in between, and a figure a floor word stands before is
+    # never one. "minimum 100 words, max 300 words" read the "max" that
+    # belongs to 300 as 100's, and an answer was cut to 100 words (code
+    # review, Oct 2026).
+    best: tuple[int, str] | None = None
+    for found in re.finditer(r"(\d{2,5})\s*(words?|characters?|chars?)\b", scope, re.IGNORECASE):
+        before = re.split(r"\d", scope[max(0, found.start() - 24):found.start()])[-1]
+        after = re.split(r"\d", scope[found.end():found.end() + 16])[0]
+        if re.search(r"\b(min(imum)?|at least|no (less|fewer) than)\b", before, re.IGNORECASE):
+            continue
+        if not (re.search(_CEILING, before, re.IGNORECASE) or re.search(_CEILING, after, re.IGNORECASE)):
+            continue
+        size = int(found.group(1))
+        unit = "words" if found.group(2).lower().startswith("word") else "characters"
+        if best is None or size < best[0]:
+            best = (size, unit)
+    return best or (0, "")
 
 
 def _clip_to_limit(field: dict[str, Any], value: str, label: str, sess) -> str:
@@ -6350,6 +6441,11 @@ def _apply_value(
             everything = options
         else:
             everything = _all_select_options(locator) or options
+        band = _band_index(everything, value)
+        if band >= 0:
+            locator.select_option(label=everything[band], timeout=10000)
+            _log_best_match(sess, prefix, label, value, everything[band], f"{value} falls in that range")
+            return
         near, why = matching.best_option(everything, value, _choose_option)
         if near >= 0:
             locator.select_option(label=everything[near], timeout=10000)
@@ -6374,7 +6470,7 @@ def _apply_value(
 
     if field_type in ("checkbox", "radio"):
         on = wants_on if wants_on is not None else (
-            _names_option(field, value) or _is_affirmative(value))
+            _is_own_label(field, value) or _names_option(field, value) or _is_affirmative(value))
         if wants_on is None and not on and not (
                 set(_WORDS.findall((value or "").lower().replace("'", ""))) & NEGATIVE_WORDS):
             # Neither a yes nor a no. "2013" - meant for the question before
@@ -6402,9 +6498,15 @@ def _apply_value(
         )
     # Salary fields disagree on units ("in LPA" wants 25, a number input wants
     # 1800000): every writer - bank, profile, model, user - goes through here,
-    # so this is the one place the amount is converted.
-    value = salary.for_field(value, field)
-    value = _plain_amount(value, field)
+    # so this is the one place the amount is converted. Not for a list: its
+    # options carry their own unit, and the answer's ("25 LPA") is what finds
+    # the band. Converted for an "Expected CTC" list that named no unit, it
+    # went in as 2500000 and took "50 LPA+" (code review, Oct 2026).
+    picks_from_list = _is_listbox_button(field) or (field.get("role") or "").lower() == "combobox" \
+        or (field.get("haspopup") or "").lower() in ("listbox", "true")
+    if not picks_from_list:
+        value = salary.for_field(value, field)
+        value = _plain_amount(value, field)
     # "Notice Period (In days)" is a text box that validates as a number:
     # "Immediate Joiner" was accepted and then rejected by the form itself.
     value = resolver.notice_for_field(value, field)
@@ -6420,9 +6522,7 @@ def _apply_value(
     if _is_listbox_button(field):
         _pick_listbox(page, locator, value, label, prefix, sess, prefer, multi=bool(field.get("multi")))
         return "picked"
-    if (field.get("role") or "").lower() == "combobox" or (
-        field.get("haspopup") or ""
-    ).lower() in ("listbox", "true"):
+    if picks_from_list:
         # The pick empties the box (the choice shows beside it): the sweep's
         # blank-again re-fill must not redo it every pass ("[again] Selected").
         return _commit_combobox(page, locator, value, label, prefix, sess, prefer)
@@ -6915,6 +7015,13 @@ def _date_mask(field: dict[str, Any], shown: str) -> str:
     # The placeholder too: SuccessFactors' date box says "MM/DD/YYYY" there
     # and nowhere else (Cargill, Oct 2026), so "07/2020" was typed into a box
     # that wants a day, and the widget threw it away.
+    #
+    # A shown date says its order only when one of its numbers cannot be a
+    # month: "15/10/2026" is day first. Every such date used to be read month
+    # first, and a date of birth of 05/11/1990 went in as 11/05/1990 with a
+    # read-back that compares digits only (code review, Oct 2026). "(DD/MM/
+    # YYYY)" inside a longer label or placeholder counts too.
+    either = ""
     for sample in (shown, str(field.get("value") or ""), str(field.get("placeholder") or ""),
                    str(field.get("label") or "")):
         sample = (sample or "").strip()
@@ -6922,18 +7029,39 @@ def _date_mask(field: dict[str, Any], shown: str) -> str:
             return "MM" + sample[2 if len(sample) == 7 else 1] + "YYYY"
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", sample):
             return "YYYY-MM-DD"
-        if re.fullmatch(r"\d{1,2}([/-])\d{1,2}\1\d{4}", sample):
-            return "MM" + sample[2] + "DD" + sample[2] + "YYYY"
-        if re.fullmatch(r"(?i)(mm|dd|yyyy)([/-])(mm|dd|yyyy)(\2(mm|dd|yyyy))?", sample):
-            return sample.upper()
-    return ""
+        both = re.fullmatch(r"(\d{1,2})([/.-])(\d{1,2})\2\d{4}", sample)
+        if both:
+            first, sep, second = int(both.group(1)), both.group(2), int(both.group(3))
+            if first > 12:
+                return f"DD{sep}MM{sep}YYYY"
+            if second > 12:
+                return f"MM{sep}DD{sep}YYYY"
+            either = either or sep         # 02/01/2026: either way round
+            continue
+        named = re.search(r"(?i)(?<![a-z])(mm|dd|yyyy)([/.-])(mm|dd|yyyy)(\2(mm|dd|yyyy))?(?![a-z])", sample)
+        if named:
+            return named.group(0).upper()
+    # A date the box shows that reads either way is month first, as before:
+    # EPAM's react-datepicker (Oct 2026) showed 02/01/2026 and took July 1st
+    # as 07/01/2020 - that widget's own default order. The candidate's own
+    # country decides only for a box that shows no date at all.
+    return f"MM{either}DD{either}YYYY" if either else ""
+
+
+def _default_date_mask(day: int | None) -> str:
+    """The order to write a date in when the box says nothing about it:
+    month first. Not the candidate's country's - MyCareernet, an Indian form
+    on an ngx-bootstrap picker (Oct 2026), took 5 November 1990 only as
+    11/05/1990, which is those pickers' default. The fill line says it was
+    assumed, so a wrong guess can be seen."""
+    return "MM/YYYY" if day is None else "MM/DD/YYYY"
 
 
 def _format_date(month: int | None, day: int | None, year: int | None, mask: str) -> str:
     parts = {"MM": f"{month:02d}" if month else "", "DD": f"{day:02d}" if day else "",
              "YYYY": str(year) if year else ""}
-    separator = next((c for c in mask if c in "/-"), "/")
-    wanted = [p for p in re.split(r"[/-]", mask) if p]
+    separator = next((c for c in mask if c in "/.-"), "/")
+    wanted = [p for p in re.split(r"[/.-]", mask) if p]
     if not wanted:
         wanted = ["MM", "YYYY"] if not day else ["MM", "DD", "YYYY"]
     if any(not parts[p] for p in wanted):
@@ -6953,7 +7081,13 @@ def _type_date_box(page, locator, value: str, label: str, prefix: str, sess,
     if year and month is None and day is None:
         _type_year_box(page, locator, year, label, prefix, sess, field)
         return
-    mask = _date_mask(field, _shown(locator)) or ("MM/YYYY" if day is None else "MM/DD/YYYY")
+    mask = _date_mask(field, _shown(locator))
+    assumed = ""
+    if not mask:
+        mask = _default_date_mask(day)
+        if day is not None and day <= 12 and month != day:
+            # Said, because nothing on the page could confirm it.
+            assumed = f" (the box shows no format; written {mask})"
     if day is None and "DD" in mask and field.get("work_entry") is not None:
         # A job's start month is what matters; the profile holds no day and
         # this box insists on one. Only ever for employment dates - a guessed
@@ -6970,7 +7104,7 @@ def _type_date_box(page, locator, value: str, label: str, prefix: str, sess,
         locator.fill(text, timeout=3000)
         _dismiss(page, locator, date=True)
         if _same_digits(_shown(locator), text):
-            sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {text}")
+            sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {text}{assumed}")
             return
         # Committed on leaving the box: SAP's UI5 date picker (SuccessFactors,
         # Cargill, Oct 2026) parses what was typed only when focus moves on,
@@ -6980,7 +7114,7 @@ def _type_date_box(page, locator, value: str, label: str, prefix: str, sess,
         locator.press("Tab", timeout=2000)
         page.wait_for_timeout(200)
         if _same_digits(_shown(locator), text):
-            sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {text}")
+            sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {text}{assumed}")
             return
     except Exception:
         pass
@@ -6992,7 +7126,7 @@ def _type_date_box(page, locator, value: str, label: str, prefix: str, sess,
     locator.press_sequentially(text, delay=30, timeout=10000)
     _dismiss(page, locator, date=True)   # close the date picker without picking
     if _same_digits(_shown(locator), text):
-        sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {text}")
+        sess.log(f"{prefix}Filled {_brief(label, LOG_LABEL)} = {text}{assumed}")
         return
     if year and _pick_in_calendar(page, locator, month, day, year):
         shown = _shown(locator)
@@ -7616,13 +7750,28 @@ def _is_listbox_button(field: dict[str, Any]) -> bool:
 # GPA questions this way, and a stored 7.4 matched none of them.
 # A unit may follow ("3-7 Years", "10+ yrs", "15 LPA or more"): TurboHire's
 # Experience list (Oct 2026) was all "N-M Years", and none of it read as a band.
-_BAND_UNIT = r"(?:\s*(?:years?|yrs?|lpa|lakhs?|lacs?|days?|months?|weeks?)\.?)?"
+def _band_unit(name: str) -> str:
+    return rf"(?:\s*(?P<{name}>years?|yrs?|lpa|lakhs?|lacs?|days?|months?|weeks?)\.?)?"
+
+
 _BAND_RE = re.compile(
-    rf"^(?:(?P<lo>\d+(?:\.\d+)?){_BAND_UNIT}\s*(?:-|–|—|to)\s*(?P<hi>\d+(?:\.\d+)?)"
-    rf"|(?P<n>\d+(?:\.\d+)?){_BAND_UNIT}\s*(?P<dir>or higher|or above|or more|\+|or below|or less|or lower)?"
-    rf"|(?P<word>below|under|less than|above|over|more than)\s*(?P<m>\d+(?:\.\d+)?)){_BAND_UNIT}"
-    rf"\s*(?:(?P<dir2>or higher|or above|or more|\+|or below|or less|or lower){_BAND_UNIT})?\s*$"
+    rf"^(?:(?P<lo>\d+(?:\.\d+)?){_band_unit('u1')}\s*(?:-|–|—|to)\s*(?P<hi>\d+(?:\.\d+)?)"
+    rf"|(?P<n>\d+(?:\.\d+)?){_band_unit('u2')}\s*(?P<dir>or higher|or above|or more|\+|or below|or less|or lower)?"
+    rf"|(?P<word>below|under|less than|above|over|more than)\s*(?P<m>\d+(?:\.\d+)?)){_band_unit('u3')}"
+    rf"\s*(?:(?P<dir2>or higher|or above|or more|\+|or below|or less|or lower){_band_unit('u4')})?\s*$"
 )
+_VALUE_WITH_UNIT_RE = re.compile(rf"\s*(\d+(?:\.\d+)?){_band_unit('u')}\s*", re.IGNORECASE)
+# A unit as (kind, size): days for time, lakhs for pay. "1 month" is not
+# "0-15 days" and "6 years" is not "0-11 months" - both were picked when the
+# numbers alone were compared (code review, Oct 2026).
+_UNIT_SIZES = {"day": ("time", 1.0), "week": ("time", 7.0), "month": ("time", 30.0),
+               "year": ("time", 365.0), "yr": ("time", 365.0),
+               "lpa": ("money", 1.0), "lakh": ("money", 1.0), "lac": ("money", 1.0)}
+
+
+def _unit_size(unit: str | None) -> tuple[str, float] | None:
+    word = (unit or "").lower().rstrip(".")
+    return _UNIT_SIZES.get(word) or _UNIT_SIZES.get(word[:-1]) if word else None
 
 
 def _band_index(texts: list[str], value: str) -> int:
@@ -7633,35 +7782,68 @@ def _band_index(texts: list[str], value: str) -> int:
     reading "7.0 or higher" as a match for 7.4 is arithmetic, not guesswork.
     An option that is not a band at all can never win here, and neither can
     one of two that both hold the amount ("0-3 Years" and "3-7 Years" for 3):
-    the edge is the form's to explain, so that one is left to the model."""
-    number = re.fullmatch(rf"\s*(\d+(?:\.\d+)?){_BAND_UNIT}\s*", str(value or ""), re.IGNORECASE)
+    the edge is the form's to explain, so that one is left to the model.
+
+    Units are compared, not ignored: "1 month" is 30 days, a band in LPA
+    never holds a number of years, and a pay figure in rupees ("2500000",
+    which the salary code writes for a box that names no unit) is 25 on a
+    list in lakhs - it took "50 LPA+" for an expected 25 LPA. A row that
+    names no unit takes the one the rest of the list uses ("0-3", "3-7
+    Years")."""
+    number = _VALUE_WITH_UNIT_RE.fullmatch(str(value or ""))
     if number is None:
         return -1
     amount = float(number.group(1))
-    hits: list[int] = []
+    own = _unit_size(number.group("u"))
+    parsed = []
     for i, raw in enumerate(texts):
         found = _BAND_RE.match(resolver.plain(raw).replace(",", ""))
-        if not found:
-            continue
-        bits = found.groupdict()
+        if found:
+            parsed.append((i, found.groupdict()))
+    kinds = {_unit_size(b.get(u)) for _, b in parsed for u in ("u1", "u2", "u3", "u4") if b.get(u)}
+    kinds.discard(None)
+    shared = next(iter(kinds)) if len(kinds) == 1 else None
+
+    hits: list[int] = []
+    for i, bits in parsed:
+        row_unit = next((_unit_size(bits[u]) for u in ("u1", "u2", "u3", "u4") if bits.get(u)), shared)
+        compared = own is not None and row_unit is not None
+        if compared:
+            if own[0] != row_unit[0]:
+                continue                               # years against LPA
+            value_base = amount * own[1]
+        elif row_unit is not None and row_unit[0] == "money" and amount >= 1000:
+            value_base = amount / salary.LAKH          # rupees a year, against lakhs
+        else:
+            value_base = amount
+
+        def edge_of(text: str, unit: str | None, _row=row_unit, _compared=compared) -> float:
+            if not _compared:
+                return float(text)
+            size = _unit_size(unit) or _row
+            return float(text) * size[1] if size[0] == own[0] else float("nan")
+
         if bits["lo"] is not None:
-            if float(bits["lo"]) <= amount <= float(bits["hi"]):
+            low = edge_of(bits["lo"], bits.get("u1") or bits.get("u3") or bits.get("u4"))
+            high = edge_of(bits["hi"], bits.get("u3") or bits.get("u4") or bits.get("u1"))
+            if low <= value_base <= high:
                 hits.append(i)
         elif bits["n"] is not None:
-            edge, direction = float(bits["n"]), (bits["dir"] or bits["dir2"] or "").strip()
+            edge = edge_of(bits["n"], bits.get("u2") or bits.get("u3") or bits.get("u4"))
+            direction = (bits["dir"] or bits["dir2"] or "").strip()
             if direction in ("or higher", "or above", "or more", "+"):
-                if amount >= edge:
+                if value_base >= edge:
                     hits.append(i)
             elif direction in ("or below", "or less", "or lower"):
-                if amount <= edge:
+                if value_base <= edge:
                     hits.append(i)
-            elif amount == edge:
+            elif value_base == edge:
                 hits.append(i)
         elif bits["m"] is not None:
-            edge, word = float(bits["m"]), bits["word"]
-            if word in ("below", "under", "less than") and amount < edge:
+            edge, word = edge_of(bits["m"], bits.get("u3") or bits.get("u4")), bits["word"]
+            if word in ("below", "under", "less than") and value_base < edge:
                 hits.append(i)
-            if word in ("above", "over", "more than") and amount > edge:
+            if word in ("above", "over", "more than") and value_base > edge:
                 hits.append(i)
     return hits[0] if len(hits) == 1 else -1
 
@@ -7731,8 +7913,12 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
         found = pick([i for i, t in enumerate(flat) if alias.search(t)], False)
         if found >= 0:
             return found
+        # Strict: of several different rows starting with it, none. "Yes"
+        # took "Yes, I am authorized" over "Yes, but I require sponsorship",
+        # and "Bangalore" took "Bangalore Rural" (code review, Oct 2026).
+        # The state preference still tells cities apart (pick).
         starts = re.compile(rf"^\s*{re.escape(q)}\b")
-        found = pick([i for i, t in enumerate(flat) if starts.match(t)], False)
+        found = pick([i for i, t in enumerate(flat) if starts.match(t)], True)
         if found >= 0:
             return found
         bounded = re.compile(rf"(?<![\w+]){re.escape(q)}(?![\w])")
@@ -7814,14 +8000,15 @@ def _choose_option(texts: list[str], value: str, prefer: list[str] | None = None
         stem = re.sub(r"('s|s)$", "", lowered.split()[0]) if lowered.split() else ""
         if len(stem) >= 5:
             starts = re.compile(rf"^\s*{re.escape(stem)}")
-            # "Bachelor's Degree" may take any member of the family - that is
-            # the whole point of the rule. "Bachelor of ARTS" may not: this
-            # picked the first match and turned it into "Bachelor of Science",
-            # silently, on a form. A named subject has to find its own option
-            # or none, so the strictness depends on whether one was named.
-            named = [w for w in lowered.split()[1:]
-                     if w not in ("degree", "degrees", "of", "in", "the")]
-            best = pick([i for i, t in enumerate(flat) if starts.match(t)], bool(named))
+            # "Bachelor's Degree" takes the member of the family that names
+            # no subject ("Bachelors"), or the only member. Never the first
+            # of several subjects: "Bachelors" took "Bachelor of Arts" for a
+            # B.Tech (code review, Oct 2026), as "Bachelor of ARTS" once took
+            # "Bachelor of Science". Several left: the nearest-option call
+            # decides, with the resume in hand.
+            family = [i for i, t in enumerate(flat) if starts.match(t)]
+            generic = [i for i in family if matching.GENERIC_DEGREE_RE.match(flat[i])]
+            best = pick(generic or family, True)
             if best >= 0 and satisfied(best):
                 return best
             best = -1
@@ -8139,15 +8326,18 @@ def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess,
     open between picks."""
     _dismiss(page)  # close any popup left open by an earlier field
     browser.click(locator, timeout=5000)
-    wanted_all = ([v.strip() for v in re.split(r"\s*[,;]\s*", value) if v.strip()]
-                  if multi else [value])
+    parts = [v.strip() for v in re.split(r"\s*[,;]\s*", value) if v.strip()] if multi else [value]
     # Workday fills its lists lazily: "Select One" alone means not loaded yet.
     options, texts = None, []
     for _ in range(21):
         page.wait_for_timeout(150)
         options, texts = _visible_options(page, locator)
-        if _choose_option(texts, wanted_all[0], prefer) >= 0 or len([t for t in texts if t]) > 1:
+        if _choose_option(texts, parts[0], prefer) >= 0 or len([t for t in texts if t]) > 1:
             break
+    # One option with a comma in it is one pick: "Gurgaon, India" became
+    # "Gurgaon" and whatever started with "India" (code review, Oct 2026).
+    whole = resolver.plain(value)
+    wanted_all = [value] if multi and any(resolver.plain(t) == whole for t in texts) else parts
     chosen: list[str] = []
     missing: list[str] = []
     for wanted in wanted_all:
@@ -8155,6 +8345,11 @@ def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess,
                                               sess, label, prefix)
         if index < 0 and options is not None and texts:
             index, why = matching.best_option(texts, wanted, _choose_option)
+            if index < 0:
+                # "6" into a "5-7 years" button list: it cost a failed pick
+                # and another model call (code review, Oct 2026).
+                index = _band_index(texts, wanted)
+                why = f"{wanted} falls in that range" if index >= 0 else ""
             if index >= 0:
                 _log_best_match(sess, prefix, label, wanted, texts[index], why)
         if index < 0:
@@ -8172,6 +8367,20 @@ def _pick_listbox(page, locator, value: str, label: str, prefix: str, sess,
         shown = ", ".join(t for t in texts[:40] if t) or "(no options appeared)"
         raise NoOptionMatch(f"'{value}' matches none of the dropdown's options; pick one of: {shown}",
                             texts if not multi else [])
+    if not multi:
+        # What the button shows now is the evidence. A list that re-draws
+        # under the pointer took the row next to the one meant, and that was
+        # logged as selected (code review, Oct 2026). Only another of the
+        # list's own options counts against it: a button showing its label
+        # or nothing cannot say.
+        page.wait_for_timeout(150)
+        try:
+            now = " ".join((locator.inner_text(timeout=1000) or "").split())
+        except Exception:
+            now = ""
+        if now and now != chosen[0] and now in texts and not _same_answer(now, chosen[0]):
+            raise ValueError(f"clicked '{_brief(chosen[0], 40)}' but the box shows "
+                             f"'{_brief(now, 40)}' - not entered")
     sess.log(f"{prefix}Selected '{_brief(', '.join(chosen), LOG_VALUE)}' for {_brief(label, LOG_LABEL)}"
              + (f" (no option for: {_brief(', '.join(missing), 60)})" if missing else ""))
 
@@ -8528,7 +8737,6 @@ def _combobox_shows(locator, typed: str = "") -> str:
 
 
 # The box a school's name goes in, for the "Other" fallback above.
-_SCHOOL_BOX_RE = re.compile(r"\b(school|university|college|institut\w*)\b", re.IGNORECASE)
 
 
 def _click_row(page, locator, rows, index: int, text: str) -> bool:
@@ -8720,18 +8928,12 @@ def _commit_combobox(page, locator, value: str, label: str, prefix: str, sess,
         if index >= 0:
             sess.log(f"{prefix}{_brief(label, LOG_LABEL)}: {_brief(value, 20)} falls in "
                      f"'{_brief(shown[index], 40)}'.")
-    if index < 0 and _SCHOOL_BOX_RE.search(label):
-        # Greenhouse's school list is searched on the server and carries
-        # "Other" for a school it does not have - the entry the candidate
-        # chose by hand after their university matched nothing (BitGo,
-        # Oct 2026). Taken by its exact name, never a row that merely
-        # contains the word.
-        alt_visible, alt_shown = _type_to_filter(page, locator, "Other", shown, sess, label, prefix)
-        other = next((i for i, t in enumerate(alt_shown) if resolver.plain(t) == "other"), -1)
-        if other >= 0:
-            visible, shown, index = alt_visible, alt_shown, other
-            sess.log(f"{prefix}{_brief(label, LOG_LABEL)}: '{_brief(value, 40)}' is not in "
-                     "this list; taking 'Other', its entry for a school it does not have.")
+    # A school the list does not find is NOT taken as "Other" here any more.
+    # That came before the shorter search below and before the nearest-option
+    # call ever saw the list, so "IIT Bombay" against "Indian Institute of
+    # Technology Bombay" became "Other" (code review, Oct 2026). The refusal
+    # names the rows, and "Other" is the planning model's call when the school
+    # truly is not there (its prompt says so).
     narrowed_list = False
     if index < 0 and not fixed:
         # The widget did not filter on the whole value, so it is still showing
@@ -8936,6 +9138,11 @@ def _same_answer(shown: str, wanted: str) -> bool:
     a, b = resolver.plain(shown), resolver.plain(wanted)
     if not a or not b:
         return False
+    if a != b and re.fullmatch(r"(yes|no|bachelor'?s?|master'?s?|doctorate)", b):
+        # A bare yes, no or degree family names no one row of several:
+        # "Yes - with sponsorship" for "Yes" and "Bachelor of Arts" for
+        # "Bachelor" were taken as the answer (code review, Oct 2026).
+        return bool(re.fullmatch(rf"{re.escape(b)}\W*", a))
     # Whole words: "6" is in "6 years", never in "16 years".
     if a == b or re.search(rf"(?<!\w){re.escape(b)}(?!\w)", a) or re.search(rf"(?<!\w){re.escape(a)}(?!\w)", b):
         return True
@@ -9034,6 +9241,16 @@ def _choice_group(field: dict[str, Any]) -> str:
     if field_type == "checkbox":
         return str(field.get("name") or "")
     return ""
+
+
+def _is_own_label(field: dict[str, Any], answer: str) -> bool:
+    """The answer is this option's whole label: "No" on the option "No" means
+    tick it. Read as a no, it unticked a Yes / No checkbox and asked a radio
+    for an impossible uncheck (code review, Oct 2026)."""
+    def words(text: str) -> list[str]:
+        return re.findall(r"[a-z0-9]+", resolver.plain(str(text or "")).replace("'", ""))
+    said = words(answer)
+    return bool(said) and any(said == words(text) for text in (field.get("label"), field.get("text")) if text)
 
 
 def _names_option(field: dict[str, Any], answer: str) -> bool:
@@ -9182,7 +9399,7 @@ def _is_declaration_box(field: dict[str, Any]) -> bool:
     if (field.get("type") or "").lower() != "checkbox" or not field.get("required"):
         return False
     words = f"{field.get('label') or ''} {field.get('group') or ''}".lower()
-    return any(w in words for w in LEGAL_WORDS) or bool(
+    return bool(LEGAL_RE.search(words)) or bool(
         re.search(r"\b(i confirm|i agree|i accept|i acknowledge|i understand|i declare)\b", words))
 
 
@@ -9227,9 +9444,7 @@ def _needs_user(action: ApplyAction, field: dict[str, Any] | None, label: str) -
     if profile.is_secret(label):
         return True
     haystack = f"{label} {(field or {}).get('name', '')} {(field or {}).get('group', '')}".lower()
-    if action.action in ("check", "uncheck", "fill", "select") and any(
-        w in haystack for w in LEGAL_WORDS
-    ):
+    if action.action in ("check", "uncheck", "fill", "select") and LEGAL_RE.search(haystack):
         # Always gate legal fields. Inside the gate a saved answer (confirmed
         # once by the user) is reused with a loud [saved] line - and, for
         # radios, only on the option that actually matches it.

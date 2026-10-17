@@ -49,6 +49,7 @@ only optional overall combined cumulative please required mandatory s specify
 the till time to total what with work working professional year years yr yrs
 you your
 """.split())
+TOTAL_EXPERIENCE_WORDS = _TOTAL_EXPERIENCE_WORDS
 _YEAR_WORDS = frozenset(("year", "years", "yr", "yrs"))
 # "Total experience till date" asks for the whole career without saying
 # "years"; a bare "Experience" does not say enough to be sure.
@@ -75,13 +76,43 @@ NOT_NOTICE_PERIOD = (
     r"\b(last|final) working (day|date)\b|\blwd\b|\breliev(ing|al) date\b"
     r"|\bdate of (leaving|relieving|resignation)\b|\benter (it |the date )?as\b"
     r"|\bif (not|none|no)\b.{0,40}\benter\b|\bdd ?mm ?yy(yy)?\b"
+    # A yes or no, not a length of time: "Are you currently serving your
+    # notice period?" took the saved "join immediately".
+    r"|^(are|r) (you|u) (currently |presently |now )?(serving|on)\b"
 )
 _NOT_NOTICE_PERIOD_RE = re.compile(NOT_NOTICE_PERIOD)
+
+# A question about a link that is not asking for one: "How did you hear about
+# us? (LinkedIn, Naukri...)" was keyed as the LinkedIn URL, and so was "I agree
+# to allow my application statuses to be visible inside LinkedIn Recruiter" -
+# whose saved "yes" then stood as the candidate's LinkedIn answer. Over
+# normalized text; the profile's link rules in resolver.py use it too.
+NOT_A_LINK = (
+    r"^(?!(do|does|did|are|is|have|has|can|will|would)\b)"
+    r"(?!.*\b(how did you|hear|heard|source|referr\w*|recruiter|agree|allow|consent|visible"
+    r"|experience|years|familiar|actions|copilot)\b)"
+)
+
+# Countries a work-permit question can name. The candidate's own country is
+# the plain key, shared with "the country you are applying for": a question
+# about any other is a different question, with a different answer - "Are you
+# authorized to work in the United States?" shared one saved "Yes" with India.
+_COUNTRIES = (
+    ("us", r"\bunited states\b|\bu ?s ?a\b|\bu s\b|\b(in|the) us\b|\bamerica\b"),
+    ("uk", r"\bunited kingdom\b|\bu ?k\b|\bbritain\b|\bengland\b"),
+    ("canada", r"\bcanad\w*\b"),
+    ("australia", r"\baustralia\w*\b"),
+    ("eu", r"\beurope\w*\b|\beu\b|\beea\b|\bschengen\b|\bgermany\b|\bnetherlands\b|\bireland\b|\bfrance\b"),
+    ("singapore", r"\bsingapore\b"),
+    ("uae", r"\buae\b|\bunited arab emirates\b|\bdubai\b"),
+    ("india", r"\bindia\b"),
+)
 
 # Curated topics: slug -> a pattern over the normalized question text, or a
 # predicate taking that text. Order matters only for readability; keys are
 # checked in definition order.
 TOPICS: dict[str, Any] = {
+    "serving_notice": re.compile(r"^(are|r) (you|u) (currently |presently |now )?(serving|on)\b.*\bnotice\b"),
     "notice_period": lambda text: bool(
         re.search(r"\bnotice\b", text) and not _NOT_NOTICE_PERIOD_RE.search(text)),
     # The abbreviations are how Indian forms label these: ECTC, CCTC, Exp CTC.
@@ -94,13 +125,16 @@ TOPICS: dict[str, Any] = {
     # a form that means expected by it would get the candidate's current
     # salary quoted as their expectation, and guessing wrong in that direction
     # costs them money. The model reads it in context instead.
+    # Never when the question is about expected pay: "Expected CTC (Current
+    # CTC + hike %)" got the current figure (code review, Oct 2026).
     "current_ctc": re.compile(
+        r"^(?!.*\b(expected|desired|expectations?|ectc)\b).*?(?:"
         r"\b(current|present)\b.*\b(ctc|salary|compensation|pay)\b|\bcctc\b"
         # The same word order the expected pattern needs: "Salary paid by your
         # current employer" names the noun first and was read as a question of
         # its own, so the profile could not answer it.
         r"|\b(ctc|salary|compensation|pay|package|remuneration)\b"
-        r".*\b(current|present|currently|today|now)\b"),
+        r".*\b(current|present|currently|today|now)\b)"),
     "expected_ctc": re.compile(
         # "E-CTC" fingerprints to "e ctc": punctuation is stripped, not joined.
         r"\b(expected|desired)\b.*\b(ctc|salary|compensation|pay)\b"
@@ -114,13 +148,24 @@ TOPICS: dict[str, Any] = {
         r"|\bectc\b|\bexp ctc\b|\be ctc\b"),
     "total_experience": lambda text: _is_total_experience(text),
     "work_authorization": re.compile(r"\b(authori[sz]ed?|authori[sz]ation|legally|eligib\w*)\b.*\bwork\b|\bwork\b.*\b(authori[sz]ed?|authori[sz]ation|permit)\b"),
+    # Holding a visa or passport is not needing a sponsor: "Do you hold a
+    # valid passport and visa?" shared "sponsorship" and its saved "no".
+    "visa_held": lambda text: bool(
+        re.search(r"\b(valid|hold|holding|have|possess|own)\b.*\b(visa|passport|work permit)\b", text)
+        and not re.search(r"\bsponsor\w*\b", text)),
     "sponsorship": re.compile(r"\bsponsor\w*\b|\bvisa\b"),
+    # Help with moving is not willingness to move.
+    "relocation_assistance": re.compile(
+        r"\brelocation (assistance|support|package|benefit|benefits|allowance|expenses?|bonus)\b"
+        r"|\b(require|need|expect)\w*\b.*\brelocation\b"),
     "relocation": re.compile(r"\brelocat\w*\b"),
     "remote_preference": re.compile(r"\b(remote|hybrid|work from home|wfh|on[- ]?site)\b"),
     "start_date": re.compile(r"\b(start date|available to start|joining date|when can you (start|join))\b"),
     "current_location": re.compile(r"\b(current|present)\b.*\b(location|city)\b|\bwhere\b.*\b(located|based)\b"),
-    "linkedin_url": re.compile(r"\blinkedin\b"),
-    "github_url": re.compile(r"\bgithub\b"),
+    # Before the links: "How did you hear about us? (LinkedIn, Naukri)".
+    "referral_source": re.compile(r"\bhow did you (hear|find|learn)\b"),
+    "linkedin_url": re.compile(NOT_A_LINK + r".*\blinkedin\b"),
+    "github_url": re.compile(NOT_A_LINK + r".*\bgithub\b"),
     "portfolio_url": re.compile(r"\b(portfolio|personal (web)?site)\b"),
     # Anchored: a loose \bphone\b collapsed "Phone Device Type", "Country
     # Phone Code" and "Phone Extension" onto one key, so "Mobile" (the device
@@ -132,7 +177,13 @@ TOPICS: dict[str, Any] = {
     "disability": re.compile(r"\bdisabilit\w*\b"),
     "veteran": re.compile(r"\bveteran\b|\bmilitary\b"),
     "race_ethnicity": re.compile(r"\brace\b|\bethnicit\w*\b"),
-    "criminal_record": re.compile(r"\bcriminal\b|\bconvict\w*\b|\bbackground check\b"),
+    # Agreeing to a check is not a record: "Are you willing to undergo a
+    # background check?" shared "criminal_record" with "Have you ever been
+    # convicted?", so a saved Yes would have ticked Yes on a conviction.
+    "background_check": lambda text: bool(
+        re.search(r"\bbackground (check|verification|screening|investigation)s?\b|\bbgv\b", text)
+        and not re.search(r"\bcriminal\b|\bconvict\w*\b", text)),
+    "criminal_record": re.compile(r"\bcriminal\b|\bconvict\w*\b"),
     # A first or only citizenship. "Citizenship 2" (SuccessFactors) is a
     # second one: given its own key, it is never filled with the first's
     # answer.
@@ -148,16 +199,56 @@ TOPICS: dict[str, Any] = {
     "driving_licence_held": lambda text: bool(
         re.search(r"\bdriv(ing|ers?) licen[cs]e\b", text)
         and not re.search(r"\b(number|no\.|id)\b", text)),
-    "referral_source": re.compile(r"\bhow did you (hear|find|learn)\b"),
 }
 
 # Topics whose answers are legally meaningful; stored only after a one-time
 # confirmation, and every reuse is logged loudly by the caller.
 SENSITIVE_TOPICS = frozenset(
-    ("work_authorization", "sponsorship", "gender", "disability", "veteran",
-     "race_ethnicity", "criminal_record", "citizenship", "conflict_of_interest",
-     "marital_status")
+    ("work_authorization", "sponsorship", "visa_held", "gender", "disability", "veteran",
+     "race_ethnicity", "criminal_record", "background_check", "citizenship",
+     "conflict_of_interest", "marital_status")
 )
+
+
+def _country_named(text: str) -> str:
+    """The country a work-permit question names, '' for none or for the
+    candidate's own."""
+    for slug, pattern in _COUNTRIES:
+        if re.search(pattern, text):
+            data = profile.load_profile()
+            home = str(data.get("country") or "") or str(data.get("location") or "").split(",")[-1]
+            return "" if re.search(pattern, profile.fingerprint(home or "India")) else slug
+    return ""
+
+
+def _work_mode(text: str) -> str:
+    """The one way of working a yes-or-no question asks about: "Are you open
+    to remote work?" and "Are you comfortable working onsite 5 days a week?"
+    shared one saved Yes. '' when the question names several (a preference)."""
+    modes = set()
+    if re.search(r"\b(remote|remotely|work from home|wfh)\b", text):
+        modes.add("remote")
+    if re.search(r"\bhybrid\b", text):
+        modes.add("hybrid")
+    if re.search(r"\b(on ?site|in office|office|wfo|in person|commut\w*)\b", text):
+        modes.add("onsite")
+    return modes.pop() if len(modes) == 1 else ""
+
+
+# A topic whose questions differ in something the answer depends on gets that
+# something in its key: "work_authorization:us" is never answered with the
+# saved "work_authorization" (India).
+_QUALIFIERS: dict[str, Any] = {
+    "work_authorization": _country_named,
+    "sponsorship": _country_named,
+    "visa_held": _country_named,
+    "remote_preference": _work_mode,
+}
+
+
+def topic_of(key: str) -> str:
+    """The topic slug of a key, without its qualifier."""
+    return (key or "").split(":", 1)[0]
 
 
 def question_key(label: str, group: str = "") -> str:
@@ -172,7 +263,8 @@ def question_key(label: str, group: str = "") -> str:
         return ""
     for slug, test in TOPICS.items():
         if test(text) if callable(test) else test.search(text):
-            return slug
+            qualifier = _QUALIFIERS[slug](text) if slug in _QUALIFIERS else ""
+            return f"{slug}:{qualifier}" if qualifier else slug
     return text
 
 
@@ -181,7 +273,7 @@ def classify(label: str, group: str = "") -> str:
     combined = f"{label or ''} {group or ''}"
     if profile.is_secret(combined):
         return "secret"
-    if question_key(label, group) in SENSITIVE_TOPICS:
+    if topic_of(question_key(label, group)) in SENSITIVE_TOPICS:
         return "sensitive"
     return "neutral"
 
@@ -224,7 +316,7 @@ def _invalidate() -> None:
 
 def recall(label: str, group: str = "") -> dict[str, str] | None:
     """The stored entry for this question, bumping its usage counter."""
-    entry = lookup(question_key(label, group))
+    entry = saved_for(label, group)
     if entry is not None:
         touch(entry["key"])
     return entry
@@ -249,11 +341,60 @@ def touch(key: str) -> None:
 
 
 def lookup(key: str) -> dict[str, str] | None:
-    """The stored entry for a topic slug, without counting it as a use."""
+    """The stored entry for a topic slug, without counting it as a use.
+
+    An entry is only ever the answer to its own question: one saved before a
+    topic took qualifiers ("Are you authorized to work in the US?" under the
+    plain "work_authorization") is read again to see which key it belongs to,
+    and is not handed to a question that differs from it."""
     if not key:
         return None
     entry = _table().get(key)
-    return dict(entry) if entry is not None else None
+    topic = topic_of(key)
+    if entry is None and topic != key:
+        entry = _table().get(topic)
+    if entry is None:
+        return None
+    own = question_key(entry["question"]) if entry["question"].strip() else ""
+    if topic_of(own) in TOPICS and own != key:
+        return None
+    shape = _ANSWER_SHAPES.get(topic)
+    if shape is not None and not shape.search(entry["answer"] or ""):
+        return None
+    return dict(entry)
+
+
+# What an answer to a topic must look like. "yes" was saved as the LinkedIn
+# answer from a consent box that mentioned LinkedIn Recruiter, and would have
+# gone into the next "LinkedIn Profile" box.
+_ANSWER_SHAPES = {
+    "linkedin_url": re.compile(r"[./]"),
+    "github_url": re.compile(r"[./]"),
+    "portfolio_url": re.compile(r"[./]"),
+    "total_experience": re.compile(r"\d"),
+    "current_ctc": re.compile(r"\d"),
+    "expected_ctc": re.compile(r"\d"),
+}
+_YES_NO_RE = re.compile(r"^\s*(yes|no|y|n)\s*[.!]?\s*$", re.IGNORECASE)
+# A question that wants something other than a yes or a no.
+_OPEN_QUESTION_RE = re.compile(
+    r"^(what|which|how|when|where|why|preferred|enter|specify|mention|list|describe"
+    r"|please (specify|mention|enter|share|list|describe))\b")
+
+
+def saved_for(label: str, group: str = "") -> dict[str, str] | None:
+    """The stored answer to this question, when it can answer it: a saved
+    "yes" is no answer to "Preferred work mode" or "Which visa do you hold?",
+    whatever topic they share with a yes-or-no question."""
+    entry = lookup(question_key(label, group))
+    if entry is None:
+        return None
+    # The question is the group's when there is one: a radio's label is its
+    # option, a dropdown button's its "Select One".
+    if _YES_NO_RE.match(entry["answer"] or "") and \
+            _OPEN_QUESTION_RE.search(profile.fingerprint(group or label or "")):
+        return None
+    return entry
 
 
 def remember(label: str, answer: str, group: str = "", company: str = "") -> str:
@@ -274,7 +415,7 @@ def remember(label: str, answer: str, group: str = "", company: str = "") -> str
         company.lower() in text.lower() or company.lower() in answer.lower()
     ):
         return ""
-    kind = "sensitive" if key in SENSITIVE_TOPICS else "neutral"
+    kind = "sensitive" if topic_of(key) in SENSITIVE_TOPICS else "neutral"
     now = datetime.now(timezone.utc).isoformat()
     conn = db.connect()
     try:

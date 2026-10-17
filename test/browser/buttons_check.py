@@ -154,12 +154,12 @@ check("not clicked", "Clicked Continue" not in logs, logs[-700:])
 check("  and said why", "looks like it sends the application" in logs, logs[-700:])
 check("  the candidate is told to click it", "'Continue' yourself" in asked, sess.asked)
 
-print("\n-- the same page, model unsure: the old rule (click Next) stands --")
-# The replica's Continue goes nowhere, so the agent ends up asking why the
-# form is not moving on: that is answered with abort.
+print("\n-- the same page, model unsure: asked, even with auto next on --")
+# It used to be clicked on the old word rules, unseen (code review, Oct 2026):
+# a Continue that sends the application would have gone the same way.
 sess, logs, asked = session("last", ["abort"], {"continue": ("next", 0.4)})
-check("a low-confidence 'next' unlocks nothing new: a plain Next is clicked as before",
-      "Clicked Continue" in logs, logs[-700:])
+check("a low-confidence 'next' is not clicked unseen", "Clicked Continue" not in logs, logs[-700:])
+check("  the candidate is asked, and told why", "I cannot tell whether 'Continue'" in asked, sess.asked)
 
 print()
 if problems:

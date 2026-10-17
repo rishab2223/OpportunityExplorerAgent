@@ -177,3 +177,28 @@ class AbbreviationTests(unittest.TestCase):
     def test_the_abbreviations_do_not_collide(self) -> None:
         self.assertNotEqual(salary.topic_of(self._field("ECTC")),
                             salary.topic_of(self._field("CCTC")))
+
+
+class OtherUnitsTests(unittest.TestCase):
+    """Pay boxes in another currency or counted in thousands (code review,
+    Oct 2026): every one of these was converted as if it were rupees."""
+
+    def test_another_currency_is_left_alone(self) -> None:
+        box = field("Expected salary (USD)")
+        self.assertTrue(salary.is_foreign(box))
+        self.assertEqual(salary.for_field("30 LPA", box), "30 LPA")   # was 3000000
+        self.assertEqual(salary.for_field("120000", box), "120000")
+
+    def test_rupees_named_beside_a_dollar_sign_are_rupees(self) -> None:
+        self.assertFalse(salary.is_foreign(field("Expected CTC (INR, no $ please)")))
+
+    def test_a_box_in_thousands(self) -> None:
+        box = field("Expected CTC (in thousands)")
+        self.assertEqual(salary.for_field("120", box), "120")          # was 12000000
+        self.assertEqual(salary.for_field("25 LPA", box), "2500")
+        self.assertEqual(salary.normalize("120", box), "1.2 LPA")
+
+    def test_a_monthly_box_in_thousands(self) -> None:
+        box = field("Expected salary per month (in K)")
+        self.assertEqual(salary.for_field("150", box), "150")          # was 1250000
+        self.assertEqual(salary.for_field("18 LPA", box), "150")

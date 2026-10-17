@@ -814,6 +814,9 @@ SNAPSHOT_JS = """
     }
     if (el.tagName.toLowerCase() === 'select') {
       item.options = Array.from(el.options).map(o => o.label || o.value).slice(0, 40);
+      // Cut, and said so: the model was told 40 rows were the whole list, and
+      // a university past the cut became "Other" (code review, Oct 2026).
+      if (el.options.length > 40) item.more_options = true;
       item.multiple = el.multiple === true;
     }
     if (type === 'checkbox' || type === 'radio') item.checked = el.checked === true;

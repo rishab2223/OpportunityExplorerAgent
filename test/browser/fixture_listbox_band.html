@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Listbox bands</title>
+<style>
+  body { font-family: sans-serif; padding: 20px; }
+  .menu { border: 1px solid #999; width: 220px; }
+  .menu [role=option] { padding: 4px 8px; cursor: pointer; }
+  .menu [role=option]:hover { background: #eef; }
+</style>
+</head>
+<body>
+<!-- A dropdown BUTTON (Workday-style) whose options are bands of years, and
+     a second one that re-draws under the pointer: a click lands on the row
+     after the one meant, as a list that shifts while it opens does. -->
+<div><label id="exp-label">Years of experience *</label>
+<button id="exp" type="button" aria-haspopup="listbox" aria-labelledby="exp-label exp">Select One</button></div>
+
+<div><label id="shift-label">Total experience *</label>
+<button id="shift" type="button" aria-haspopup="listbox" aria-labelledby="shift-label shift">Select One</button></div>
+
+<div><label id="loc-label">Preferred locations *</label>
+<button id="loc" type="button" aria-haspopup="listbox" aria-labelledby="loc-label loc">Select</button></div>
+
+<div id="log"></div>
+<script>
+const BANDS = ["0-3 years", "3-5 years", "5-7 years", "7+ years"];
+const CITIES = ["Gurgaon, India", "Gurgaon, Haryana", "Bangalore, India"];
+function open(btn, rows, shifted, multi) {
+  close();
+  const menu = document.createElement('div');
+  menu.className = 'menu';
+  menu.setAttribute('role', 'listbox');
+  menu.id = 'menu';
+  for (const [i, text] of rows.entries()) {
+    const row = document.createElement('div');
+    row.setAttribute('role', 'option');
+    row.textContent = text;
+    row.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const taken = shifted ? rows[Math.min(i + 1, rows.length - 1)] : text;
+      if (multi) {
+        btn.dataset.picked = (btn.dataset.picked ? btn.dataset.picked + ' | ' : '') + taken;
+        btn.textContent = btn.dataset.picked;
+      } else {
+        btn.textContent = taken;
+        close();
+      }
+      document.getElementById('log').textContent += btn.id + '=' + taken + ';';
+    });
+    menu.appendChild(row);
+  }
+  btn.after(menu);
+}
+function close() { const m = document.getElementById('menu'); if (m) m.remove(); }
+document.getElementById('exp').addEventListener('click', (e) => { e.stopPropagation(); document.getElementById('menu') ? close() : open(e.currentTarget, BANDS, false); });
+document.getElementById('shift').addEventListener('click', (e) => { e.stopPropagation(); document.getElementById('menu') ? close() : open(e.currentTarget, BANDS, true); });
+document.getElementById('loc').addEventListener('click', (e) => { e.stopPropagation(); document.getElementById('menu') ? close() : open(e.currentTarget, CITIES, false, true); });
+document.addEventListener('click', close);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+</script>
+</body>
+</html>

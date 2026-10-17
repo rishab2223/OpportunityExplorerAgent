@@ -122,9 +122,11 @@ class ProfileMappingTests(ResolverTestCase):
             self.assertIsNone(resolver.resolve(field(label=label)), label)
             self.assertNotEqual(answers.question_key(label), "notice_period", label)
         # The notice period itself still is.
-        for label in ("What is your notice period?", "Notice Period (in days)",
-                      "Are you currently serving notice period?", "Notice period*"):
+        for label in ("What is your notice period?", "Notice Period (in days)", "Notice period*"):
             self.assertEqual(answers.question_key(label), "notice_period", label)
+        # A yes or a no, with its own saved answer (code review, Oct 2026).
+        self.assertEqual(answers.question_key("Are you currently serving notice period?"), "serving_notice")
+        self.assertIsNone(resolver.resolve(field(label="Are you currently serving notice period?")))
         self.assertEqual(resolver.resolve(field(label="Notice Period (in days)")), ("60 days", "profile"))
 
     def test_an_immediate_notice_period_matches_its_other_wordings(self) -> None:
@@ -667,9 +669,11 @@ class EducationEntryTests(ResolverTestCase):
         # and got 2026-10-06, which Playwright refuses to type into a number
         # input. A text box still takes the date.
         self.assertIsNone(resolver.resolve(field(label="Start date year*", type="number")))
-        got = resolver.resolve(field(label="Start date", type="text"))
+        got = resolver.resolve(field(label="Earliest start date", type="text"))
         self.assertIsNotNone(got)
         self.assertEqual(got[1], "notice period")
+        # A bare "Start date" may be a past job's (code review, Oct 2026).
+        self.assertIsNone(resolver.resolve(field(label="Start date", type="text")))
 
     def test_a_truncated_option_list_keeps_the_raw_value(self) -> None:
         # The snapshot keeps 40 of 345 options, so the wanted one is not in
@@ -1533,3 +1537,48 @@ class PreferredLocationTests(ResolverTestCase):
         text = profile.as_prompt_text({"preferred_location": "Any"})
         self.assertIn("tick EVERY location", text)
         self.assertEqual(profile.as_prompt_text({"preferred_location": "Pune"}), "preferred_location: Pune")
+
+
+class LooseRuleTests(ResolverTestCase):
+    """Profile rules that filled a box with the wrong fact, which the model
+    was then told was done (code review, Oct 2026)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        data = dict(DUMMY_PROFILE, total_experience_years="6", current_company="Acme Corp",
+                    current_ctc="2500000", expected_ctc="3000000",
+                    linkedin="https://linkedin.com/in/x", github="https://github.com/x")
+        profile.PROFILE_PATH.write_text(json.dumps(data), encoding="utf-8")
+
+    def assertLeft(self, label: str) -> None:
+        self.assertIsNone(resolver.resolve(field(label=label)), label)
+
+    def test_years_in_one_skill_are_not_the_career(self) -> None:
+        for label in ("Years of experience in React", "Total experience in Java",
+                      "How many years of experience do you have in Python?"):
+            self.assertLeft(label)
+            self.assertNotIn("experience", resolver.rule_key(field(label=label)), label)
+        self.assertEqual(resolver.resolve(field(label="Total Professional Experience*")), ("6", "profile"))
+        self.assertEqual(resolver.resolve(field(label="No. of years of experience")), ("6", "profile"))
+
+    def test_experience_in_months_is_in_months(self) -> None:
+        self.assertEqual(resolver.resolve(field(label="Total Experience (in months)")), ("72", "profile"))
+
+    def test_the_degree_rule_takes_only_the_degree(self) -> None:
+        for label in ("Degree percentage / CGPA", "Qualification Year", "Degree Board"):
+            self.assertLeft(label)
+        self.assertEqual(resolver.rule_key(field(label="Degree Specialization")), "field_of_study")
+        self.assertEqual(resolver.rule_key(field(label="Degree year of passing")), "graduation_year")
+
+    def test_expected_pay_is_never_current_pay(self) -> None:
+        got = resolver.resolve(field(label="Expected CTC (Current CTC + hike %)"))
+        self.assertEqual(got, ("3000000", "profile"))
+
+    def test_questions_that_mention_a_fact_are_not_that_fact(self) -> None:
+        for label in ("Years of experience in current company", "Any major career gaps?",
+                      "Do you have experience with GitHub Actions?",
+                      "I agree to my profile being visible to LinkedIn Recruiter", "Start date"):
+            self.assertLeft(label)
+        got = resolver.resolve(field(label="How did you hear about us? (LinkedIn, Naukri)"))
+        self.assertNotEqual((got or ("",))[0], "https://linkedin.com/in/x")
+        self.assertEqual(resolver.resolve(field(label="LinkedIn Profile")), ("https://linkedin.com/in/x", "profile"))

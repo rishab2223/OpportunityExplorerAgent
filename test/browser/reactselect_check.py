@@ -274,10 +274,11 @@ with sync_playwright() as pw:
     check("and nothing was chosen", "Bangalore" not in page.locator("#log").inner_text(),
           repr(page.locator("#log").inner_text()))
 
-    print("\nand a school the list does not have takes 'Other'")
-    # Greenhouse's school list (BitGo, Oct 2026): "Example University" is not
-    # in it, and the candidate chose "Other" by hand. The exact entry, never
-    # a row that merely contains the word.
+    print("\nand a school the list does not have is refused with its rows, not taken as 'Other'")
+    # It used to take "Other" at once (BitGo, Oct 2026) - before the shorter
+    # search and the nearest-option call had seen the list, so "IIT Bombay"
+    # against "Indian Institute of Technology Bombay" became "Other" (code
+    # review, Oct 2026). "Other" is the planning model's call now.
     page.goto((HERE / "fixture_reactselect.html").as_uri())
     page.wait_for_timeout(200)
     school_box = {str(f.get("label") or "").split("*")[0].strip(): f
@@ -286,14 +287,13 @@ with sync_playwright() as pw:
     try:
         worker._commit_combobox(page, browser.locate(page, school_box["id"], str(school_box.get("elid") or "")),
                                 "Example University", "School*", "[profile] ", sess7, [])
-        took7 = True
+        refused7 = None
     except Exception as exc:
-        took7 = False
-        sess7.log(f"refused: {exc}")
+        refused7 = exc
     got7 = page.locator("#log").inner_text()
-    check("'Other' is chosen", took7 and got7.strip() == "Other |", repr(got7) + " " + str(sess7.lines)[:200])
-    check("and the log says so",
-          any("taking 'Other'" in line for line in sess7.lines), str(sess7.lines)[:200])
+    check("nothing is chosen", "Other" not in got7, repr(got7) + " " + str(sess7.lines)[:200])
+    check("and the refusal names the rows, Other among them",
+          isinstance(refused7, worker.NoOptionMatch) and "Other" in str(refused7), repr(refused7))
     check("a school that IS listed is still taken by name",
           worker._choose_option(["Aalborg University", "Other"], "Aalborg University") == 0)
 

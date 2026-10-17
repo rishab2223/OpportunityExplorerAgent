@@ -23,7 +23,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from src import answers
-from src.apply import cover_letter, profile
+from src.apply import cover_letter, profile, salary
 
 # Word boundaries plus underscores/hyphens, so "cv_file" and "resume-upload"
 # match while "recover" and "cvs" do not.
@@ -114,12 +114,15 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
     ("address_line1", ("address-line1", "street-address"),
      re.compile(r"^(address|address[_ ]?line[_ ]?1|street|street[_ ]?address)$"),
      re.compile(r"^(street )?address( line ?1)?$")),
+    # Never a question that only mentions the site: "How did you hear about
+    # us? (LinkedIn, Naukri)" got the profile URL, and so would "Do you have
+    # experience with GitHub Actions?" (answers.NOT_A_LINK, code review, Oct 2026).
     ("linkedin", (),
      re.compile(r"^linked[_ ]?in([_ ]?(url|profile))?$"),
-     re.compile(r"\blinkedin\b")),
+     re.compile(answers.NOT_A_LINK + r".*\blinkedin\b")),
     ("github", (),
      re.compile(r"^github([_ ]?(url|profile))?$"),
-     re.compile(r"\bgithub\b")),
+     re.compile(answers.NOT_A_LINK + r".*\bgithub\b")),
     ("portfolio", ("url",),
      re.compile(r"^(portfolio|website|personal[_ ]?site|website[_ ]?link)$"),
      # "Website link" is the label on Rippling's box; the anchored pattern
@@ -132,7 +135,10 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
     # name typed into its notice-period list.
     ("current_company", ("organization",),
      re.compile(r"^(company|current[_ ]?company|employer|organization)$"),
-     re.compile(r"^(?!.*\bnotice\b)(?:.*\b(current |present )(company|employer)\b"
+     # Nor how long, or anything else ABOUT the employer: "Years of
+     # experience in current company" got its name (code review, Oct 2026).
+     re.compile(r"^(?!.*\b(notice|years?|months?|duration|tenure|how long|since|experience|reason|why"
+                r"|address|location|city|ctc|salary)\b)(?:.*\b(current |present )(company|employer)\b"
                 r"|(most |your )?(recent|last|latest|previous) (company|employer)( name)?$)")),
     ("current_title", ("organization-title",),
      re.compile(r"^(title|job[_ ]?title|current[_ ]?title|designation)$"),
@@ -166,9 +172,12 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      re.compile(r"\b(salary|pay) period\b"
                 r"|^(?!.*\b(ctc|salary|compensation|remuneration|lpa|lakhs?|amount)\b).*\bper (annum|month)\b")),
     # "Current Annual Compensation" (EPAM): a word may sit between.
+    # Never an expected-pay box that mentions current pay: "Expected CTC
+    # (Current CTC + hike %)" got the current figure (code review, Oct 2026).
     ("current_ctc", (),
      re.compile(r"^(current[_ ]?(ctc|salary|compensation))$"),
-     re.compile(r"\b(current|present)( annual| yearly| total| fixed| base)? (ctc|salary|compensation|pay)\b")),
+     re.compile(r"^(?!.*\b(expected|desired|expectations?|ectc)\b)"
+                r".*\b(current|present)( annual| yearly| total| fixed| base)? (ctc|salary|compensation|pay)\b")),
     # "Salary expectations:" (Cargill on SuccessFactors, Oct 2026, a box
     # named cust_salaryExpect) was left empty: the words come the other way
     # round.
@@ -195,10 +204,16 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
     ("preferred_location", (),
      re.compile(r"^(preferred[_ ]?location|location[_ ]?preference|preferred[_ ]?work[_ ]?location)$"),
      re.compile(r"\bpreferred (work )?location\b|\blocation preference\b|\bpreferred city\b")),
+    # A bare "Start date" is not enough: outside a section the snapshot
+    # recognised, it is as likely a past job's, and got a date worked out from
+    # the notice period (code review, Oct 2026). The label must be about
+    # joining.
     ("earliest_start_date", (),
-     re.compile(r"^(start[_ ]?date|available[_ ]?from|availability|earliest[_ ]?start[_ ]?date|joining[_ ]?date)$"),
-     re.compile(r"\b(earliest )?(start|joining) date\b|\bavailable (from|to start)\b"
-                r"|\bwhen can you (join|start)\b|\bdate of joining\b")),
+     re.compile(r"^(available[_ ]?from|availability|earliest[_ ]?start[_ ]?date|joining[_ ]?date)$"),
+     re.compile(r"\bearliest (start|joining) date\b|\bjoining date\b"
+                r"|\b(expected|possible|preferred|proposed|tentative|available) (start|joining) date\b"
+                r"|\bavailable (from|to start)\b|\bwhen can you (join|start)\b|\bdate of joining\b"
+                r"|\bstart date\b.*\b(available|availability|join|joining|this role|new role|position)\b")),
     ("how_did_you_hear", (),
      re.compile(r"^(source|referral[_ ]?source|how[_ ]?did[_ ]?you[_ ]?hear)$"),
      re.compile(r"\bhow did you (hear|find|learn)\b|\bsource of (application|referral)\b")),
@@ -250,10 +265,16 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      # asked by every Indian form, so it is a profile fact, not a model guess.
      re.compile(r"\brecogni[sz]ed by\b|\bdegree was awarded\b"
                 r"|\baccredit(ed|ing) (body|authority)\b")),
+    # The degree itself, not something about it: "Degree Specialization",
+    # "Degree percentage / CGPA", "Degree year of passing" and "Qualification
+    # Year" all got "B.Tech" (code review, Oct 2026).
     ("highest_education_level", (),
      re.compile(r"^(degree|qualification|education[_ ]?level|highest[_ ]?qualification)$"),
-     re.compile(r"\b(highest )?(degree|qualification)\b|\beducation level\b"
-                r"|\blevel of education\b")),
+     re.compile(r"^(?!.*\b(speciali[sz]ation|major|stream|branch|discipline|subject|percentage|percent|cgpa"
+                r"|gpa|marks?|grades?|score|years?|passing|completion|university|college|institut\w*|school"
+                r"|board|mode|duration|certificate|recogni[sz]ed|awarded)\b)"
+                r".*(?:\b(highest )?(degree|qualification)\b|\beducation level\b|\blevel of education\b)")),
+    # "Major" as the subject, never "Any major career gaps?".
     ("field_of_study", (),
      re.compile(r"^(field[_ ]?of[_ ]?study|major|specialization|specialisation|discipline)$"),
      # "^field$" is the whole label, never a word inside one: Prachay's box
@@ -262,8 +283,9 @@ _RULES: list[tuple[str, tuple[str, ...], re.Pattern[str], re.Pattern[str]]] = [
      # required" and "Field of work" all contain it and mean nothing of
      # the sort. The required marker is folded away before matching, so a
      # "Field *" and a "Field * (required)" are the same label here.
-     re.compile(r"\bfield of study\b|\bmajor\b|\bspeciali[sz]ation\b|\bdiscipline\b"
-                r"|^field( required)?$")),
+     re.compile(r"\bfield of study\b|\bspeciali[sz]ation\b|\bdiscipline\b"
+                r"|^(your |primary |academic |college |degree )?major\b|\bmajor (subject|field|area|stream)\b"
+                r"|\bmajor$|^field( required)?$")),
     # The degree's year - not school's, nor a postgraduate one the candidate
     # may not have: TravClan (Oct 2026) got 2019 in "12th year of passing"
     # and "Post Graduation Year of Passing" alike.
@@ -740,6 +762,30 @@ _IMMEDIATE_HINT_RE = re.compile(
 # The model answers those from the resume. "in software development" stays
 # the career's.
 _SKILL_YEARS_RE = re.compile(r"\bexperience\b.*\b(with|using)\s+\w")
+# Words a question about the whole career may use besides answers'
+# vocabulary for total experience. Any other word names a skill, a tool or a
+# role: "Years of experience in React", "Total experience in Java" and "How
+# many years of experience do you have in Python?" all got the career's six
+# years (code review, Oct 2026).
+_CAREER_WORDS = answers.TOTAL_EXPERIENCE_WORDS | frozenset("""
+relevant month months software development developer engineering engineer it tech technology
+technical field profession professionally career overall the industry corporate post graduation
+after qualification paid full time fulltime no approx approximate approximately exp
+primary main core skill skills domain
+""".split())
+
+
+def _trim_number(number: float) -> str:
+    return str(int(number)) if number == int(number) else f"{number:.1f}"
+
+
+def _names_a_skill(norm_label: str) -> bool:
+    """A years-of-experience question about one skill, not the career."""
+    if _SKILL_YEARS_RE.search(norm_label):
+        return True
+    return any(word not in _CAREER_WORDS for word in norm_label.split())
+
+
 _PER_DAY = {"day": 1.0, "week": 7.0, "month": 30.0, "year": 365.0}
 
 
@@ -1224,6 +1270,8 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
         # candidate confirmed themselves, through the ask gate, with a loud
         # log line - never silently from the profile, whatever rules exist.
         return None
+    if salary.is_foreign(field):
+        return None   # pay in dollars: nothing in the profile is in that currency
 
     years = _education_year(field, data) or _tenure_date(field, data)
     # A whole date (YYYY-MM-DD) suits a text or date box; a bare year suits
@@ -1269,8 +1317,15 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
             continue
         if key in _ONLY_WHEN_REQUIRED and not field.get("required"):
             continue
-        if key.endswith("_experience_years") and _SKILL_YEARS_RE.search(norm_label):
+        if key.endswith("_experience_years") and _names_a_skill(norm_label):
             continue
+        if key == "total_experience_years" and re.search(r"\bmonths?\b", norm_label) \
+                and not re.search(r"\b(years?|yrs?)\b", norm_label):
+            # "Total Experience (in months)" got the years figure.
+            try:
+                value = _trim_number(float(value) * 12)
+            except ValueError:
+                continue
         if key in ("gpa_10_point", "gpa_5_point"):
             # Forms ask both, and the honest answer to the one you did NOT
             # study on is the option that says so - not a converted figure.
@@ -1324,7 +1379,7 @@ def resolve(field: dict[str, Any]) -> tuple[str, str] | None:
 
     # Answer bank: neutral topics only. Sensitive entries are used by the ask
     # gate (with loud logging), never silently by the sweep.
-    entry = answers.lookup(answers.question_key(label, field.get("group") or ""))
+    entry = answers.saved_for(label, field.get("group") or "")
     if entry and entry["kind"] == "neutral":
         value = entry["answer"]
         if tag == "select":
@@ -1542,6 +1597,8 @@ def _rule_key(field: dict[str, Any]) -> str:
     autocomplete = _autocomplete_of(field)
     norm_label = profile.fingerprint(_without_format_hint(label))
     for key, ac_values, name_re, label_re in _RULES:
+        if key.endswith("_experience_years") and _names_a_skill(norm_label):
+            continue
         if ((autocomplete and autocomplete in ac_values)
                 or (name and name_re.fullmatch(name) is not None)
                 or (norm_label and label_re.search(norm_label) is not None)):

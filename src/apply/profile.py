@@ -413,7 +413,16 @@ def is_secret(label: str) -> bool:
     secret (both contain "pin"), and refused every Indian "Pincode" box, so
     the postal_code rule could never reach them. Whole words only."""
     text = _POSTAL_PIN_RE.sub(" ", (label or "").lower())
+    if _CONTACT_BOX_RE.search(text):
+        # "Mobile number (OTP will be sent)" asks for the number; the code
+        # comes later, in a box of its own. Read as a secret, the phone was
+        # never filled (code review, Oct 2026).
+        text = _FUTURE_SEND_RE.sub(" ", text)
     return _SECRET_RE.search(text) is not None
+
+
+_CONTACT_BOX_RE = re.compile(r"\b(mobile|phone|contact|whatsapp|e-?mail)\b")
+_FUTURE_SEND_RE = re.compile(r"[^.()\[\]]*\b(will|would|shall)\s+be\s+sent\b[^.()\[\]]*")
 
 
 def is_identifier(label: str) -> bool:

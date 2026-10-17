@@ -111,6 +111,45 @@ def _leading_words_pick(options: list[str], value: str) -> int:
     return hits[0] if len(hits) == 1 else -1
 
 
+# What a short form says about the subject, for lists that spell the degree
+# out: "Bachelor of Technology", "Master of Business Administration". The
+# family alone took the first of them - "B.Tech" became "Bachelor of Arts",
+# "MBA" "Master of Arts" (code review, Oct 2026).
+_DEGREE_SUBJECTS = (
+    (r"[bm]\.?\s?tech|[bm]\.?\s?e\b", ("technology", "engineering")),
+    (r"[bm]\.?\s?sc|m\.?\s?s\b", ("science",)),
+    (r"bca|mca", ("computer applications",)),
+    (r"mba|bba", ("business administration", "management")),
+    (r"b\.?\s?com|m\.?\s?com", ("commerce",)),
+    (r"b\.?\s?a\b|m\.?\s?a\b", ("arts",)),
+)
+# A family member that names no subject: "Bachelors", "Bachelor's Degree",
+# "Bachelors (approx 16 yrs)".
+GENERIC_DEGREE_RE = re.compile(
+    r"^\s*(bachelor|master|doctor|associate)\w*('?s)?( degree)?( or equivalent)?\s*(\(.*\))?\s*$")
+_FAMILY_STEMS = {"Bachelors": "bachelor", "Masters": "master", "Doctorate": "doctor"}
+
+
+def _degree_pick(options: list[str], value: str, form: str) -> int | None:
+    """The family member a short form means: the one naming its subject,
+    else the one naming none, else the only one. -1 when several are left to
+    choose between; None when the list has no member of the family."""
+    subjects = next((s for p, s in _DEGREE_SUBJECTS if re.match(rf"^(?:{p})", resolver.plain(value).strip())), ())
+    stem = _FAMILY_STEMS[form]
+    family = [i for i in _answers(options) if resolver.plain(options[i]).strip().startswith(stem)]
+    if not family:
+        return None
+
+    def one(indices: list[int]) -> int:
+        return indices[0] if len({resolver.plain(options[i]) for i in indices}) == 1 else -1
+
+    named = [i for i in family if any(re.search(rf"\b{s}\b", resolver.plain(options[i])) for s in subjects)]
+    if named:
+        return one(named)
+    generic = [i for i in family if GENERIC_DEGREE_RE.match(resolver.plain(options[i]))]
+    return one(generic or family)
+
+
 def _degree_form(value: str) -> str:
     flat = resolver.plain(value).strip()
     for pattern, canonical in _DEGREE_FORMS:
@@ -125,6 +164,11 @@ def _computing_pick(options: list[str], value: str) -> int:
     answers = _answers(options)
     for word in _COMPUTING_WORDS:
         hits = [i for i in answers if re.search(rf"\b{word}\b", " ".join(_words(options[i])))]
+        if word == "engineering":
+            # The broad heading only: "Electrical Engineering" was the
+            # nearest field to Computer Science when it was the one
+            # engineering on the list (code review, Oct 2026).
+            hits = [i for i in hits if not set(_words(options[i])) - {"engineering", "and", "technology", "tech"}]
         if len(hits) == 1:
             return hits[0]
     return -1
@@ -144,7 +188,9 @@ def rule_pick(options: list[str], value: str, choose) -> tuple[int, str]:
         return index, f"the closest level the list offers to '{value}', and not above it"
     form = _degree_form(value)
     if form and resolver.plain(form) != resolver.plain(value):
-        index = choose(options, form)
+        index = _degree_pick(options, value, form)
+        if index is None:
+            index = choose(options, form)
         if index >= 0:
             return index, f"'{value}' is a {form[:-1].lower()}'s degree"
     index = _leading_words_pick(options, value)

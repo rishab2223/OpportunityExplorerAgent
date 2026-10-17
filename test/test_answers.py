@@ -52,9 +52,12 @@ class QuestionKeyTests(BankTestCase):
 
     def test_work_authorization_variants(self) -> None:
         for phrasing in ("Are you legally authorized to work in India?",
-                         "Are you authorised to work in the United States?",
+                         "Are you legally entitled to work in the country you are applying for?",
                          "Work authorization status"):
             self.assertEqual(answers.question_key(phrasing), "work_authorization", phrasing)
+        # Another country is another question (see QualifiedKeyTests).
+        self.assertEqual(answers.question_key("Are you authorised to work in the United States?"),
+                         "work_authorization:us")
 
     def test_group_carries_the_question_for_bare_options(self) -> None:
         # A radio labelled just "Yes" keys on its group text.
@@ -205,3 +208,79 @@ class TotalExperienceLabelShapesTests(unittest.TestCase):
                       "Total work experience, including internships",
                       "Years of full time experience *"):
             self.assertEqual(question_key(label), "total_experience", label)
+
+
+class QualifiedKeyTests(BankTestCase):
+    """Questions that share a topic but not an answer (code review, Oct 2026).
+    Each pair used to share one saved answer, which beat the model's."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from src.apply import profile
+        self._profile = profile
+        self._original_profile = profile.PROFILE_PATH
+        profile.PROFILE_PATH = Path(self._tmp.name) / "apply_profile.json"   # no profile: India
+
+    def tearDown(self) -> None:
+        self._profile.PROFILE_PATH = self._original_profile
+        super().tearDown()
+
+    def assertApart(self, a: str, b: str) -> None:
+        self.assertNotEqual(answers.question_key(a), answers.question_key(b), f"{a} / {b}")
+
+    def test_another_country_is_another_question(self) -> None:
+        self.assertApart("Are you authorized to work in India?", "Are you authorized to work in the United States?")
+        self.assertApart("Will you require visa sponsorship?", "Will you require sponsorship to work in the UK?")
+        # The candidate's own country is the plain question.
+        self.assertEqual(answers.question_key("Are you legally authorized to work in India?"),
+                         answers.question_key("Are you legally entitled to work in the country you are applying for?"))
+
+    def test_a_check_is_not_a_conviction(self) -> None:
+        self.assertEqual(answers.question_key("Are you willing to undergo a background check?"), "background_check")
+        self.assertEqual(answers.question_key("Have you ever been convicted of a crime?"), "criminal_record")
+
+    def test_holding_a_visa_is_not_needing_a_sponsor(self) -> None:
+        self.assertEqual(answers.question_key("Do you hold a valid passport and visa?"), "visa_held")
+        self.assertEqual(answers.question_key("Will you now or in the future require visa sponsorship?"),
+                         "sponsorship")
+
+    def test_moving_is_not_help_with_moving(self) -> None:
+        self.assertApart("Are you willing to relocate?", "Do you require relocation assistance?")
+
+    def test_each_way_of_working_is_its_own_question(self) -> None:
+        self.assertApart("Are you open to remote work?", "Are you comfortable working onsite 5 days a week?")
+
+    def test_serving_notice_is_not_the_notice_period(self) -> None:
+        self.assertApart("Are you currently serving your notice period?", "Notice period")
+
+    def test_how_you_heard_is_not_your_linkedin(self) -> None:
+        self.assertEqual(answers.question_key("How did you hear about us? (LinkedIn, Naukri, Referral)"),
+                         "referral_source")
+        self.assertNotEqual(answers.question_key(
+            "I agree to allow my application statuses to be visible inside LinkedIn Recruiter"), "linkedin_url")
+        self.assertEqual(answers.question_key("LinkedIn Profile"), "linkedin_url")
+        self.assertNotEqual(answers.question_key("Do you have experience with GitHub Actions?"), "github_url")
+
+    def test_expected_pay_that_mentions_current_pay_is_expected(self) -> None:
+        for label in ("Expected CTC (Current CTC + hike %)", "Expected salary compared to your current salary"):
+            self.assertEqual(answers.question_key(label), "expected_ctc", label)
+
+    def test_an_answer_saved_before_the_split_stays_with_its_question(self) -> None:
+        # Saved under the plain key by an older version: the US answer.
+        answers.remember("Are you authorized to work in the United States?", "No")
+        from src import db
+        conn = db.connect()
+        with conn:
+            conn.execute("UPDATE known_answers SET question_key = 'work_authorization'")
+        conn.close()
+        answers._invalidate()
+        self.assertIsNone(answers.recall("Are you authorized to work in India?"))
+        self.assertEqual(answers.recall("Are you authorised to work in the US?")["answer"], "No")
+
+    def test_a_yes_never_answers_an_open_question(self) -> None:
+        answers.remember("Are you open to commuting into our Pune office 3 days a week? "
+                         "(on-site during probation, hybrid after)", "yes")
+        self.assertIsNone(answers.saved_for("Preferred work mode"))
+        # And a link topic never answers with a word.
+        answers.remember("LinkedIn", "yes")
+        self.assertIsNone(answers.saved_for("LinkedIn Profile URL"))
